@@ -1,0 +1,7 @@
+# Ganti placeholder ini dengan user atau tim GitHub yang sebenarnya.
+* @BE_OWNER
+/src/alos/integrations/genesis/ @AI_OWNER @BE_OWNER
+/src/alos/tools/ @AI_OWNER @BE_OWNER
+/src/alos/security/ @BE_OWNER
+/src/alos/authorization/ @BE_OWNER
+/migrations/ @BE_OWNER
