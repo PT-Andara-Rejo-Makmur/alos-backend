@@ -45,5 +45,5 @@ class AuthPrincipalResponse(BaseModel):
 class AuthTokenResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     access_token: str
-    token_type: Literal["bearer"] = "bearer"
+    token_type: Literal["bearer"] = "bearer"  # noqa: S105 - OAuth2 token type constant, not a password
     principal: AuthPrincipalResponse

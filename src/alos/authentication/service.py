@@ -180,7 +180,7 @@ class AuthService:
 
         token = self._issue_token(account)
         body = self._serialize_principal(principal, include_email=account.email)
-        body["token_type"] = "bearer"
+        body["token_type"] = "bearer"  # noqa: S105 - OAuth2 token type constant, not a password
         body["access_token"] = token
         return body
 
@@ -208,7 +208,12 @@ class AuthService:
     @staticmethod
     def _hash_password(password: str) -> str:
         salt = secrets.token_hex(16)
-        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 200_000)
+        digest = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt.encode("utf-8"),
+            200_000,
+        )
         return f"pbkdf2_sha256${salt}${digest.hex()}"
 
     @staticmethod

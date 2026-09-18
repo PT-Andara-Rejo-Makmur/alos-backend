@@ -33,7 +33,7 @@ async def test_register_and_login_round_trip(client: httpx.AsyncClient) -> None:
 
     assert login_response.status_code == 200
     body = login_response.json()
-    assert body["token_type"] == "bearer"
+    assert body["token_type"] == "bearer"  # noqa: S105 - OAuth2 token type constant, not a password
     assert body["principal"]["workspace_id"] == "workspace_operations"
     assert "scope.workspace.operations" in body["principal"]["scopes"]
 
