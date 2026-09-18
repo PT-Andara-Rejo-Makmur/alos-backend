@@ -28,6 +28,7 @@ def agent_definition() -> dict[str, object]:
         "model_policy_ref": "policy.runtime-test",
         "tool_ids": ["diagnostic.echo"],
         "permission_refs": ["tools.diagnostic.execute"],
+        "scope_refs": ["scope.diagnostic"],
         "delegation_policy": {"enabled": False, "max_depth": 0},
     }
 
@@ -150,6 +151,19 @@ async def test_backend_denies_run_when_permissions_are_missing() -> None:
     payload["execution_context"]["permission_refs"] = []  # type: ignore[index]
 
     with pytest.raises(RunAuthorityError, match="lacks Agent permissions"):
+        await authority.begin(payload, agent=agent)
+
+
+@pytest.mark.asyncio
+async def test_backend_denies_run_when_scope_is_missing() -> None:
+    contracts = CanonicalContractCatalog(CONTRACTS_ROOT)
+    audit = InMemoryAuditRepository()
+    agent = await active_agent(contracts, audit)
+    authority = AgentRunAuthority(contracts=contracts, audit=audit)
+    payload = run_request()
+    payload["execution_context"]["scope_refs"] = ["scope.other"]  # type: ignore[index]
+
+    with pytest.raises(RunAuthorityError, match="lacks Agent scope"):
         await authority.begin(payload, agent=agent)
 
 

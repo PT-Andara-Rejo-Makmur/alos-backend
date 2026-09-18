@@ -8,7 +8,9 @@ from alos.agents.registry import AgentRegistry
 from alos.audit import InMemoryAuditRepository
 from alos.capabilities.registry import CapabilityRegistry
 from alos.contracts import CanonicalContractCatalog, ContractValidationError
+from alos.identity import Principal
 from alos.registry import DecisionAuthority, RegistryConflictError, RegistryState
+from alos.registry_contracts import RegistryAuthorizationError
 from alos.skills.registry import SkillRegistry
 
 WORKSPACE = Path(__file__).resolve().parents[3]
@@ -156,3 +158,88 @@ async def test_capability_and_skill_registries_use_canonical_contracts(
     assert capability.subject_type == "capability"
     assert skill.subject_type == "skill"
     assert skill.state == RegistryState.DRAFT
+
+
+@pytest.mark.asyncio
+async def test_authorized_registry_view_is_typed_and_fail_closed(
+    catalog: CanonicalContractCatalog,
+) -> None:
+    audit = InMemoryAuditRepository()
+    registry = AgentRegistry(catalog, audit)
+    payload = load_fixture("agent-definition.adapted.json")
+    payload["scope_refs"] = ["scope.workspace.ops"]
+    draft = await registry.register(
+        payload,
+        tenant_id="tenant_mvp1_andara",
+        organization_id="org_mvp1_andara",
+        workspace_id="workspace_mvp1_ops",
+        actor_id="actor_mvp1_it_lead",
+        correlation_id="corr_mvp1_contract_001",
+    )
+    with pytest.raises(RegistryAuthorizationError, match="not ACTIVE"):
+        registry.get_authorized(
+            principal=Principal(
+                actor_id="actor_mvp1_it_lead",
+                tenant_id=draft.tenant_id,
+                organization_id=draft.organization_id,
+                workspace_id=draft.workspace_id,
+                permissions=frozenset({"permission.document.read"}),
+                scopes=frozenset({"scope.workspace.ops"}),
+            ),
+            subject_id=draft.subject_id,
+            version=draft.version,
+        )
+
+    approved = await registry.approve(
+        tenant_id=draft.tenant_id,
+        workspace_id=draft.workspace_id,
+        subject_id=draft.subject_id,
+        version=draft.version,
+        actor_id="actor_mvp1_it_approver",
+        decision_id="decision_mvp1_it_002",
+        authority=DecisionAuthority.IT,
+        correlation_id="corr_mvp1_contract_002",
+    )
+    await registry.activate(
+        tenant_id=approved.tenant_id,
+        workspace_id=approved.workspace_id,
+        subject_id=approved.subject_id,
+        version=approved.version,
+        actor_id="actor_mvp1_release",
+        release_id="release_mvp1_agent_002",
+        correlation_id="corr_mvp1_contract_003",
+    )
+
+    authorized = registry.get_authorized(
+        principal=Principal(
+            actor_id="actor_mvp1_it_lead",
+            tenant_id=draft.tenant_id,
+            organization_id=draft.organization_id,
+            workspace_id=draft.workspace_id,
+            permissions=frozenset({"permission.document.read"}),
+            scopes=frozenset({"scope.workspace.ops"}),
+        ),
+        subject_id=draft.subject_id,
+        version=draft.version,
+    )
+    assert authorized.lifecycle == "ACTIVE"
+    assert authorized.version == "1.0.0"
+    assert authorized.owner == "actor_mvp1_it_lead"
+    assert authorized.risk == "MEDIUM"
+    assert authorized.tools == ("document.read",)
+    assert authorized.permissions == ("permission.document.read",)
+    assert authorized.scope == ("scope.workspace.ops",)
+
+    with pytest.raises(RegistryAuthorizationError, match="lacks registry scope"):
+        registry.get_authorized(
+            principal=Principal(
+                actor_id="actor_mvp1_it_lead",
+                tenant_id=draft.tenant_id,
+                organization_id=draft.organization_id,
+                workspace_id=draft.workspace_id,
+                permissions=frozenset({"permission.document.read"}),
+                scopes=frozenset(),
+            ),
+            subject_id=draft.subject_id,
+            version=draft.version,
+        )

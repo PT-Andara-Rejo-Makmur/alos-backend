@@ -114,6 +114,7 @@ class AgentRunAuthority:
         self._require_context(request, context, agent)
         self._require_lifecycle(request, agent)
         self._require_permissions(context, agent)
+        self._require_scope(context, agent)
         self._require_tools(request, agent)
         run_id = str(request["run_id"])
         record = AuthoritativeRunRecord(
@@ -215,6 +216,13 @@ class AgentRunAuthority:
         granted = frozenset(str(item) for item in context.get("permission_refs", []))
         if not required.issubset(granted):
             raise RunAuthorityError("execution context lacks Agent permissions")
+
+    @staticmethod
+    def _require_scope(context: dict[str, Any], agent: RegistryEntry) -> None:
+        required = frozenset(str(item) for item in agent.payload.get("scope_refs", []))
+        granted = frozenset(str(item) for item in context.get("scope_refs", []))
+        if required and not required.issubset(granted):
+            raise RunAuthorityError("execution context lacks Agent scope")
 
     @staticmethod
     def _require_tools(request: dict[str, Any], agent: RegistryEntry) -> None:

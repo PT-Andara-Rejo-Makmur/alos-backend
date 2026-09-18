@@ -13,6 +13,8 @@ from typing import Any
 
 from alos.audit import AuditEvent, AuditSink
 from alos.contracts import CanonicalContractCatalog
+from alos.identity import Principal
+from alos.registry_contracts import RegistryAuthorityView, RegistryAuthorizationError
 
 
 class RegistryConflictError(ValueError):
@@ -202,6 +204,28 @@ class VersionedContractRegistry:
         if entry is None:
             raise RegistryNotFoundError("registry version was not found in tenant workspace")
         return self._copy_entry(entry)
+
+    def get_authorized(
+        self,
+        *,
+        principal: Principal | None,
+        subject_id: str,
+        version: str,
+    ) -> RegistryAuthorityView:
+        """Return only an ACTIVE definition authorized by the Backend principal."""
+        if principal is None:
+            raise RegistryAuthorizationError("principal is required")
+        entry = self.get(
+            tenant_id=principal.tenant_id,
+            workspace_id=principal.workspace_id,
+            subject_id=subject_id,
+            version=version,
+        )
+        if entry.organization_id != principal.organization_id:
+            raise RegistryAuthorizationError("registry organization is outside principal scope")
+        if entry.state is not RegistryState.ACTIVE:
+            raise RegistryAuthorizationError("registry lifecycle is not ACTIVE")
+        return RegistryAuthorityView.from_entry(entry).authorize(principal)
 
     async def _transition(
         self,
