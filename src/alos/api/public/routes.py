@@ -4,12 +4,81 @@ from fastapi import APIRouter, Request
 
 from alos import __version__
 from alos.api.models import SystemInfoResponse
+from alos.authentication.models import AuthTokenResponse, LoginRequest, RegisterRequest
 from alos.dependencies import GenesisClientDependency, IntegrationContractValidatorDependency
 from alos.integrations.genesis import GenesisClientError, IntegrationContractError
 from alos.observability.correlation import current_correlation_id
 from alos.security.errors import PlatformError
 
 router = APIRouter(prefix="/api/v1", tags=["system"])
+
+
+@router.post("/auth/register", status_code=201)
+async def register(request: Request, payload: RegisterRequest) -> dict[str, Any]:
+    service = request.app.state.auth_service
+    response = service.register(payload.model_dump())
+    return {
+        "actor_id": response["actor_id"],
+        "tenant_id": response["tenant_id"],
+        "organization_id": response["organization_id"],
+        "workspace_id": response["workspace_id"],
+        "email": response["email"],
+        "display_name": response["display_name"],
+        "permissions": response["permissions"],
+        "scopes": response["scopes"],
+        "roles": response["roles"],
+        "data_scope": response["data_scope"],
+        "active": response["active"],
+    }
+
+
+@router.post("/auth/login", response_model=AuthTokenResponse)
+async def login(request: Request, payload: LoginRequest) -> AuthTokenResponse:
+    service = request.app.state.auth_service
+    response = service.login(payload.email, payload.password)
+    return AuthTokenResponse(
+        access_token=response["access_token"],
+        token_type=response["token_type"],
+        principal={
+            "actor_id": response["actor_id"],
+            "tenant_id": response["tenant_id"],
+            "organization_id": response["organization_id"],
+            "workspace_id": response["workspace_id"],
+            "email": response.get("email"),
+            "display_name": response.get("display_name"),
+            "permissions": response["permissions"],
+            "scopes": response["scopes"],
+            "roles": response["roles"],
+            "data_scope": response["data_scope"],
+            "active": response["active"],
+        },
+    )
+
+
+@router.get("/auth/whoami")
+async def whoami(request: Request) -> dict[str, Any]:
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise PlatformError(
+            "MISSING_TOKEN",
+            "authorization header is required",
+            status_code=401,
+        )
+    token = auth_header.split(" ", 1)[1].strip()
+    principal = request.app.state.auth_service.whoami(token)
+    return {
+        "actor_id": principal["actor_id"],
+        "tenant_id": principal["tenant_id"],
+        "organization_id": principal["organization_id"],
+        "workspace_id": principal["workspace_id"],
+        "email": principal.get("email"),
+        "display_name": principal.get("display_name"),
+        "permissions": principal["permissions"],
+        "scopes": principal["scopes"],
+        "roles": principal["roles"],
+        "data_scope": principal["data_scope"],
+        "active": principal["active"],
+    }
 
 
 @router.get("/system/info", response_model=SystemInfoResponse)

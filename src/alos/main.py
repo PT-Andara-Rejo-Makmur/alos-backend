@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from alos.api.internal.routes import router as internal_router
 from alos.api.models import HealthResponse, ReadinessResponse
 from alos.api.public.routes import router as public_router
+from alos.authentication.service import AuthService
 from alos.config import Settings, get_settings
 from alos.observability.correlation import CorrelationIdMiddleware
 from alos.security.errors import install_error_handlers
@@ -35,6 +36,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = resolved
     app.state.started = False
+    app.state.auth_service = AuthService()
     app.state.tool_audit_sink = InMemoryToolAuditSink()
     app.state.tool_idempotency_store = InMemoryToolIdempotencyStore()
     app.add_middleware(
