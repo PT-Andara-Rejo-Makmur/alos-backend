@@ -23,6 +23,7 @@ python -m pip install -e '.[dev]'
 - `DATABASE_URL`: wajib menggunakan `postgresql+asyncpg://`.
 - `GENESIS_BASE_URL`: base URL internal GENESIS.
 - `GENESIS_INTERNAL_TOKEN`: secret service-to-service; kosong hanya untuk development yang tidak memanggil GENESIS.
+- `CORS_ALLOWED_ORIGINS`: daftar origin Web publik yang dipisahkan koma. Default lokal hanya `http://127.0.0.1:3000` dan `http://localhost:3000`; jangan memakai wildcard pada deployment.
 - `OTEL_SERVICE_NAME`: nama service telemetry.
 - `ALOS_CONTRACTS_PATH`: path menuju checkout/artefak `alos-contracts`.
 - `ENABLE_TEST_TOOLS`: hanya untuk pengujian non-production.
@@ -33,4 +34,10 @@ python -m pip install -e '.[dev]'
 uvicorn alos.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Periksa `http://127.0.0.1:8000/health`, `/ready`, dan `/docs`.
+Jalankan GENESIS pada port 8100 sebelum memeriksa jalur integrasi. Pastikan
+`ALOS_CONTRACTS_PATH=../alos-contracts`, lalu periksa:
+
+- `http://127.0.0.1:8000/health`
+- `http://127.0.0.1:8000/ready`
+- `http://127.0.0.1:8000/api/v1/system/integration`
+- `http://127.0.0.1:8000/docs`

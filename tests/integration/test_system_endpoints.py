@@ -25,6 +25,16 @@ async def test_readiness_endpoint(client: httpx.AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_configured_web_origin_can_read_public_backend(client: httpx.AsyncClient) -> None:
+    origin = "http://127.0.0.1:3000"
+    response = await client.get("/health", headers={"Origin": origin})
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == origin
+    assert response.headers["access-control-expose-headers"] == "X-Correlation-ID"
+
+
+@pytest.mark.asyncio
 async def test_system_info_declares_backend_authority(client: httpx.AsyncClient) -> None:
     response = await client.get("/api/v1/system/info")
     assert response.status_code == 200

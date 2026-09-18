@@ -13,13 +13,20 @@ class AuthorizationPolicy:
         principal: Principal | None,
         *,
         tenant_id: str,
+        organization_id: str,
         workspace_id: str,
         required_permission: str,
         required_scopes: Collection[str] = (),
     ) -> bool:
         if principal is None:
             return False
-        if principal.tenant_id != tenant_id or principal.workspace_id != workspace_id:
+        if not principal.active:
+            return False
+        if (
+            principal.tenant_id != tenant_id
+            or principal.organization_id != organization_id
+            or principal.workspace_id != workspace_id
+        ):
             return False
         if required_permission not in principal.permissions:
             return False

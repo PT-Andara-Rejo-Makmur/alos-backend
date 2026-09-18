@@ -1,1 +1,5 @@
-"""Future registry for approved skill definitions from alos-contracts."""
+"""Authoritative skill registry."""
+
+from alos.skills.registry.service import SkillRegistry
+
+__all__ = ["SkillRegistry"]

@@ -1,5 +1,17 @@
-"""Append-only authoritative audit persistence."""
+"""Authoritative append-only audit boundary."""
 
-from alos.audit.repository import SqlToolAuditSink
+from alos.audit.models import AuditEvent
+from alos.audit.repository import (
+    AuditSink,
+    InMemoryAuditRepository,
+    SqlAuditRepository,
+    SqlToolAuditSink,
+)
 
-__all__ = ["SqlToolAuditSink"]
+__all__ = [
+    "AuditEvent",
+    "AuditSink",
+    "InMemoryAuditRepository",
+    "SqlAuditRepository",
+    "SqlToolAuditSink",
+]

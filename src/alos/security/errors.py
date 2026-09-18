@@ -50,4 +50,7 @@ def install_error_handlers(app: FastAPI) -> None:
             retryable=exc.retryable,
             details=exc.details,
         )
-        return JSONResponse(status_code=exc.status_code, content=problem.model_dump())
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=problem.model_dump(exclude_none=True),
+        )

@@ -28,3 +28,19 @@ async def test_genesis_client_propagates_correlation_and_structures_http_error()
     assert raised.value.code == "GENESIS_HTTP_ERROR"
     assert raised.value.status_code == 503
     assert raised.value.retryable
+
+
+@pytest.mark.asyncio
+async def test_genesis_client_structures_invalid_json_response() -> None:
+    transport = httpx.MockTransport(lambda _request: httpx.Response(200, content=b"not-json"))
+    async with httpx.AsyncClient(transport=transport, base_url="http://genesis.test") as http:
+        client = GenesisClient(
+            base_url="http://genesis.test",
+            internal_token=SecretStr("test-token"),
+            client=http,
+        )
+        with pytest.raises(GenesisClientError) as raised:
+            await client.diagnostic(correlation_id="corr_invalid_json_001")
+
+    assert raised.value.code == "GENESIS_INVALID_RESPONSE"
+    assert not raised.value.retryable

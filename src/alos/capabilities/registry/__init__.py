@@ -1,1 +1,5 @@
-"""Future authoritative capability registry; no speculative implementation in v0.1."""
+"""Authoritative capability registry."""
+
+from alos.capabilities.registry.service import CapabilityRegistry
+
+__all__ = ["CapabilityRegistry"]

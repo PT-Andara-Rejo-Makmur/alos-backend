@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://alos:alos@localhost:5432/alos"
     GENESIS_BASE_URL: str = "http://localhost:8100"
     GENESIS_INTERNAL_TOKEN: SecretStr = SecretStr("")
+    CORS_ALLOWED_ORIGINS: str = "http://127.0.0.1:3000,http://localhost:3000"
     OTEL_SERVICE_NAME: str = "alos-backend"
     ALOS_CONTRACTS_PATH: Path | None = None
     ENABLE_TEST_TOOLS: bool = False
@@ -41,6 +42,15 @@ class Settings(BaseSettings):
     @classmethod
     def normalize_genesis_url(cls, value: str) -> str:
         return value.rstrip("/")
+
+    @property
+    def cors_allowed_origins(self) -> list[str]:
+        """Return explicitly configured browser origins for the public API."""
+        return [
+            origin.strip().rstrip("/")
+            for origin in self.CORS_ALLOWED_ORIGINS.split(",")
+            if origin.strip()
+        ]
 
     @field_validator("ENABLE_TEST_TOOLS")
     @classmethod

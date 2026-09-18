@@ -1,13 +1,13 @@
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DecisionOutcome(StrEnum):
-    APPROVE = "APPROVE"
-    RETURN = "RETURN"
-    REJECT = "REJECT"
+    APPROVED = "APPROVED"
+    RETURNED = "RETURNED"
+    REJECTED = "REJECTED"
     HOLD = "HOLD"
 
 
@@ -27,11 +27,16 @@ class AIRecommendationReference(BaseModel):
 
 
 class AuthoritativeDecision(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
     decision_id: str
     review_id: str
-    authority: AuthorityLevel
+    tenant_id: str | None = None
+    workspace_id: str | None = None
+    release_id: str | None = None
+    correlation_id: str | None = None
+    subject_id: str | None = None
+    authority: AuthorityLevel = Field(alias="decision_type")
     outcome: DecisionOutcome
-    actor_id: str
+    actor_id: str = Field(alias="decided_by")
     rationale: str
     decided_at: datetime

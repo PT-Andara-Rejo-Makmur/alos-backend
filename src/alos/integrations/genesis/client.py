@@ -46,6 +46,11 @@ class GenesisClient:
     async def health(self, *, correlation_id: str) -> dict[str, Any]:
         return await self._request("GET", "/internal/v1/health", correlation_id=correlation_id)
 
+    async def diagnostic(self, *, correlation_id: str) -> dict[str, Any]:
+        return await self._request(
+            "GET", "/internal/v1/system/integration", correlation_id=correlation_id
+        )
+
     async def create_agent_run(
         self, payload: Mapping[str, Any], *, correlation_id: str
     ) -> dict[str, Any]:
@@ -60,16 +65,12 @@ class GenesisClient:
             "POST", "/internal/v1/factory/analyze", correlation_id=correlation_id, payload=payload
         )
 
-    async def research(
-        self, payload: Mapping[str, Any], *, correlation_id: str
-    ) -> dict[str, Any]:
+    async def research(self, payload: Mapping[str, Any], *, correlation_id: str) -> dict[str, Any]:
         return await self._request(
             "POST", "/internal/v1/research", correlation_id=correlation_id, payload=payload
         )
 
-    async def review(
-        self, payload: Mapping[str, Any], *, correlation_id: str
-    ) -> dict[str, Any]:
+    async def review(self, payload: Mapping[str, Any], *, correlation_id: str) -> dict[str, Any]:
         return await self._request(
             "POST", "/internal/v1/reviews", correlation_id=correlation_id, payload=payload
         )
@@ -115,7 +116,16 @@ class GenesisClient:
                 retryable=True,
             ) from exc
 
-        document = response.json()
+        try:
+            document = response.json()
+        except ValueError as exc:
+            raise GenesisClientError(
+                code="GENESIS_INVALID_RESPONSE",
+                message="GENESIS response is not valid JSON.",
+                correlation_id=correlation_id,
+                retryable=False,
+                status_code=response.status_code,
+            ) from exc
         if not isinstance(document, dict):
             raise GenesisClientError(
                 code="GENESIS_INVALID_RESPONSE",
