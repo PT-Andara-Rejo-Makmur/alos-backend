@@ -421,6 +421,44 @@ class EvidenceAuthorityRecord(Base):
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class AuthAccountRecord(Base):
+    __tablename__ = "auth_accounts"
+    __table_args__ = {"schema": "core"}  # noqa: RUF012
+
+    account_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(Text)
+    actor_id: Mapped[str] = mapped_column(String(128), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), index=True)
+    organization_id: Mapped[str] = mapped_column(String(128), index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), index=True)
+    display_name: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class AuthSessionRecord(Base):
+    __tablename__ = "auth_sessions"
+    __table_args__ = {"schema": "core"}  # noqa: RUF012
+
+    session_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    account_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("core.auth_accounts.account_id"),
+        index=True,
+    )
+    actor_id: Mapped[str] = mapped_column(String(128), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), index=True)
+    organization_id: Mapped[str] = mapped_column(String(128), index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), index=True)
+    token_hash: Mapped[str] = mapped_column(Text)
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
 class ReleaseLifecycleEventRecord(Base):
     __tablename__ = "release_lifecycle_events"
     __table_args__ = {"schema": "governance"}  # noqa: RUF012
