@@ -5,8 +5,14 @@ from typing import Annotated
 
 from fastapi import Depends, Request
 
+from alos.agents.registry import AgentRegistry
+from alos.audit import InMemoryAuditRepository
 from alos.authorization import AuthorizationPolicy
+from alos.capabilities.registry import CapabilityRegistry
 from alos.config import Settings, get_settings
+from alos.contracts import CanonicalContractCatalog
+from alos.factory import FactoryOrchestrator
+from alos.identity import DataScope, Principal
 from alos.integrations.genesis import GenesisClient, IntegrationContractValidator
 from alos.security.errors import PlatformError
 from alos.tools.adapters.diagnostic import DiagnosticEchoAdapter
@@ -55,6 +61,74 @@ GenesisClientDependency = Annotated[GenesisClient, Depends(get_genesis_client)]
 IntegrationContractValidatorDependency = Annotated[
     IntegrationContractValidator,
     Depends(get_integration_contract_validator),
+]
+
+
+def get_current_principal(request: Request) -> Principal:
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise PlatformError(
+            "MISSING_TOKEN",
+            "authorization header is required",
+            status_code=401,
+        )
+    token = auth_header.split(" ", 1)[1].strip()
+    payload = request.app.state.auth_service.whoami(token)
+    return Principal(
+        actor_id=str(payload["actor_id"]),
+        tenant_id=str(payload["tenant_id"]),
+        organization_id=str(payload["organization_id"]),
+        workspace_id=str(payload["workspace_id"]),
+        permissions=frozenset(str(item) for item in payload["permissions"]),
+        scopes=frozenset(str(item) for item in payload["scopes"]),
+        roles=frozenset(str(item) for item in payload["roles"]),
+        data_scope=DataScope(str(payload["data_scope"])),
+        active=bool(payload["active"]),
+    )
+
+
+CurrentPrincipalDependency = Annotated[Principal, Depends(get_current_principal)]
+
+
+def get_factory_orchestrator(
+    request: Request,
+    genesis_client: GenesisClientDependency,
+) -> FactoryOrchestrator:
+    contracts_path = request.app.state.settings.ALOS_CONTRACTS_PATH
+    if contracts_path is None:
+        raise PlatformError(
+            "CONTRACTS_NOT_CONFIGURED",
+            "ALOS_CONTRACTS_PATH is required for Factory orchestration.",
+            status_code=503,
+            retryable=False,
+        )
+    if request.app.state.factory_contracts is None:
+        try:
+            contracts = CanonicalContractCatalog(contracts_path)
+        except (OSError, ValueError) as exc:
+            raise PlatformError(
+                "CONTRACTS_UNAVAILABLE",
+                "Canonical Factory contracts could not be loaded.",
+                status_code=503,
+                retryable=False,
+                details={"reason": str(exc)},
+            ) from exc
+        audit = InMemoryAuditRepository()
+        request.app.state.factory_contracts = contracts
+        request.app.state.factory_capability_registry = CapabilityRegistry(contracts, audit)
+        request.app.state.factory_agent_registry = AgentRegistry(contracts, audit)
+        request.app.state.factory_registry_audit = audit
+    return FactoryOrchestrator(
+        contracts=request.app.state.factory_contracts,
+        genesis=genesis_client,
+        capabilities=request.app.state.factory_capability_registry,
+        agents=request.app.state.factory_agent_registry,
+    )
+
+
+FactoryOrchestratorDependency = Annotated[
+    FactoryOrchestrator,
+    Depends(get_factory_orchestrator),
 ]
 
 

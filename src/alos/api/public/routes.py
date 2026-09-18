@@ -5,12 +5,32 @@ from fastapi import APIRouter, Request
 from alos import __version__
 from alos.api.models import SystemInfoResponse
 from alos.authentication.models import AuthTokenResponse, LoginRequest, RegisterRequest
-from alos.dependencies import GenesisClientDependency, IntegrationContractValidatorDependency
+from alos.dependencies import (
+    CurrentPrincipalDependency,
+    FactoryOrchestratorDependency,
+    GenesisClientDependency,
+    IntegrationContractValidatorDependency,
+)
 from alos.integrations.genesis import GenesisClientError, IntegrationContractError
 from alos.observability.correlation import current_correlation_id
 from alos.security.errors import PlatformError
 
 router = APIRouter(prefix="/api/v1", tags=["system"])
+
+
+@router.post("/genesis/factory/analyze", tags=["factory"])
+async def analyze_factory_requirement(
+    payload: dict[str, Any],
+    principal: CurrentPrincipalDependency,
+    orchestrator: FactoryOrchestratorDependency,
+) -> dict[str, Any]:
+    """Resolve a requirement through Backend authority and GENESIS intelligence."""
+
+    return await orchestrator.analyze(
+        payload,
+        principal=principal,
+        correlation_id=current_correlation_id(),
+    )
 
 
 @router.post("/auth/register", status_code=201)

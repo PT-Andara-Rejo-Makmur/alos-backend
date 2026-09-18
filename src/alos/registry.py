@@ -227,6 +227,32 @@ class VersionedContractRegistry:
             raise RegistryAuthorizationError("registry lifecycle is not ACTIVE")
         return RegistryAuthorityView.from_entry(entry).authorize(principal)
 
+    def list_authorized_entries(self, *, principal: Principal | None) -> tuple[RegistryEntry, ...]:
+        """Return immutable ACTIVE entries usable by a Backend-authenticated principal."""
+
+        if principal is None:
+            raise RegistryAuthorizationError("principal is required")
+        authorized: list[RegistryEntry] = []
+        for entry in self._entries.values():
+            if (
+                entry.tenant_id != principal.tenant_id
+                or entry.organization_id != principal.organization_id
+                or entry.workspace_id != principal.workspace_id
+                or entry.state is not RegistryState.ACTIVE
+            ):
+                continue
+            try:
+                RegistryAuthorityView.from_entry(entry).authorize(principal)
+            except RegistryAuthorizationError:
+                continue
+            authorized.append(self._copy_entry(entry))
+        return tuple(
+            sorted(
+                authorized,
+                key=lambda item: (item.subject_id, item.version),
+            )
+        )
+
     async def _transition(
         self,
         tenant_id: str,

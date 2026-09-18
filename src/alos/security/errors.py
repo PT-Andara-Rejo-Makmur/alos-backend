@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
@@ -41,6 +43,18 @@ class PlatformError(Exception):
 
 
 def install_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(RequestValidationError)
+    async def handle_request_validation_error(
+        _request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        problem = ProblemDetail(
+            code="REQUEST_VALIDATION_FAILED",
+            message="Request does not satisfy the API input contract.",
+            correlation_id=current_correlation_id(),
+            details={"errors": jsonable_encoder(exc.errors())},
+        )
+        return JSONResponse(status_code=422, content=problem.model_dump(exclude_none=True))
+
     @app.exception_handler(PlatformError)
     async def handle_platform_error(_request: Request, exc: PlatformError) -> JSONResponse:
         problem = ProblemDetail(

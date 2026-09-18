@@ -37,6 +37,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = resolved
     app.state.started = False
     app.state.auth_service = AuthService()
+    app.state.factory_contracts = None
+    app.state.factory_capability_registry = None
+    app.state.factory_agent_registry = None
+    app.state.factory_registry_audit = None
     app.state.tool_audit_sink = InMemoryToolAuditSink()
     app.state.tool_idempotency_store = InMemoryToolIdempotencyStore()
     app.add_middleware(
