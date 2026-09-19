@@ -13,6 +13,7 @@ from alos.config import Settings, get_settings
 from alos.contracts import CanonicalContractCatalog
 from alos.factory import FactoryOrchestrator
 from alos.identity import DataScope, Principal
+from alos.integrations import ExternalRetrievalService
 from alos.integrations.genesis import GenesisClient, IntegrationContractValidator
 from alos.security.errors import PlatformError
 from alos.tools.adapters.diagnostic import DiagnosticEchoAdapter
@@ -61,6 +62,11 @@ GenesisClientDependency = Annotated[GenesisClient, Depends(get_genesis_client)]
 IntegrationContractValidatorDependency = Annotated[
     IntegrationContractValidator,
     Depends(get_integration_contract_validator),
+]
+
+ExternalRetrievalDependency = Annotated[
+    ExternalRetrievalService,
+    Depends(lambda request: request.app.state.external_retrieval_service),
 ]
 
 

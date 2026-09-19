@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     OTEL_SERVICE_NAME: str = "alos-backend"
     ALOS_CONTRACTS_PATH: Path | None = None
     ENABLE_TEST_TOOLS: bool = False
+    EGRESS_ALLOWED_PROTOCOLS: str = "https"
+    EGRESS_ALLOWED_DOMAINS: str = ""
+    EGRESS_TIMEOUT_SECONDS: float = Field(default=10.0, gt=0, le=120)
+    EGRESS_MAX_RESPONSE_BYTES: int = Field(default=1_000_000, gt=0, le=50_000_000)
+    EGRESS_ALLOWED_CONTENT_TYPES: str = (
+        "application/json,text/plain,text/html,application/xml"
+    )
+    EGRESS_BLOCK_PRIVATE_NETWORKS: bool = True
 
     @field_validator("DATABASE_URL")
     @classmethod
@@ -51,6 +59,22 @@ class Settings(BaseSettings):
             for origin in self.CORS_ALLOWED_ORIGINS.split(",")
             if origin.strip()
         ]
+
+    @staticmethod
+    def _csv(value: str) -> frozenset[str]:
+        return frozenset(item.strip().lower() for item in value.split(",") if item.strip())
+
+    @property
+    def egress_allowed_protocols(self) -> frozenset[str]:
+        return self._csv(self.EGRESS_ALLOWED_PROTOCOLS)
+
+    @property
+    def egress_allowed_domains(self) -> frozenset[str]:
+        return self._csv(self.EGRESS_ALLOWED_DOMAINS)
+
+    @property
+    def egress_allowed_content_types(self) -> frozenset[str]:
+        return self._csv(self.EGRESS_ALLOWED_CONTENT_TYPES)
 
     @field_validator("ENABLE_TEST_TOOLS")
     @classmethod
