@@ -22,8 +22,18 @@ class PermissionRegistry:
         self._grants: dict[tuple[str, str, str], RoleGrant] = {}
 
     def register(self, grant: RoleGrant) -> None:
+        """Register an authoritative role grant.
+
+        Re-registering the exact same grant is idempotent so that several
+        members of the same organization can share a role. A grant that would
+        silently change existing authority for the same role is still refused.
+        """
+
         key = (grant.tenant_id, grant.organization_id, grant.role_id)
-        if key in self._grants:
+        existing = self._grants.get(key)
+        if existing is not None:
+            if existing == grant:
+                return
             raise PermissionConflictError("role grant already exists")
         self._grants[key] = grant
 

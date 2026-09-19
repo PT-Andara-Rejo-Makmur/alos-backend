@@ -73,6 +73,7 @@ class FactoryOrchestrator:
         internal_request: dict[str, Any] = {
             "requirement": {
                 "execution_context": self._execution_context(principal, correlation_id),
+                "requirement_id": f"req_{correlation_id}",
                 "statement": public_request["requirement"],
             },
             "capability_catalog": list(
@@ -119,6 +120,8 @@ class FactoryOrchestrator:
 
         resolution = validated_result["resolution"]
         decision = resolution["decision"]
+        self._require_requirement_linkage(resolution, correlation_id)
+        self._fail_closed_on_ambiguity(resolution, correlation_id)
         if decision == "REUSE":
             response = {
                 "correlation_id": correlation_id,
@@ -139,6 +142,7 @@ class FactoryOrchestrator:
                 status_code=502,
                 correlation_id=correlation_id,
             )
+        self._require_human_gate(capability_draft, correlation_id)
         self._require_authority_context(capability_draft, principal, correlation_id)
         self._authorize_draft(capability_draft, principal, correlation_id)
         if capability_draft.get("owner") != principal.actor_id:
@@ -260,6 +264,55 @@ class FactoryOrchestrator:
         }
 
     @staticmethod
+    def _require_requirement_linkage(
+        resolution: Mapping[str, Any], correlation_id: str
+    ) -> None:
+        """Backend-owned requirement_id must be echoed unchanged by GENESIS."""
+
+        expected = f"req_{correlation_id}"
+        understanding = resolution.get("understanding")
+        supplied = understanding.get("requirement_id") if isinstance(understanding, dict) else None
+        if supplied is not None and supplied != expected:
+            raise PlatformError(
+                "GENESIS_FACTORY_RESPONSE_INVALID",
+                "GENESIS altered the Backend-owned requirement linkage.",
+                status_code=502,
+                correlation_id=correlation_id,
+            )
+
+    @staticmethod
+    def _fail_closed_on_ambiguity(
+        resolution: Mapping[str, Any], correlation_id: str
+    ) -> None:
+        """An ambiguous requirement is a needs-info state; no authority or state is created."""
+
+        understanding = resolution.get("understanding")
+        ambiguity = understanding.get("ambiguity") if isinstance(understanding, dict) else None
+        if ambiguity == "NEEDS_CLARIFICATION":
+            raise PlatformError(
+                "REQUIREMENT_AMBIGUOUS",
+                (
+                    "The requirement needs more information before a capability proposal "
+                    "can be governed."
+                ),
+                status_code=422,
+                details={"ambiguity": ambiguity},
+                correlation_id=correlation_id,
+            )
+
+    @staticmethod
+    def _require_human_gate(draft: Mapping[str, Any], correlation_id: str) -> None:
+        """Backend governance mandates the human gate; AI proposals cannot remove it."""
+
+        if draft.get("human_gate_required") is False:
+            raise PlatformError(
+                "GENESIS_HUMAN_GATE_REQUIRED",
+                "Backend governance requires a human gate; the proposal cannot remove it.",
+                status_code=502,
+                correlation_id=correlation_id,
+            )
+
+    @staticmethod
     def _require_authority_context(
         draft: Mapping[str, Any], principal: Principal, correlation_id: str
     ) -> None:
@@ -328,6 +381,8 @@ class FactoryOrchestrator:
                 "prohibited_actions": draft["prohibited_actions"],
                 "evidence_requirements": draft["evidence_requirements"],
                 "test_requirements": draft["test_requirements"],
+                "human_gate_required": True,
+                "dependency_refs": list(draft.get("dependency_refs", [])),
             },
         }
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -11,6 +12,24 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from alos.observability.correlation import current_correlation_id
+
+_CORRELATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
+
+
+def _safe_correlation_id(request: Request) -> str:
+    """Resolve a correlation id for an error response without reflecting garbage.
+
+    The generic handler runs in ServerErrorMiddleware, which sits outside the
+    correlation middleware; the request context is already unwound there, so the
+    propagated header is used as a sanitized fallback.
+    """
+
+    raw = request.headers.get("X-Correlation-ID")
+    if isinstance(raw, str):
+        candidate = raw.strip()
+        if _CORRELATION_ID_PATTERN.match(candidate):
+            return candidate
+    return current_correlation_id()
 
 
 class ProblemDetail(BaseModel):
@@ -68,3 +87,20 @@ def install_error_handlers(app: FastAPI) -> None:
             status_code=exc.status_code,
             content=problem.model_dump(exclude_none=True),
         )
+
+    @app.exception_handler(Exception)
+    async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
+        """Fail closed: internal failures never disclose SQL, stack traces, schema,
+        credentials, or secrets to consumers."""
+
+        del exc  # intentionally not serialized; see the frozen error contract
+        problem = ProblemDetail(
+            code="INTERNAL_PROCESSING_FAILURE",
+            message=(
+                "The request could not be completed safely. "
+                "No internal details are disclosed."
+            ),
+            correlation_id=_safe_correlation_id(request),
+            retryable=False,
+        )
+        return JSONResponse(status_code=500, content=problem.model_dump(exclude_none=True))

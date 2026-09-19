@@ -6,6 +6,7 @@ from alos import __version__
 from alos.api.models import SystemInfoResponse
 from alos.authentication.models import AuthTokenResponse, LoginRequest, RegisterRequest
 from alos.dependencies import (
+    CapabilityRegistryDependency,
     CurrentPrincipalDependency,
     FactoryOrchestratorDependency,
     GenesisClientDependency,
@@ -13,9 +14,52 @@ from alos.dependencies import (
 )
 from alos.integrations.genesis import GenesisClientError, IntegrationContractError
 from alos.observability.correlation import current_correlation_id
+from alos.registry_contracts import RegistryAuthorizationError
 from alos.security.errors import PlatformError
 
 router = APIRouter(prefix="/api/v1", tags=["system"])
+
+
+@router.get("/capabilities/{capability_id}", tags=["capabilities"])
+async def get_capability_detail(
+    capability_id: str,
+    principal: CurrentPrincipalDependency,
+    capabilities: CapabilityRegistryDependency,
+) -> dict[str, Any]:
+    """Return the authoritative, authorized CapabilityDetail projection.
+
+    A DRAFT is visible only to its creator; other consumers only receive
+    authorized ACTIVE versions. Every other lifecycle state fails closed.
+    """
+
+    try:
+        return capabilities.detail(
+            tenant_id=principal.tenant_id,
+            workspace_id=principal.workspace_id,
+            capability_id=capability_id,
+            principal=principal,
+        )
+    except LookupError as exc:
+        raise PlatformError(
+            "CAPABILITY_NOT_FOUND",
+            "The requested capability version is not available to this principal.",
+            status_code=404,
+            correlation_id=current_correlation_id(),
+        ) from exc
+    except RegistryAuthorizationError as exc:
+        raise PlatformError(
+            "CAPABILITY_NOT_AUTHORIZED",
+            "The principal lacks the authority required by this capability version.",
+            status_code=403,
+            correlation_id=current_correlation_id(),
+        ) from exc
+    except ValueError as exc:
+        raise PlatformError(
+            "CAPABILITY_DETAIL_INVALID",
+            "Capability detail projection failed contract validation.",
+            status_code=500,
+            correlation_id=current_correlation_id(),
+        ) from exc
 
 
 @router.post("/genesis/factory/analyze", tags=["factory"])

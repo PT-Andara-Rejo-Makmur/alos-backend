@@ -132,6 +132,49 @@ FactoryOrchestratorDependency = Annotated[
 ]
 
 
+def get_capability_registry(request: Request) -> CapabilityRegistry:
+    """Shared lazy capability authority state; identical wiring to the Factory orchestrator."""
+
+    contracts_path = request.app.state.settings.ALOS_CONTRACTS_PATH
+    if contracts_path is None:
+        raise PlatformError(
+            "CONTRACTS_NOT_CONFIGURED",
+            "ALOS_CONTRACTS_PATH is required for capability governance.",
+            status_code=503,
+            retryable=False,
+        )
+    if request.app.state.factory_capability_registry is None:
+        try:
+            contracts = CanonicalContractCatalog(contracts_path)
+        except (OSError, ValueError) as exc:
+            raise PlatformError(
+                "CONTRACTS_UNAVAILABLE",
+                "Canonical capability contracts could not be loaded.",
+                status_code=503,
+                retryable=False,
+                details={"reason": str(exc)},
+            ) from exc
+        audit = InMemoryAuditRepository()
+        request.app.state.factory_contracts = contracts
+        request.app.state.factory_capability_registry = CapabilityRegistry(contracts, audit)
+        request.app.state.factory_agent_registry = AgentRegistry(contracts, audit)
+        request.app.state.factory_registry_audit = audit
+    registry = request.app.state.factory_capability_registry
+    if not isinstance(registry, CapabilityRegistry):
+        raise PlatformError(
+            "CAPABILITY_REGISTRY_UNAVAILABLE",
+            "The authoritative capability registry is not available.",
+            status_code=503,
+        )
+    return registry
+
+
+CapabilityRegistryDependency = Annotated[
+    CapabilityRegistry,
+    Depends(get_capability_registry),
+]
+
+
 def get_tool_contract_validator(request: Request) -> JsonSchemaToolContractValidator:
     contracts_path = request.app.state.settings.ALOS_CONTRACTS_PATH
     if contracts_path is None:
