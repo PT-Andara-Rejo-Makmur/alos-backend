@@ -47,6 +47,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.factory_agent_registry = None
     app.state.factory_registry_audit = None
     app.state.external_retrieval_audit = InMemoryAuditRepository()
+    app.state.research_audit = InMemoryAuditRepository()
     app.state.external_retrieval_service = ExternalRetrievalService(
         policy=ExternalRetrievalPolicy(
             allowed_protocols=resolved.egress_allowed_protocols,
@@ -65,7 +66,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_origins=resolved.cors_allowed_origins,
         allow_credentials=False,
         allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Accept", "Content-Type", "X-Correlation-ID"],
+        allow_headers=["Accept", "Authorization", "Content-Type", "X-Correlation-ID"],
         expose_headers=["X-Correlation-ID"],
     )
     app.add_middleware(CorrelationIdMiddleware)

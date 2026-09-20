@@ -2,7 +2,9 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+from alos.research import ResearchDomain, ResearchSourceMode
 
 
 class HealthResponse(BaseModel):
@@ -23,3 +25,10 @@ class SystemInfoResponse(BaseModel):
     version: str
     environment: str
     authority: Literal["ALOS_BACKEND"] = "ALOS_BACKEND"
+
+
+class ResearchRequestBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    question: str = Field(min_length=10, max_length=10_000)
+    source_mode: ResearchSourceMode
+    domain: ResearchDomain

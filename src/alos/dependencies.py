@@ -15,6 +15,7 @@ from alos.factory import FactoryOrchestrator
 from alos.identity import DataScope, Principal
 from alos.integrations import ExternalRetrievalService
 from alos.integrations.genesis import GenesisClient, IntegrationContractValidator
+from alos.research import ResearchService
 from alos.security.errors import PlatformError
 from alos.tools.adapters.diagnostic import DiagnosticEchoAdapter
 from alos.tools.contracts import JsonSchemaToolContractValidator
@@ -94,6 +95,46 @@ def get_current_principal(request: Request) -> Principal:
 
 
 CurrentPrincipalDependency = Annotated[Principal, Depends(get_current_principal)]
+
+
+def get_contract_catalog(request: Request) -> CanonicalContractCatalog:
+    contracts_path = request.app.state.settings.ALOS_CONTRACTS_PATH
+    if contracts_path is None:
+        raise PlatformError(
+            "CONTRACTS_NOT_CONFIGURED",
+            "ALOS_CONTRACTS_PATH is required for governed API contracts.",
+            status_code=503,
+        )
+    try:
+        return CanonicalContractCatalog(contracts_path)
+    except (OSError, ValueError) as exc:
+        raise PlatformError(
+            "CONTRACTS_UNAVAILABLE",
+            "Canonical contracts could not be loaded.",
+            status_code=503,
+            details={"reason": str(exc)},
+        ) from exc
+
+
+ContractCatalogDependency = Annotated[
+    CanonicalContractCatalog,
+    Depends(get_contract_catalog),
+]
+
+
+def get_research_service(
+    request: Request,
+    contracts: ContractCatalogDependency,
+    genesis_client: GenesisClientDependency,
+) -> ResearchService:
+    return ResearchService(
+        contracts=contracts,
+        genesis=genesis_client,
+        audit=request.app.state.research_audit,
+    )
+
+
+ResearchServiceDependency = Annotated[ResearchService, Depends(get_research_service)]
 
 
 def get_factory_orchestrator(

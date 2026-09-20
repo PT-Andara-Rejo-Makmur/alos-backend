@@ -3,21 +3,73 @@ from typing import Any
 from fastapi import APIRouter, Request
 
 from alos import __version__
-from alos.api.models import SystemInfoResponse
+from alos.api.models import ResearchRequestBody, SystemInfoResponse
 from alos.authentication.models import AuthTokenResponse, LoginRequest, RegisterRequest
+from alos.context import build_context_projection
 from alos.dependencies import (
     CapabilityRegistryDependency,
+    ContractCatalogDependency,
     CurrentPrincipalDependency,
     FactoryOrchestratorDependency,
     GenesisClientDependency,
     IntegrationContractValidatorDependency,
+    ResearchServiceDependency,
 )
 from alos.integrations.genesis import GenesisClientError, IntegrationContractError
 from alos.observability.correlation import current_correlation_id
 from alos.registry_contracts import RegistryAuthorizationError
+from alos.research import ResearchCommand, project_domain_access
 from alos.security.errors import PlatformError
 
 router = APIRouter(prefix="/api/v1", tags=["system"])
+
+CONTEXT_PROJECTION_SCHEMA = (
+    "https://schemas.alos.dev/v1/context/context-projection.schema.json"
+)
+DOMAIN_ACCESS_SCHEMA = (
+    "https://schemas.alos.dev/v1/research/domain-access-response.schema.json"
+)
+
+
+@router.get("/genesis/context-options", tags=["context"])
+async def get_context_projection(
+    principal: CurrentPrincipalDependency,
+    contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    projection = build_context_projection(
+        principal,
+        correlation_id=current_correlation_id(),
+    )
+    return contracts.validate(CONTEXT_PROJECTION_SCHEMA, projection)
+
+
+@router.get("/research/domain-access", tags=["research"])
+async def get_research_domain_access(
+    principal: CurrentPrincipalDependency,
+    contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    projection = project_domain_access(
+        principal,
+        correlation_id=current_correlation_id(),
+    )
+    return contracts.validate(DOMAIN_ACCESS_SCHEMA, projection)
+
+
+@router.post("/research/requests", tags=["research"])
+async def request_research(
+    payload: ResearchRequestBody,
+    principal: CurrentPrincipalDependency,
+    research: ResearchServiceDependency,
+) -> dict[str, Any]:
+    return await research.request(
+        ResearchCommand(
+            question=payload.question,
+            source_mode=payload.source_mode,
+            domain=payload.domain,
+        ),
+        principal=principal,
+        correlation_id=current_correlation_id(),
+    )
 
 
 @router.get("/capabilities/{capability_id}", tags=["capabilities"])
