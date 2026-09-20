@@ -6,9 +6,11 @@ from typing import Any
 
 import httpx
 import pytest
+from fastapi import FastAPI
 
 from alos.config import Settings
 from alos.dependencies import get_genesis_client
+from alos.integrations import ExternalRetrievalError
 from alos.main import create_app
 
 WORKSPACE = Path(__file__).resolve().parents[3]
@@ -47,7 +49,7 @@ async def _client_with_principal(
     *,
     permissions: list[str],
     scopes: list[str],
-) -> tuple[httpx.AsyncClient, ResearchGenesisStub, str]:
+) -> tuple[httpx.AsyncClient, ResearchGenesisStub, str, FastAPI]:
     settings = Settings(
         _env_file=None,
         APP_ENV="test",
@@ -82,12 +84,12 @@ async def _client_with_principal(
         "/api/v1/auth/login",
         json={"email": "research@andara.local", "password": "StrongPass!123"},
     )
-    return client, genesis, str(login.json()["access_token"])
+    return client, genesis, str(login.json()["access_token"]), app
 
 
 @pytest.mark.asyncio
 async def test_context_and_domain_access_are_backend_authoritative_projections() -> None:
-    client, _genesis, token = await _client_with_principal(
+    client, _genesis, token, _app = await _client_with_principal(
         permissions=["research.request", "admin"],
         scopes=["research.technology"],
     )
@@ -116,7 +118,7 @@ async def test_context_and_domain_access_are_backend_authoritative_projections()
 
 @pytest.mark.asyncio
 async def test_external_research_preserves_correlation_and_backend_authority() -> None:
-    client, genesis, token = await _client_with_principal(
+    client, genesis, token, app = await _client_with_principal(
         permissions=["research.request", "research.external.read"],
         scopes=["research.technology", "scope.sources.external_read"],
     )
@@ -154,11 +156,26 @@ async def test_external_research_preserves_correlation_and_backend_authority() -
         "scope.sources.external_read",
     ]
     assert execution_context["authority_context"]["authority_level"] == "REQUESTER"
+    assert execution_context["tenant_id"] == "tenant_research"
+    assert execution_context["organization_id"] == "org_research"
+    assert execution_context["workspace_id"] == "workspace_research"
+
+    events = app.state.research_audit.list_events(
+        tenant_id="tenant_research",
+        workspace_id="workspace_research",
+    )
+    assert len(events) == 1
+    assert events[0].outcome == "SUCCESS"
+    assert events[0].correlation_id == "corr_research_external_001"
+    assert events[0].metadata == {
+        "domain": "TECHNOLOGY",
+        "decision": "REQUEST_EXTERNAL_RESEARCH",
+    }
 
 
 @pytest.mark.asyncio
 async def test_research_denial_is_fail_closed_before_genesis() -> None:
-    client, genesis, token = await _client_with_principal(
+    client, genesis, token, app = await _client_with_principal(
         permissions=["research.request"],
         scopes=["research.technology"],
     )
@@ -182,11 +199,19 @@ async def test_research_denial_is_fail_closed_before_genesis() -> None:
     assert response.json()["code"] == "RESEARCH_SCOPE_DENIED"
     assert response.json()["correlation_id"] == "corr_research_denied_001"
     assert genesis.received is None
+    events = app.state.research_audit.list_events(
+        tenant_id="tenant_research",
+        workspace_id="workspace_research",
+    )
+    assert len(events) == 1
+    assert events[0].outcome == "DENIED"
+    assert events[0].correlation_id == "corr_research_denied_001"
+    assert events[0].metadata["decision"] == "SCOPE_DENIED"
 
 
 @pytest.mark.asyncio
 async def test_browser_preflight_allows_authorization_header() -> None:
-    client, _genesis, _token = await _client_with_principal(
+    client, _genesis, _token, _app = await _client_with_principal(
         permissions=["research.request"],
         scopes=["research.technology"],
     )
@@ -206,3 +231,99 @@ async def test_browser_preflight_allows_authorization_header() -> None:
     allowed = response.headers["access-control-allow-headers"].lower()
     assert "authorization" in allowed
     assert "x-correlation-id" in allowed
+
+
+@pytest.mark.asyncio
+async def test_external_research_private_url_is_blocked_and_audited_incrementally() -> None:
+    client, genesis, token, app = await _client_with_principal(
+        permissions=["research.request", "research.external.read"],
+        scopes=["research.technology", "scope.sources.external_read"],
+    )
+    correlation_id = "corr_shared_private_egress_001"
+    try:
+        decision = await client.post(
+            "/api/v1/research/requests",
+            json={
+                "question": "Periksa sumber eksternal untuk teknologi operasional terbaru.",
+                "source_mode": "EXTERNAL",
+                "domain": "TECHNOLOGY",
+            },
+            headers={
+                "Authorization": f"Bearer {token}",
+                "X-Correlation-ID": correlation_id,
+            },
+        )
+        assert decision.status_code == 200
+        assert decision.json()["decision"] == "REQUEST_EXTERNAL_RESEARCH"
+        assert genesis.received is not None
+
+        with pytest.raises(ExternalRetrievalError) as raised:
+            await app.state.external_retrieval_service.retrieve(
+                "https://127.0.0.1/private-evidence",
+                tenant_id="tenant_research",
+                organization_id="org_research",
+                workspace_id="workspace_research",
+                actor_id="actor_research",
+                correlation_id=correlation_id,
+                scope_refs=frozenset({"scope.sources.external_read"}),
+            )
+    finally:
+        await client.aclose()
+
+    assert raised.value.code == "EGRESS_PRIVATE_NETWORK_BLOCKED"
+    research_events = app.state.research_audit.list_events(
+        tenant_id="tenant_research",
+        workspace_id="workspace_research",
+    )
+    retrieval_events = app.state.external_retrieval_audit.list_events(
+        tenant_id="tenant_research",
+        workspace_id="workspace_research",
+    )
+    assert research_events[0].correlation_id == correlation_id
+    assert research_events[0].outcome == "SUCCESS"
+    assert retrieval_events[0].correlation_id == correlation_id
+    assert retrieval_events[0].outcome == "BLOCKED"
+    assert retrieval_events[0].metadata["code"] == "EGRESS_PRIVATE_NETWORK_BLOCKED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("tenant_id", "tenant_attacker"),
+        ("workspace_id", "workspace_attacker"),
+        ("scope_refs", ["research.property_market"]),
+        ("permission_refs", ["research.external.read", "admin"]),
+    ],
+)
+async def test_public_research_request_cannot_expand_backend_authority(
+    field: str,
+    value: object,
+) -> None:
+    client, genesis, token, _app = await _client_with_principal(
+        permissions=["research.request"],
+        scopes=["research.technology"],
+    )
+    correlation_id = f"corr_shared_injection_{field}"
+    payload: dict[str, object] = {
+        "question": "Gunakan hanya authority yang diterbitkan Backend untuk riset ini.",
+        "source_mode": "INTERNAL",
+        "domain": "TECHNOLOGY",
+        field: value,
+    }
+    try:
+        response = await client.post(
+            "/api/v1/research/requests",
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "X-Correlation-ID": correlation_id,
+            },
+        )
+    finally:
+        await client.aclose()
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "REQUEST_VALIDATION_FAILED"
+    assert response.json()["correlation_id"] == correlation_id
+    assert genesis.received is None
