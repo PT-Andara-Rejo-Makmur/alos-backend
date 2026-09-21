@@ -84,6 +84,8 @@ class IdentityDirectory:
             scopes=membership.scopes,
             roles=membership.roles,
             data_scope=membership.data_scope,
+            division_id=membership.division_id,
+            project_id=membership.project_id,
         )
 
     @staticmethod

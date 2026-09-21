@@ -51,6 +51,8 @@ class AuthService:
         tenant_id = str(payload.get("tenant_id") or "tenant_default")
         organization_id = str(payload.get("organization_id") or "org_default")
         workspace_id = str(payload.get("workspace_id") or "workspace_default")
+        division_id = (payload.get("division_id") or None)
+        project_id = (payload.get("project_id") or None)
         display_name = str(payload.get("display_name") or email.split("@", 1)[0])
         roles = frozenset(str(item) for item in payload.get("roles", []))
         permissions = frozenset(str(item) for item in payload.get("permissions", []))
@@ -91,6 +93,8 @@ class AuthService:
                     tenant_id=tenant_id,
                     organization_id=organization_id,
                     display_name=display_name,
+                    division_id=str(division_id) if division_id is not None else None,
+                    project_id=str(project_id) if project_id is not None else None,
                 )
             )
         except IdentityConflictError as exc:
@@ -112,6 +116,8 @@ class AuthService:
                     permissions=permissions,
                     scopes=scopes,
                     data_scope=DataScope(data_scope_value),
+                    division_id=str(division_id) if division_id is not None else None,
+                    project_id=str(project_id) if project_id is not None else None,
                 )
             )
         except (IdentityConflictError, ValueError) as exc:
@@ -249,6 +255,8 @@ class AuthService:
             "tenant_id": principal.tenant_id,
             "organization_id": principal.organization_id,
             "workspace_id": principal.workspace_id,
+            "division_id": principal.division_id,
+            "project_id": principal.project_id,
             "permissions": sorted(principal.permissions),
             "scopes": sorted(principal.scopes),
             "roles": sorted(principal.roles),

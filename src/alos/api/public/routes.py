@@ -6,6 +6,8 @@ from alos import __version__
 from alos.api.models import ResearchRequestBody, SystemInfoResponse
 from alos.authentication.models import AuthTokenResponse, LoginRequest, RegisterRequest
 from alos.context import build_context_projection
+from alos.skills.models import SkillAssignmentRequest
+from alos.context.bundle import ContextBuildRequest, ContextBundleBuilder
 from alos.dependencies import (
     CapabilityRegistryDependency,
     ContractCatalogDependency,
@@ -14,6 +16,7 @@ from alos.dependencies import (
     GenesisClientDependency,
     IntegrationContractValidatorDependency,
     ResearchServiceDependency,
+    SkillServiceDependency,
 )
 from alos.integrations.genesis import GenesisClientError, IntegrationContractError
 from alos.observability.correlation import current_correlation_id
@@ -36,10 +39,27 @@ async def get_context_projection(
     principal: CurrentPrincipalDependency,
     contracts: ContractCatalogDependency,
 ) -> dict[str, Any]:
+    bundle = ContextBundleBuilder().build(
+        principal,
+        request=ContextBuildRequest(
+            goal="context_projection",
+            capability_ids=(),
+            tool_ids=(),
+            budget_hint=0,
+            token_hint=0,
+        ),
+        correlation_id=current_correlation_id(),
+    )
     projection = build_context_projection(
         principal,
         correlation_id=current_correlation_id(),
     )
+    projection["division_id"] = bundle.division_id
+    projection["project_id"] = bundle.project_id
+    projection["allowed_capabilities"] = list(bundle.allowed_capabilities)
+    projection["allowed_tools"] = list(bundle.allowed_tools)
+    projection["budget"] = bundle.budget
+    projection["token_limit"] = bundle.token_limit
     return contracts.validate(CONTEXT_PROJECTION_SCHEMA, projection)
 
 
@@ -53,6 +73,55 @@ async def get_research_domain_access(
         correlation_id=current_correlation_id(),
     )
     return contracts.validate(DOMAIN_ACCESS_SCHEMA, projection)
+
+
+@router.get("/skills", tags=["skills"])
+async def list_skills(
+    principal: CurrentPrincipalDependency,
+    skills: SkillServiceDependency,
+) -> dict[str, Any]:
+    return {"skills": skills.list_skills(principal=principal)}
+
+
+@router.get("/skills/{skill_id}", tags=["skills"])
+async def get_skill_detail(
+    skill_id: str,
+    principal: CurrentPrincipalDependency,
+    skills: SkillServiceDependency,
+) -> dict[str, Any]:
+    return skills.get_skill(principal=principal, skill_id=skill_id)
+
+
+@router.get("/skills/{skill_id}/versions", tags=["skills"])
+async def get_skill_versions(
+    skill_id: str,
+    principal: CurrentPrincipalDependency,
+    skills: SkillServiceDependency,
+) -> dict[str, Any]:
+    return {"skill_id": skill_id, "versions": skills.get_versions(principal=principal, skill_id=skill_id)}
+
+
+@router.get("/agents/{agent_id}/skills", tags=["skills"])
+async def list_agent_skills(
+    agent_id: str,
+    principal: CurrentPrincipalDependency,
+    skills: SkillServiceDependency,
+) -> dict[str, Any]:
+    return {"agent_id": agent_id, "skills": skills.list_agent_skills(principal=principal, agent_id=agent_id)}
+
+
+@router.post("/skills/assign", tags=["skills"])
+async def assign_skill(
+    payload: SkillAssignmentRequest,
+    principal: CurrentPrincipalDependency,
+    skills: SkillServiceDependency,
+) -> dict[str, Any]:
+    response = await skills.assign_skill(
+        request=payload,
+        principal=principal,
+        correlation_id=current_correlation_id(),
+    )
+    return response.model_dump()
 
 
 @router.post("/research/requests", tags=["research"])

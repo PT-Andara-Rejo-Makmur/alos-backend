@@ -32,6 +32,8 @@ class Principal:
     scopes: frozenset[str] = field(default_factory=frozenset)
     roles: frozenset[str] = field(default_factory=frozenset)
     data_scope: DataScope = DataScope.OWN_ASSIGNED
+    division_id: str | None = None
+    project_id: str | None = None
     active: bool = True
 
 
@@ -65,6 +67,8 @@ class Actor:
     tenant_id: str
     organization_id: str
     display_name: str
+    division_id: str | None = None
+    project_id: str | None = None
     active: bool = True
 
 
@@ -78,4 +82,6 @@ class Membership:
     permissions: frozenset[str] = field(default_factory=frozenset)
     scopes: frozenset[str] = field(default_factory=frozenset)
     data_scope: DataScope = DataScope.OWN_ASSIGNED
+    division_id: str | None = None
+    project_id: str | None = None
     active: bool = True

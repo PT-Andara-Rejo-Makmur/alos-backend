@@ -33,6 +33,11 @@ class RegistryState(StrEnum):
     RETIRED = "RETIRED"
 
 
+class NullAuditSink:
+    async def append(self, event: Any) -> None:
+        return None
+
+
 class DecisionAuthority(StrEnum):
     IT = "IT"
     DIRECTOR = "DIRECTOR"
@@ -67,14 +72,14 @@ class VersionedContractRegistry:
         id_field: str,
         version_field: str,
         contracts: CanonicalContractCatalog,
-        audit: AuditSink,
+        audit: AuditSink | None = None,
     ) -> None:
         self._subject_type = subject_type
         self._schema_id = schema_id
         self._id_field = id_field
         self._version_field = version_field
         self._contracts = contracts
-        self._audit = audit
+        self._audit = audit or NullAuditSink()
         self._entries: dict[tuple[str, str, str, str], RegistryEntry] = {}
         self._lock = asyncio.Lock()
 
@@ -127,10 +132,16 @@ class VersionedContractRegistry:
         version: str,
         actor_id: str,
         decision_id: str,
-        authority: DecisionAuthority,
+        authority: DecisionAuthority | str,
         correlation_id: str,
     ) -> RegistryEntry:
-        if authority not in {DecisionAuthority.IT, DecisionAuthority.DIRECTOR}:
+        try:
+            resolved_authority = (
+                DecisionAuthority(authority) if isinstance(authority, str) else authority
+            )
+        except ValueError as exc:
+            raise RegistryConflictError("AI recommendation cannot approve a registry version") from exc
+        if resolved_authority not in {DecisionAuthority.IT, DecisionAuthority.DIRECTOR}:
             raise RegistryConflictError("AI recommendation cannot approve a registry version")
         entry = await self._transition(
             tenant_id,
@@ -142,7 +153,7 @@ class VersionedContractRegistry:
             decision_id=decision_id,
             correlation_id=correlation_id,
         )
-        await self._record(entry, actor_id, "registry.version.approved", authority.value)
+        await self._record(entry, actor_id, "registry.version.approved", resolved_authority.value)
         return self._copy_entry(entry)
 
     async def activate(
@@ -292,6 +303,8 @@ class VersionedContractRegistry:
         event_type: str,
         outcome: str,
     ) -> None:
+        if self._audit is None:
+            return
         await self._audit.append(
             AuditEvent(
                 event_type=event_type,

@@ -7,16 +7,20 @@ from fastapi import Depends, Request
 
 from alos.agents.registry import AgentRegistry
 from alos.audit import InMemoryAuditRepository
-from alos.authorization import AuthorizationPolicy
+from alos.authorization import AuthorizationEnforcer, AuthorizationPolicy
 from alos.capabilities.registry import CapabilityRegistry
+from alos.context.bundle import ContextBundleBuilder
 from alos.config import Settings, get_settings
 from alos.contracts import CanonicalContractCatalog
 from alos.factory import FactoryOrchestrator
 from alos.identity import DataScope, Principal
 from alos.integrations import ExternalRetrievalService
 from alos.integrations.genesis import GenesisClient, IntegrationContractValidator
+from alos.permissions import PermissionRegistry
 from alos.research import ResearchService
 from alos.security.errors import PlatformError
+from alos.skills.registry import SkillRegistry
+from alos.skills.service import SkillService
 from alos.tools.adapters.diagnostic import DiagnosticEchoAdapter
 from alos.tools.contracts import JsonSchemaToolContractValidator
 from alos.tools.executor.service import ToolExecutor
@@ -81,6 +85,8 @@ def get_current_principal(request: Request) -> Principal:
         )
     token = auth_header.split(" ", 1)[1].strip()
     payload = request.app.state.auth_service.whoami(token)
+    division_id = (payload.get("division_id") or None)
+    project_id = (payload.get("project_id") or None)
     return Principal(
         actor_id=str(payload["actor_id"]),
         tenant_id=str(payload["tenant_id"]),
@@ -90,11 +96,35 @@ def get_current_principal(request: Request) -> Principal:
         scopes=frozenset(str(item) for item in payload["scopes"]),
         roles=frozenset(str(item) for item in payload["roles"]),
         data_scope=DataScope(str(payload["data_scope"])),
+        division_id=str(division_id) if division_id is not None else None,
+        project_id=str(project_id) if project_id is not None else None,
         active=bool(payload["active"]),
     )
 
 
+def get_authorization_enforcer(request: Request) -> AuthorizationEnforcer:
+    audit = getattr(request.app.state, "authz_audit", None)
+    if audit is None:
+        audit = InMemoryAuditRepository()
+        request.app.state.authz_audit = audit
+    return AuthorizationEnforcer(
+        policy=AuthorizationPolicy(),
+        permissions=PermissionRegistry(),
+        audit=audit,
+    )
+
+
+def get_context_bundle_builder(request: Request) -> ContextBundleBuilder:
+    return ContextBundleBuilder()
+
+
 CurrentPrincipalDependency = Annotated[Principal, Depends(get_current_principal)]
+AuthorizationEnforcerDependency = Annotated[
+    AuthorizationEnforcer, Depends(get_authorization_enforcer)
+]
+ContextBundleBuilderDependency = Annotated[
+    ContextBundleBuilder, Depends(get_context_bundle_builder)
+]
 
 
 def get_contract_catalog(request: Request) -> CanonicalContractCatalog:
@@ -256,6 +286,30 @@ def get_tool_registry(request: Request) -> ToolRegistry:
         )
     )
     return registry
+
+
+def get_skill_service(request: Request) -> SkillService:
+    contracts_path = request.app.state.settings.ALOS_CONTRACTS_PATH
+    if contracts_path is None:
+        raise PlatformError(
+            "CONTRACTS_NOT_CONFIGURED",
+            "ALOS_CONTRACTS_PATH is required for skill governance.",
+            status_code=503,
+        )
+    contracts = CanonicalContractCatalog(contracts_path)
+    registry = getattr(request.app.state, "skill_registry", None)
+    if registry is None:
+        request.app.state.skill_audit = InMemoryAuditRepository()
+        registry = SkillRegistry(contracts, request.app.state.skill_audit)
+        request.app.state.skill_registry = registry
+    audit = getattr(request.app.state, "skill_audit", None)
+    if audit is None:
+        audit = InMemoryAuditRepository()
+        request.app.state.skill_audit = audit
+    return SkillService(registry=registry, audit=audit)
+
+
+SkillServiceDependency = Annotated[SkillService, Depends(get_skill_service)]
 
 
 def get_tool_executor(
