@@ -10,8 +10,14 @@ def build_research_skill_definition(*, version: str = "1.0.0") -> dict[str, obje
         "skill_id": RESEARCH_DOMAIN_SKILL_ID,
         "skill_version": version,
         "name": "Research Domain Skill",
-        "description": "Plan research, select approved evidence sources, and synthesize findings using approved tools only.",
-        "purpose": "Convert a domain question into methodical, evidence-backed research steps under backend authorization.",
+        "description": (
+            "Plan research, select approved evidence sources, and synthesize "
+            "findings using approved tools only."
+        ),
+        "purpose": (
+            "Convert a domain question into methodical, evidence-backed research "
+            "steps under backend authorization."
+        ),
         "when_to_use": [
             "When a user needs structured research synthesis.",
             "When source selection must respect scope and authorization.",
@@ -35,7 +41,15 @@ def build_research_skill_definition(*, version: str = "1.0.0") -> dict[str, obje
             "No direct network access outside approved ToolExecutor routes.",
             "No permission expansion from prompt or AI output.",
         ],
-        "failure_modes": ["Scope mismatch", "Insufficient evidence", "Unauthorized tool invocation"],
-        "escalation": ["Escalate to a human reviewer when scope or evidence is ambiguous."],
-        "evaluation": ["Validate evidence trail and tool usage against authorization rules."],
+        "failure_modes": [
+            "Scope mismatch",
+            "Insufficient evidence",
+            "Unauthorized tool invocation",
+        ],
+        "escalation": [
+            "Escalate to a human reviewer when scope or evidence is ambiguous."
+        ],
+        "evaluation": [
+            "Validate evidence trail and tool usage against authorization rules."
+        ],
     }

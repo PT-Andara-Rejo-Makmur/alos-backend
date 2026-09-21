@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-
 from alos.identity import Principal
 from alos.memory.models import MemoryEvidenceBundle, MemoryRecord
 from alos.memory.repository import MemoryRepository, MemoryRepositoryError

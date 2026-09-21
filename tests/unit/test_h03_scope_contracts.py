@@ -1,4 +1,4 @@
-from alos.context.bundle import ContextBundleBuilder, ContextBuildRequest
+from alos.context.bundle import ContextBuildRequest, ContextBundleBuilder
 from alos.identity import DataScope, Principal
 from alos.sources.requirement import SourceRequirementBuilder
 

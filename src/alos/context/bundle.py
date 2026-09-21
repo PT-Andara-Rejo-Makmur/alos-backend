@@ -115,7 +115,10 @@ class ContextBundleBuilder:
         budget = max(0, request.budget_hint or 0)
         token_limit = max(0, request.token_hint or 0)
 
-        context_id = f"context_{abs(hash((principal.actor_id, tuple(scope_refs), correlation_id))):x}"
+        context_id = (
+            f"context_"
+            f"{abs(hash((principal.actor_id, tuple(scope_refs), correlation_id))):x}"
+        )
         return ContextBundle(
             status="ACTIVE",
             context_id=context_id,

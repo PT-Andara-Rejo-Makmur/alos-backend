@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from alos.audit import AuditEvent, AuditSink, InMemoryAuditRepository
 from alos.identity import DataScope, Principal
@@ -17,7 +17,7 @@ class MemoryRepositoryError(ValueError):
 
 
 class MemoryRepository:
-    _CLASSIFICATION_RANK: dict[str, int] = {
+    _CLASSIFICATION_RANK: ClassVar[dict[str, int]] = {
         "PUBLIC": 0,
         "INTERNAL": 1,
         "CONFIDENTIAL": 2,
@@ -81,9 +81,17 @@ class MemoryRepository:
                 continue
             if not self._classification_allowed(record.classification, principal):
                 continue
-            if record.division_id and principal.division_id and record.division_id != principal.division_id:
+            if (
+                record.division_id
+                and principal.division_id
+                and record.division_id != principal.division_id
+            ):
                 continue
-            if record.project_id and principal.project_id and record.project_id != principal.project_id:
+            if (
+                record.project_id
+                and principal.project_id
+                and record.project_id != principal.project_id
+            ):
                 continue
             if query and query.strip() and not self._query_matches(record, query):
                 continue
@@ -153,7 +161,11 @@ class MemoryRepository:
             run_id=run_id or record.run_id,
             correlation_id=correlation_id or record.correlation_id,
             classification=record.classification,
-            freshness="CURRENT" if record.expires_at is None or record.expires_at > datetime.now(UTC) else "STALE",
+            freshness=(
+                "CURRENT"
+                if record.expires_at is None or record.expires_at > datetime.now(UTC)
+                else "STALE"
+            ),
         )
 
     @staticmethod
@@ -220,4 +232,5 @@ class MemoryRepository:
             except RuntimeError:
                 asyncio.run(result)
             else:
-                asyncio.create_task(result)
+                task = asyncio.create_task(result)
+                _ = task

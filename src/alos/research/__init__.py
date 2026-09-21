@@ -1,4 +1,5 @@
-from alos.research.models import FindingKind, ResearchDomain as ResearchFindingDomain, ResearchFinding, ResearchFindingLineage
+from alos.research.models import FindingKind, ResearchFinding, ResearchFindingLineage
+from alos.research.models import ResearchDomain as ResearchFindingDomain
 from alos.research.service import (
     ResearchCommand,
     ResearchDomain,

@@ -6,7 +6,7 @@ import pytest
 
 from alos.audit import InMemoryAuditRepository
 from alos.identity import DataScope, Principal
-from alos.memory import MemoryRepository, MemoryRecord, MemoryEvidenceBundle
+from alos.memory import MemoryEvidenceBundle, MemoryRecord, MemoryRepository
 from alos.research.models import FindingKind, ResearchFinding
 
 

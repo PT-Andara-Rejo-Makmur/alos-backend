@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 import pytest
@@ -95,7 +94,7 @@ async def test_skill_assignment_rejects_inactive_or_unauthorized_version() -> No
     catalog = CanonicalContractCatalog(CONTRACTS_ROOT)
     registry = SkillRegistry(catalog, None)
     payload = load_skill_payload()
-    draft = await registry.register(
+    await registry.register(
         payload,
         tenant_id="tenant_mvp1_andara",
         organization_id="org_mvp1_andara",
@@ -113,7 +112,7 @@ async def test_skill_assignment_rejects_inactive_or_unauthorized_version() -> No
     )
 
     service = SkillAssignmentService(registry=registry, audit=None)
-    with pytest.raises(ValueError, match="ACTIVE|authorized|version"):
+    with pytest.raises(ValueError, match=r"ACTIVE|authorized|version"):
         await service.assign(
             agent_id="agent_summary",
             skill_id="research.summary",
@@ -123,7 +122,7 @@ async def test_skill_assignment_rejects_inactive_or_unauthorized_version() -> No
             agent_scope=frozenset({"scope.workspace.ops"}),
         )
 
-    with pytest.raises(ValueError, match="version|authorize|Skill"):
+    with pytest.raises(ValueError, match=r"version|authorize|Skill"):
         await service.assign(
             agent_id="agent_summary",
             skill_id="research.summary",

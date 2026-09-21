@@ -140,9 +140,13 @@ class VersionedContractRegistry:
                 DecisionAuthority(authority) if isinstance(authority, str) else authority
             )
         except ValueError as exc:
-            raise RegistryConflictError("AI recommendation cannot approve a registry version") from exc
+            raise RegistryConflictError(
+                "AI recommendation cannot approve a registry version"
+            ) from exc
         if resolved_authority not in {DecisionAuthority.IT, DecisionAuthority.DIRECTOR}:
-            raise RegistryConflictError("AI recommendation cannot approve a registry version")
+            raise RegistryConflictError(
+                "AI recommendation cannot approve a registry version"
+            )
         entry = await self._transition(
             tenant_id,
             workspace_id,

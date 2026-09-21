@@ -9,8 +9,8 @@ from alos.agents.registry import AgentRegistry
 from alos.audit import InMemoryAuditRepository
 from alos.authorization import AuthorizationEnforcer, AuthorizationPolicy
 from alos.capabilities.registry import CapabilityRegistry
-from alos.context.bundle import ContextBundleBuilder
 from alos.config import Settings, get_settings
+from alos.context.bundle import ContextBundleBuilder
 from alos.contracts import CanonicalContractCatalog
 from alos.factory import FactoryOrchestrator
 from alos.identity import DataScope, Principal

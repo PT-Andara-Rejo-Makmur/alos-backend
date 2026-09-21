@@ -49,7 +49,10 @@ class SourceRequirementBuilder:
                 requested_scope=requested_scope,
                 is_valid=False,
                 allows_external_sources=False,
-                reason="Source access requires an active principal with at least one authorized scope.",
+                reason=(
+                    "Source access requires an active principal with at least one "
+                    "authorized scope."
+                ),
             )
 
         if external:

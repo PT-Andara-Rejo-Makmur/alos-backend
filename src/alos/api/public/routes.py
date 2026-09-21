@@ -6,8 +6,6 @@ from alos import __version__
 from alos.api.models import ResearchRequestBody, SystemInfoResponse
 from alos.authentication.models import AuthTokenResponse, LoginRequest, RegisterRequest
 from alos.context import build_context_projection
-from alos.skills.models import SkillAssignmentRequest
-from alos.context.bundle import ContextBuildRequest, ContextBundleBuilder
 from alos.dependencies import (
     CapabilityRegistryDependency,
     ContractCatalogDependency,
@@ -23,6 +21,7 @@ from alos.observability.correlation import current_correlation_id
 from alos.registry_contracts import RegistryAuthorizationError
 from alos.research import ResearchCommand, project_domain_access
 from alos.security.errors import PlatformError
+from alos.skills.models import SkillAssignmentRequest
 
 router = APIRouter(prefix="/api/v1", tags=["system"])
 
@@ -81,7 +80,13 @@ async def get_skill_versions(
     principal: CurrentPrincipalDependency,
     skills: SkillServiceDependency,
 ) -> dict[str, Any]:
-    return {"skill_id": skill_id, "versions": skills.get_versions(principal=principal, skill_id=skill_id)}
+    return {
+        "skill_id": skill_id,
+        "versions": skills.get_versions(
+            principal=principal,
+            skill_id=skill_id,
+        ),
+    }
 
 
 @router.get("/agents/{agent_id}/skills", tags=["skills"])
@@ -90,7 +95,13 @@ async def list_agent_skills(
     principal: CurrentPrincipalDependency,
     skills: SkillServiceDependency,
 ) -> dict[str, Any]:
-    return {"agent_id": agent_id, "skills": skills.list_agent_skills(principal=principal, agent_id=agent_id)}
+    return {
+        "agent_id": agent_id,
+        "skills": skills.list_agent_skills(
+            principal=principal,
+            agent_id=agent_id,
+        ),
+    }
 
 
 @router.post("/skills/assign", tags=["skills"])

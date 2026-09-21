@@ -93,7 +93,9 @@ class SkillAssignmentService:
                 correlation_id=correlation_id,
                 reason="Skill version does not exist or is not registered.",
             )
-            raise SkillAssignmentError("Skill version does not exist or is not registered.") from exc
+            raise SkillAssignmentError(
+                "Skill version does not exist or is not registered."
+            ) from exc
 
         if entry.state is not RegistryState.ACTIVE:
             await self._audit_rejection(
@@ -112,7 +114,7 @@ class SkillAssignmentService:
                 subject_id=skill_id,
                 version=skill_version,
             )
-        except Exception as exc:  # noqa: BLE001 - fail closed for unauthorized access
+        except Exception as exc:
             await self._audit_rejection(
                 principal=principal,
                 agent_id=agent_id,

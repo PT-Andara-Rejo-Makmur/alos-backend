@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from typing import Any
 
 from alos.audit import AuditEvent, AuditSink
 from alos.identity import Principal
-from alos.registry import RegistryNotFoundError, RegistryState
+from alos.registry import RegistryNotFoundError
 from alos.skills.assignment import SkillAssignmentError, SkillAssignmentService
-from alos.skills.models import SkillAssignmentRequest, SkillAssignmentResponse, SkillDetailResponse
+from alos.skills.models import SkillAssignmentRequest, SkillAssignmentResponse
 from alos.skills.registry import SkillRegistry
 
 
@@ -68,8 +67,17 @@ class SkillService:
             for item in entries
         ]
 
-    def get_skill(self, *, principal: Principal, skill_id: str, version: str | None = None) -> dict[str, Any]:
-        target_version = version or self._latest_version(principal=principal, skill_id=skill_id)
+    def get_skill(
+        self,
+        *,
+        principal: Principal,
+        skill_id: str,
+        version: str | None = None,
+    ) -> dict[str, Any]:
+        target_version = version or self._latest_version(
+            principal=principal,
+            skill_id=skill_id,
+        )
         entry = self._registry.get(
             tenant_id=principal.tenant_id,
             workspace_id=principal.workspace_id,
@@ -97,7 +105,7 @@ class SkillService:
     def get_versions(self, *, principal: Principal, skill_id: str) -> list[str]:
         values = [
             entry.version
-            for entry in self._registry._entries.values()  # type: ignore[attr-defined] 
+            for entry in self._registry._entries.values()  # type: ignore[attr-defined]
             if entry.subject_id == skill_id
             and entry.tenant_id == principal.tenant_id
             and entry.workspace_id == principal.workspace_id
