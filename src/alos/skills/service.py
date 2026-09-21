@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from alos.audit import AuditEvent, AuditSink
@@ -47,6 +48,7 @@ class SkillService:
                     actor_id=principal.actor_id,
                     correlation_id=correlation_id,
                     outcome="CREATED",
+                    occurred_at=datetime.now(UTC),
                     reason="Skill definition was registered.",
                     metadata={"version": entry.version},
                 )
@@ -105,7 +107,7 @@ class SkillService:
     def get_versions(self, *, principal: Principal, skill_id: str) -> list[str]:
         values = [
             entry.version
-            for entry in self._registry._entries.values()  # type: ignore[attr-defined]
+            for entry in self._registry._entries.values()
             if entry.subject_id == skill_id
             and entry.tenant_id == principal.tenant_id
             and entry.workspace_id == principal.workspace_id

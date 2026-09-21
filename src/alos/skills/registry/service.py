@@ -18,7 +18,13 @@ class SkillRegistry(VersionedContractRegistry):
             audit=audit,
         )
 
-    def list_active(self, *, tenant_id: str, organization_id: str, workspace_id: str) -> list[dict]:
+    def list_active(
+        self,
+        *,
+        tenant_id: str,
+        organization_id: str,
+        workspace_id: str,
+    ) -> list[dict[str, object]]:
         return [
             dict(entry.payload)
             for entry in self._entries.values()
