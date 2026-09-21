@@ -39,27 +39,10 @@ async def get_context_projection(
     principal: CurrentPrincipalDependency,
     contracts: ContractCatalogDependency,
 ) -> dict[str, Any]:
-    bundle = ContextBundleBuilder().build(
-        principal,
-        request=ContextBuildRequest(
-            goal="context_projection",
-            capability_ids=(),
-            tool_ids=(),
-            budget_hint=0,
-            token_hint=0,
-        ),
-        correlation_id=current_correlation_id(),
-    )
     projection = build_context_projection(
         principal,
         correlation_id=current_correlation_id(),
     )
-    projection["division_id"] = bundle.division_id
-    projection["project_id"] = bundle.project_id
-    projection["allowed_capabilities"] = list(bundle.allowed_capabilities)
-    projection["allowed_tools"] = list(bundle.allowed_tools)
-    projection["budget"] = bundle.budget
-    projection["token_limit"] = bundle.token_limit
     return contracts.validate(CONTEXT_PROJECTION_SCHEMA, projection)
 
 
