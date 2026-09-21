@@ -67,6 +67,11 @@ class SqlAgentRunStore:
 
     @staticmethod
     def _from_row(row: AgentRunRecord) -> AuthoritativeRunRecord:
+        request = cast(dict[str, Any], row.request_payload)
+        authorized_skill_refs = tuple(
+            (str(item["skill_id"]), str(item["skill_version"]))
+            for item in request.get("authorized_skill_refs", [])
+        )
         return AuthoritativeRunRecord(
             run_id=row.run_id,
             root_run_id=row.root_run_id,
@@ -82,7 +87,8 @@ class SqlAgentRunStore:
             registry_digest=row.registry_digest,
             lifecycle_authorization=row.lifecycle_authorization,
             authorized_tool_ids=tuple(row.authorized_tool_ids),
-            request=cast(dict[str, Any], row.request_payload),
+            authorized_skill_refs=authorized_skill_refs,
+            request=request,
             created_at=row.created_at,
             completed_at=row.completed_at,
             result=cast(dict[str, Any] | None, row.result_payload),

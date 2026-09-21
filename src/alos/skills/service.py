@@ -62,18 +62,23 @@ class SkillService:
 
     def list_skills(self, *, principal: Principal) -> list[dict[str, Any]]:
         entries = self._registry.list_authorized_entries(principal=principal)
-        return [
-            {
+        results: list[dict[str, Any]] = []
+        for item in entries:
+            projection = {
                 "skill_id": item.subject_id,
                 "skill_version": item.version,
                 "name": item.payload.get("name"),
                 "description": item.payload.get("description"),
                 "lifecycle_state": item.state.value,
-                "owner_actor_id": item.payload.get("owner_actor_id") or item.created_by,
-                "risk_level": item.payload.get("risk_level"),
             }
-            for item in entries
-        ]
+            owner_actor_id = item.payload.get("owner_actor_id")
+            if owner_actor_id is not None:
+                projection["owner_actor_id"] = owner_actor_id
+            risk_level = item.payload.get("risk_level")
+            if risk_level is not None:
+                projection["risk_level"] = risk_level
+            results.append(projection)
+        return results
 
     def get_skill(
         self,

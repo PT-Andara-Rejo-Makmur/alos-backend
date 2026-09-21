@@ -6,6 +6,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import re
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -445,9 +446,33 @@ class VersionedContractRegistry:
                 raise RegistryConflictError(f"{field_name} does not match authority context")
 
     @staticmethod
-    def _semver(version: str) -> tuple[int, int, int, str]:
-        core, _, suffix = version.partition("-")
-        parts = core.split(".")
-        if len(parts) != 3 or not all(part.isdigit() for part in parts):
+    def _semver(
+        version: str,
+    ) -> tuple[int, int, int, int, tuple[tuple[int, int | str], ...]]:
+        match = re.fullmatch(
+            r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+            r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+            r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?",
+            version,
+        )
+        if match is None:
             raise RegistryConflictError(f"invalid semantic version: {version}")
-        return int(parts[0]), int(parts[1]), int(parts[2]), suffix
+        prerelease = match.group(4)
+        identifiers: list[tuple[int, int | str]] = []
+        if prerelease is not None:
+            for identifier in prerelease.split("."):
+                if identifier.isdigit():
+                    if len(identifier) > 1 and identifier.startswith("0"):
+                        raise RegistryConflictError(
+                            f"invalid semantic version prerelease: {version}"
+                        )
+                    identifiers.append((0, int(identifier)))
+                else:
+                    identifiers.append((1, identifier))
+        return (
+            int(match.group(1)),
+            int(match.group(2)),
+            int(match.group(3)),
+            1 if prerelease is None else 0,
+            tuple(identifiers),
+        )

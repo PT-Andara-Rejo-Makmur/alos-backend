@@ -180,25 +180,12 @@ async def get_factory_orchestrator(
             retryable=False,
         )
     if request.app.state.factory_contracts is None:
-        try:
-            contracts = CanonicalContractCatalog(contracts_path)
-        except (OSError, ValueError) as exc:
-            raise PlatformError(
-                "CONTRACTS_UNAVAILABLE",
-                "Canonical Factory contracts could not be loaded.",
-                status_code=503,
-                retryable=False,
-                details={"reason": str(exc)},
-            ) from exc
-        audit = InMemoryAuditRepository()
-        request.app.state.factory_contracts = contracts
-        request.app.state.factory_capability_registry = CapabilityRegistry(contracts, audit)
-        agent_store = request.app.state.registry_store
-        agents = AgentRegistry(contracts, audit, store=agent_store)
-        await agents.hydrate()
-        request.app.state.factory_agent_registry = agents
-        request.app.state.agent_registry = agents
-        request.app.state.factory_registry_audit = audit
+        raise PlatformError(
+            "CONTRACTS_UNAVAILABLE",
+            "Canonical Factory contracts could not be loaded.",
+            status_code=503,
+            retryable=False,
+        )
     return FactoryOrchestrator(
         contracts=request.app.state.factory_contracts,
         genesis=genesis_client,
@@ -224,22 +211,6 @@ def get_capability_registry(request: Request) -> CapabilityRegistry:
             status_code=503,
             retryable=False,
         )
-    if request.app.state.factory_capability_registry is None:
-        try:
-            contracts = CanonicalContractCatalog(contracts_path)
-        except (OSError, ValueError) as exc:
-            raise PlatformError(
-                "CONTRACTS_UNAVAILABLE",
-                "Canonical capability contracts could not be loaded.",
-                status_code=503,
-                retryable=False,
-                details={"reason": str(exc)},
-            ) from exc
-        audit = InMemoryAuditRepository()
-        request.app.state.factory_contracts = contracts
-        request.app.state.factory_capability_registry = CapabilityRegistry(contracts, audit)
-        request.app.state.factory_agent_registry = AgentRegistry(contracts, audit)
-        request.app.state.factory_registry_audit = audit
     registry = request.app.state.factory_capability_registry
     if not isinstance(registry, CapabilityRegistry):
         raise PlatformError(
@@ -303,25 +274,28 @@ async def get_skill_service(request: Request) -> SkillService:
     existing = getattr(request.app.state, "skill_service", None)
     if isinstance(existing, SkillService):
         return existing
-    contracts = CanonicalContractCatalog(contracts_path)
-    store = request.app.state.registry_store
+    contracts = request.app.state.factory_contracts
+    if not isinstance(contracts, CanonicalContractCatalog):
+        raise PlatformError(
+            "CONTRACTS_UNAVAILABLE",
+            "Canonical skill contracts could not be loaded.",
+            status_code=503,
+        )
     registry = getattr(request.app.state, "skill_registry", None)
-    if registry is None:
-        request.app.state.skill_audit = InMemoryAuditRepository()
-        registry = SkillRegistry(contracts, request.app.state.skill_audit, store=store)
-        await registry.hydrate()
-        request.app.state.skill_registry = registry
+    if not isinstance(registry, SkillRegistry):
+        raise PlatformError(
+            "SKILL_REGISTRY_UNAVAILABLE",
+            "The authoritative Skill Registry is not available.",
+            status_code=503,
+        )
     audit = getattr(request.app.state, "skill_audit", None)
-    if audit is None:
-        audit = InMemoryAuditRepository()
-        request.app.state.skill_audit = audit
     agents = getattr(request.app.state, "agent_registry", None)
-    if agents is None:
-        agents = getattr(request.app.state, "factory_agent_registry", None)
-    if agents is None:
-        agents = AgentRegistry(contracts, audit, store=store)
-        await agents.hydrate()
-        request.app.state.agent_registry = agents
+    if not isinstance(agents, AgentRegistry):
+        raise PlatformError(
+            "AGENT_REGISTRY_UNAVAILABLE",
+            "The shared authoritative Agent Registry is not available.",
+            status_code=503,
+        )
     service = SkillService(registry=registry, agents=agents, audit=audit)
     request.app.state.skill_service = service
     return service

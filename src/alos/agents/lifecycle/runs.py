@@ -11,14 +11,17 @@ from typing import Any, Protocol
 
 from alos.audit import AuditEvent, AuditSink
 from alos.contracts import CanonicalContractCatalog
-from alos.registry import RegistryEntry, RegistryState
+from alos.registry import RegistryEntry, RegistryNotFoundError, RegistryState
+from alos.skills.registry import SkillRegistry
 
 AGENT_RUN_REQUEST_SCHEMA = "https://schemas.alos.dev/v1/agent/agent-run-request.schema.json"
 AGENT_RUN_RESULT_SCHEMA = "https://schemas.alos.dev/v1/agent/agent-run-result.schema.json"
 
 
 class RunAuthorityError(ValueError):
-    pass
+    def __init__(self, message: str, *, code: str = "RUN_NOT_AUTHORIZED") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class AuthoritativeRunStatus(StrEnum):
@@ -45,6 +48,7 @@ class AuthoritativeRunRecord:
     registry_digest: str
     lifecycle_authorization: str
     authorized_tool_ids: tuple[str, ...]
+    authorized_skill_refs: tuple[tuple[str, str], ...]
     request: dict[str, Any]
     created_at: datetime
     completed_at: datetime | None = None
@@ -93,11 +97,13 @@ class AgentRunAuthority:
         *,
         contracts: CanonicalContractCatalog,
         audit: AuditSink,
+        skills: SkillRegistry | None = None,
         allow_test_drafts: bool = False,
         store: AgentRunStore | None = None,
     ) -> None:
         self._contracts = contracts
         self._audit = audit
+        self._skills = skills
         self._allow_test_drafts = allow_test_drafts
         self._store = store or InMemoryAgentRunStore()
 
@@ -116,6 +122,11 @@ class AgentRunAuthority:
         self._require_permissions(context, agent)
         self._require_scope(context, agent)
         self._require_tools(request, agent)
+        authorized_skill_refs = self._authorize_skills(request, context, agent)
+        request["authorized_skill_refs"] = [
+            {"skill_id": skill_id, "skill_version": version}
+            for skill_id, version in authorized_skill_refs
+        ]
         run_id = str(request["run_id"])
         record = AuthoritativeRunRecord(
             run_id=run_id,
@@ -138,6 +149,7 @@ class AgentRunAuthority:
                 for tool_id in request.get("requested_tool_ids", [])
                 if tool_id in agent.payload.get("tool_ids", [])
             ),
+            authorized_skill_refs=authorized_skill_refs,
             request=copy.deepcopy(request),
             created_at=datetime.now(UTC),
         )
@@ -181,7 +193,88 @@ class AgentRunAuthority:
             "registry_digest": record.registry_digest,
             "lifecycle_state": record.lifecycle_authorization,
             "allowed_tool_ids": list(record.authorized_tool_ids),
+            "authorized_skill_refs": [
+                {"skill_id": skill_id, "skill_version": version}
+                for skill_id, version in record.authorized_skill_refs
+            ],
         }
+
+    def _authorize_skills(
+        self,
+        request: dict[str, Any],
+        context: dict[str, Any],
+        agent: RegistryEntry,
+    ) -> tuple[tuple[str, str], ...]:
+        requested = request.get("authorized_skill_refs")
+        raw_refs = agent.payload.get("skill_refs", []) if requested is None else requested
+        agent_refs = {
+            (str(item["skill_id"]), str(item["skill_version"]))
+            for item in agent.payload.get("skill_refs", [])
+        }
+        effective_permissions = frozenset(context.get("permission_refs", [])) & frozenset(
+            agent.payload.get("permission_refs", [])
+        )
+        effective_scopes = frozenset(context.get("scope_refs", [])) & frozenset(
+            agent.payload.get("scope_refs", [])
+        )
+        effective_tools = frozenset(context.get("allowed_tool_ids", [])) & frozenset(
+            agent.payload.get("tool_ids", [])
+        )
+        authorized: list[tuple[str, str]] = []
+        for item in raw_refs:
+            key = (str(item["skill_id"]), str(item["skill_version"]))
+            if key not in agent_refs:
+                raise RunAuthorityError(
+                    "authorized_skill_refs contains a ref outside AgentDefinition.skill_refs",
+                    code="SKILL_REF_NOT_ASSIGNED",
+                )
+            if self._skills is None:
+                raise RunAuthorityError(
+                    "Backend SkillRegistry is required to authorize Agent skills",
+                    code="SKILL_REGISTRY_UNAVAILABLE",
+                )
+            try:
+                skill = self._skills.get(
+                    tenant_id=agent.tenant_id,
+                    workspace_id=agent.workspace_id,
+                    subject_id=key[0],
+                    version=key[1],
+                )
+            except RegistryNotFoundError as exc:
+                raise RunAuthorityError(
+                    "exact SkillDefinition version was not found",
+                    code="SKILL_VERSION_NOT_FOUND",
+                ) from exc
+            if skill.organization_id != agent.organization_id:
+                raise RunAuthorityError(
+                    "SkillDefinition organization does not match AgentDefinition",
+                    code="SKILL_CONTEXT_MISMATCH",
+                )
+            if skill.state is not RegistryState.ACTIVE:
+                raise RunAuthorityError(
+                    "SkillDefinition exact version is not ACTIVE",
+                    code="SKILL_NOT_ACTIVE",
+                )
+            skill_permissions = frozenset(skill.payload.get("permission_refs", []))
+            if not skill_permissions.issubset(effective_permissions):
+                raise RunAuthorityError(
+                    "effective run authority lacks Skill permission prerequisites",
+                    code="SKILL_PERMISSION_MISMATCH",
+                )
+            skill_scopes = frozenset(skill.payload.get("scope_refs", []))
+            if not skill_scopes.issubset(effective_scopes):
+                raise RunAuthorityError(
+                    "effective run authority lacks Skill scope prerequisites",
+                    code="SKILL_SCOPE_MISMATCH",
+                )
+            skill_tools = frozenset(skill.payload.get("required_tool_ids", []))
+            if not skill_tools.issubset(effective_tools):
+                raise RunAuthorityError(
+                    "effective run authority lacks Skill tool prerequisites",
+                    code="SKILL_TOOL_MISMATCH",
+                )
+            authorized.append(key)
+        return tuple(sorted(set(authorized)))
 
     @staticmethod
     def _require_context(
@@ -264,6 +357,10 @@ class AgentRunAuthority:
                     "agent_id": record.agent_id,
                     "agent_version": record.agent_version,
                     "registry_digest": record.registry_digest,
+                    "authorized_skill_refs": [
+                        {"skill_id": skill_id, "skill_version": version}
+                        for skill_id, version in record.authorized_skill_refs
+                    ],
                 },
             )
         )

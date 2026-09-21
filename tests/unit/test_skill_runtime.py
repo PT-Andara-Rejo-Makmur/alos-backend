@@ -360,3 +360,27 @@ async def test_registry_orders_versions_by_semver_not_lexically() -> None:
         workspace_id="workspace_mvp1_ops",
         subject_id="research.summary",
     ) == ("1.9.0", "1.10.0")
+
+
+@pytest.mark.asyncio
+async def test_registry_orders_semver_prereleases_before_release() -> None:
+    catalog = CanonicalContractCatalog(CONTRACTS_ROOT)
+    registry = SkillRegistry(catalog)
+    versions = ("1.0.0", "1.0.0-alpha.2", "1.0.0-alpha", "1.0.0-alpha.1")
+    for version in versions:
+        payload = load_skill_payload()
+        payload["skill_version"] = version
+        await registry.register(
+            payload,
+            tenant_id="tenant_mvp1_andara",
+            organization_id="org_mvp1_andara",
+            workspace_id="workspace_mvp1_ops",
+            actor_id="actor_mvp1_it_lead",
+            correlation_id="corr_semver_prerelease",
+        )
+    assert registry.versions(
+        tenant_id="tenant_mvp1_andara",
+        organization_id="org_mvp1_andara",
+        workspace_id="workspace_mvp1_ops",
+        subject_id="research.summary",
+    ) == ("1.0.0-alpha", "1.0.0-alpha.1", "1.0.0-alpha.2", "1.0.0")

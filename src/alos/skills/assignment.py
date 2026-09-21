@@ -138,6 +138,36 @@ class SkillAssignmentService:
                 "AGENT_SKILL_DUPLICATE",
                 "AgentDefinition already contains this skill reference.",
             )
+        agent_permissions = set(agent.payload.get("permission_refs", []))
+        if not set(skill.permissions).issubset(agent_permissions):
+            await self._record(
+                principal,
+                agent_id,
+                skill_id,
+                skill_version,
+                correlation_id,
+                "REJECTED",
+                "Skill permission prerequisites exceed AgentDefinition permissions.",
+            )
+            raise SkillAssignmentError(
+                "SKILL_PERMISSION_MISMATCH",
+                "Skill permission prerequisites exceed AgentDefinition permissions.",
+            )
+        agent_scopes = set(agent.payload.get("scope_refs", []))
+        if not set(skill.scope).issubset(agent_scopes):
+            await self._record(
+                principal,
+                agent_id,
+                skill_id,
+                skill_version,
+                correlation_id,
+                "REJECTED",
+                "Skill scope prerequisites exceed AgentDefinition scope.",
+            )
+            raise SkillAssignmentError(
+                "SKILL_SCOPE_MISMATCH",
+                "Skill scope prerequisites exceed AgentDefinition scope.",
+            )
         if not set(skill.tools).issubset(set(agent.payload.get("tool_ids", []))):
             await self._record(
                 principal,

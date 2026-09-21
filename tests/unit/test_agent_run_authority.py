@@ -134,6 +134,7 @@ async def test_backend_owns_authoritative_run_lifecycle_and_audit() -> None:
         "registry_digest": agent.digest,
         "lifecycle_state": "ACTIVE",
         "allowed_tool_ids": ["diagnostic.echo"],
+        "authorized_skill_refs": [],
     }
     assert completed.status.value == "COMPLETED"
     run_events = [event.event_type for event in audit.list_events(tenant_id=agent.tenant_id)]

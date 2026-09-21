@@ -28,6 +28,8 @@ router = APIRouter(prefix="/api/v1", tags=["system"])
 
 CONTEXT_PROJECTION_SCHEMA = "https://schemas.alos.dev/v1/context/context-projection.schema.json"
 DOMAIN_ACCESS_SCHEMA = "https://schemas.alos.dev/v1/research/domain-access-response.schema.json"
+SKILL_LIST_SCHEMA = "https://schemas.alos.dev/v1/skill/skill-list-response.schema.json"
+SKILL_DETAIL_SCHEMA = "https://schemas.alos.dev/v1/skill/skill-detail.schema.json"
 
 
 @router.get("/genesis/context-options", tags=["context"])
@@ -58,11 +60,13 @@ async def get_research_domain_access(
 async def list_skills(
     principal: CurrentPrincipalDependency,
     skills: SkillServiceDependency,
+    contracts: ContractCatalogDependency,
 ) -> dict[str, Any]:
-    return {
+    result = {
         "skills": skills.list_skills(principal=principal),
         "correlation_id": current_correlation_id(),
     }
+    return contracts.validate(SKILL_LIST_SCHEMA, result)
 
 
 @router.get("/skills/{skill_id}", tags=["skills"])
@@ -70,8 +74,10 @@ async def get_skill_detail(
     skill_id: str,
     principal: CurrentPrincipalDependency,
     skills: SkillServiceDependency,
+    contracts: ContractCatalogDependency,
 ) -> dict[str, Any]:
-    return skills.get_skill(principal=principal, skill_id=skill_id)
+    result = skills.get_skill(principal=principal, skill_id=skill_id)
+    return contracts.validate(SKILL_DETAIL_SCHEMA, result)
 
 
 @router.get("/skills/{skill_id}/versions", tags=["skills"])

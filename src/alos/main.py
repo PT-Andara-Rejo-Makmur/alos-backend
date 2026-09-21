@@ -6,18 +6,22 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from alos.agents.registry import AgentRegistry
 from alos.api.internal.routes import router as internal_router
 from alos.api.models import HealthResponse, ReadinessResponse
 from alos.api.public.routes import router as public_router
-from alos.audit import InMemoryAuditRepository
+from alos.audit import InMemoryAuditRepository, SqlAuditRepository
 from alos.authentication.service import AuthService
+from alos.capabilities.registry import CapabilityRegistry
 from alos.config import Settings, get_settings
+from alos.contracts import CanonicalContractCatalog
 from alos.integrations import ExternalRetrievalPolicy, ExternalRetrievalService
 from alos.observability.correlation import CorrelationIdMiddleware
 from alos.persistence.database import Database
 from alos.persistence.registry import SqlRegistryStore
 from alos.registry import InMemoryRegistryStore
 from alos.security.errors import install_error_handlers
+from alos.skills.registry import SkillRegistry
 from alos.tools.executor.service import (
     InMemoryToolAuditSink,
     InMemoryToolIdempotencyStore,
@@ -30,6 +34,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.started = True
+        if not app.state.registry_hydrated:
+            if isinstance(app.state.agent_registry, AgentRegistry):
+                await app.state.agent_registry.hydrate()
+            if isinstance(app.state.skill_registry, SkillRegistry):
+                await app.state.skill_registry.hydrate()
+            app.state.registry_hydrated = True
         try:
             yield
         finally:
@@ -52,13 +62,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if resolved.APP_ENV == "test"
         else SqlRegistryStore(app.state.database.session_factory)
     )
-    app.state.factory_contracts = None
-    app.state.factory_capability_registry = None
-    app.state.factory_agent_registry = None
-    app.state.factory_registry_audit = None
-    app.state.skill_registry = None
+    registry_audit = (
+        SqlAuditRepository(app.state.database.session_factory)
+        if resolved.APP_ENV in {"staging", "production"}
+        else InMemoryAuditRepository()
+    )
+    contracts = (
+        CanonicalContractCatalog(resolved.ALOS_CONTRACTS_PATH)
+        if resolved.ALOS_CONTRACTS_PATH is not None
+        else None
+    )
+    agent_registry = (
+        AgentRegistry(contracts, registry_audit, store=app.state.registry_store)
+        if contracts is not None
+        else None
+    )
+    app.state.factory_contracts = contracts
+    app.state.factory_capability_registry = (
+        CapabilityRegistry(contracts, registry_audit) if contracts is not None else None
+    )
+    app.state.factory_agent_registry = agent_registry
+    app.state.factory_registry_audit = registry_audit
+    app.state.skill_registry = (
+        SkillRegistry(contracts, registry_audit, store=app.state.registry_store)
+        if contracts is not None
+        else None
+    )
     app.state.skill_service = None
-    app.state.agent_registry = None
+    app.state.skill_audit = registry_audit
+    app.state.agent_registry = agent_registry
+    app.state.registry_hydrated = False
     app.state.external_retrieval_audit = InMemoryAuditRepository()
     app.state.research_audit = InMemoryAuditRepository()
     app.state.external_retrieval_service = ExternalRetrievalService(

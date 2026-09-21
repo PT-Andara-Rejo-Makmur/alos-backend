@@ -9,7 +9,7 @@ from alos.skills.models import (
     SkillListResponse,
     SkillVersionRef,
 )
-from alos.skills.research import RESEARCH_SKILL_IDS, build_research_skill_definition
+from alos.skills.research import RESEARCH_SKILL_IDS
 from alos.skills.service import SkillService
 
 __all__ = [
@@ -23,5 +23,4 @@ __all__ = [
     "SkillListResponse",
     "SkillService",
     "SkillVersionRef",
-    "build_research_skill_definition",
 ]
