@@ -67,22 +67,17 @@ class CapabilityRegistry(VersionedContractRegistry):
 
         if principal is None:
             raise RegistryAuthorizationError("principal is required")
-        matching = [
-            entry
-            for (entry_tenant, entry_workspace, subject_id, _), entry in self._entries.items()
-            if entry_tenant == tenant_id
-            and entry_workspace == workspace_id
-            and subject_id == capability_id
-            and entry.organization_id == principal.organization_id
-            and (version is None or entry.version == version)
-        ]
+        matching = list(self.list_entries(
+            tenant_id=tenant_id,
+            organization_id=principal.organization_id,
+            workspace_id=workspace_id,
+            subject_id=capability_id,
+        ))
+        if version is not None:
+            matching = [entry for entry in matching if entry.version == version]
         if not matching:
             raise LookupError("capability version was not found in tenant workspace")
-        entry = (
-            max(matching, key=lambda item: _version_key(item.version))
-            if version is None
-            else matching[0]
-        )
+        entry = matching[-1] if version is None else matching[0]
         if entry.state is RegistryState.DRAFT:
             # DRAFT carries no production authority and is visible only to its creator.
             if entry.created_by != principal.actor_id:

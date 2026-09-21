@@ -14,6 +14,9 @@ from alos.authentication.service import AuthService
 from alos.config import Settings, get_settings
 from alos.integrations import ExternalRetrievalPolicy, ExternalRetrievalService
 from alos.observability.correlation import CorrelationIdMiddleware
+from alos.persistence.database import Database
+from alos.persistence.registry import SqlRegistryStore
+from alos.registry import InMemoryRegistryStore
 from alos.security.errors import install_error_handlers
 from alos.tools.executor.service import (
     InMemoryToolAuditSink,
@@ -31,6 +34,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             yield
         finally:
             await app.state.external_retrieval_service.close()
+            await app.state.database.dispose()
             app.state.started = False
 
     app = FastAPI(
@@ -42,10 +46,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = resolved
     app.state.started = False
     app.state.auth_service = AuthService()
+    app.state.database = Database(resolved.DATABASE_URL)
+    app.state.registry_store = (
+        InMemoryRegistryStore()
+        if resolved.APP_ENV == "test"
+        else SqlRegistryStore(app.state.database.session_factory)
+    )
     app.state.factory_contracts = None
     app.state.factory_capability_registry = None
     app.state.factory_agent_registry = None
     app.state.factory_registry_audit = None
+    app.state.skill_registry = None
+    app.state.skill_service = None
+    app.state.agent_registry = None
     app.state.external_retrieval_audit = InMemoryAuditRepository()
     app.state.research_audit = InMemoryAuditRepository()
     app.state.external_retrieval_service = ExternalRetrievalService(

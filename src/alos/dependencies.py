@@ -85,8 +85,8 @@ def get_current_principal(request: Request) -> Principal:
         )
     token = auth_header.split(" ", 1)[1].strip()
     payload = request.app.state.auth_service.whoami(token)
-    division_id = (payload.get("division_id") or None)
-    project_id = (payload.get("project_id") or None)
+    division_id = payload.get("division_id") or None
+    project_id = payload.get("project_id") or None
     return Principal(
         actor_id=str(payload["actor_id"]),
         tenant_id=str(payload["tenant_id"]),
@@ -167,7 +167,7 @@ def get_research_service(
 ResearchServiceDependency = Annotated[ResearchService, Depends(get_research_service)]
 
 
-def get_factory_orchestrator(
+async def get_factory_orchestrator(
     request: Request,
     genesis_client: GenesisClientDependency,
 ) -> FactoryOrchestrator:
@@ -193,7 +193,11 @@ def get_factory_orchestrator(
         audit = InMemoryAuditRepository()
         request.app.state.factory_contracts = contracts
         request.app.state.factory_capability_registry = CapabilityRegistry(contracts, audit)
-        request.app.state.factory_agent_registry = AgentRegistry(contracts, audit)
+        agent_store = request.app.state.registry_store
+        agents = AgentRegistry(contracts, audit, store=agent_store)
+        await agents.hydrate()
+        request.app.state.factory_agent_registry = agents
+        request.app.state.agent_registry = agents
         request.app.state.factory_registry_audit = audit
     return FactoryOrchestrator(
         contracts=request.app.state.factory_contracts,
@@ -288,7 +292,7 @@ def get_tool_registry(request: Request) -> ToolRegistry:
     return registry
 
 
-def get_skill_service(request: Request) -> SkillService:
+async def get_skill_service(request: Request) -> SkillService:
     contracts_path = request.app.state.settings.ALOS_CONTRACTS_PATH
     if contracts_path is None:
         raise PlatformError(
@@ -296,17 +300,31 @@ def get_skill_service(request: Request) -> SkillService:
             "ALOS_CONTRACTS_PATH is required for skill governance.",
             status_code=503,
         )
+    existing = getattr(request.app.state, "skill_service", None)
+    if isinstance(existing, SkillService):
+        return existing
     contracts = CanonicalContractCatalog(contracts_path)
+    store = request.app.state.registry_store
     registry = getattr(request.app.state, "skill_registry", None)
     if registry is None:
         request.app.state.skill_audit = InMemoryAuditRepository()
-        registry = SkillRegistry(contracts, request.app.state.skill_audit)
+        registry = SkillRegistry(contracts, request.app.state.skill_audit, store=store)
+        await registry.hydrate()
         request.app.state.skill_registry = registry
     audit = getattr(request.app.state, "skill_audit", None)
     if audit is None:
         audit = InMemoryAuditRepository()
         request.app.state.skill_audit = audit
-    return SkillService(registry=registry, audit=audit)
+    agents = getattr(request.app.state, "agent_registry", None)
+    if agents is None:
+        agents = getattr(request.app.state, "factory_agent_registry", None)
+    if agents is None:
+        agents = AgentRegistry(contracts, audit, store=store)
+        await agents.hydrate()
+        request.app.state.agent_registry = agents
+    service = SkillService(registry=registry, agents=agents, audit=audit)
+    request.app.state.skill_service = service
+    return service
 
 
 SkillServiceDependency = Annotated[SkillService, Depends(get_skill_service)]

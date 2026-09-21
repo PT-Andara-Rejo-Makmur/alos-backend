@@ -33,7 +33,14 @@ class RegistryAuthorityView:
         payload = entry.payload
         owner = payload.get("owner") or payload.get("owner_actor_id")
         risk = payload.get("risk_level")
-        tools = payload.get("tool_ids") or payload.get("backing_tool_ids") or []
+        if entry.subject_type == "skill":
+            owner = owner or entry.created_by
+            risk = risk or "UNSPECIFIED"
+        tools = (
+            payload.get("required_tool_ids", [])
+            if entry.subject_type == "skill"
+            else payload.get("tool_ids") or payload.get("backing_tool_ids") or []
+        )
         permissions = payload.get("permission_refs") or []
         scope = payload.get("scope_refs") or []
         if not isinstance(owner, str) or not owner.strip():
@@ -70,7 +77,7 @@ class RegistryAuthorityView:
             or principal.workspace_id != self.workspace_id
         ):
             raise RegistryAuthorizationError("principal is outside registry scope")
-        if not self.scope:
+        if not self.scope and self.subject_type != "skill":
             raise RegistryAuthorizationError("registry definition has no scope authority")
         if not set(self.permissions).issubset(principal.permissions):
             raise RegistryAuthorizationError("principal lacks registry permissions")

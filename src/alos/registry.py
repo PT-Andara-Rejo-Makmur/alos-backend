@@ -9,7 +9,7 @@ import json
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Protocol
 
 from alos.audit import AuditEvent, AuditSink
 from alos.contracts import CanonicalContractCatalog
@@ -61,6 +61,33 @@ class RegistryEntry:
     release_id: str | None = None
 
 
+class RegistryStore(Protocol):
+    async def save(self, entry: RegistryEntry) -> None: ...
+    async def load_subject_type(self, subject_type: str) -> tuple[RegistryEntry, ...]: ...
+
+
+class InMemoryRegistryStore:
+    def __init__(self) -> None:
+        self._records: dict[tuple[str, str, str, str, str], RegistryEntry] = {}
+
+    async def save(self, entry: RegistryEntry) -> None:
+        key = (
+            entry.subject_type,
+            entry.tenant_id,
+            entry.workspace_id,
+            entry.subject_id,
+            entry.version,
+        )
+        self._records[key] = VersionedContractRegistry._copy_entry(entry)
+
+    async def load_subject_type(self, subject_type: str) -> tuple[RegistryEntry, ...]:
+        return tuple(
+            VersionedContractRegistry._copy_entry(item)
+            for item in self._records.values()
+            if item.subject_type == subject_type
+        )
+
+
 class VersionedContractRegistry:
     """Validate canonical definitions, retain immutable snapshots, and gate activation."""
 
@@ -73,6 +100,7 @@ class VersionedContractRegistry:
         version_field: str,
         contracts: CanonicalContractCatalog,
         audit: AuditSink | None = None,
+        store: RegistryStore | None = None,
     ) -> None:
         self._subject_type = subject_type
         self._schema_id = schema_id
@@ -80,6 +108,7 @@ class VersionedContractRegistry:
         self._version_field = version_field
         self._contracts = contracts
         self._audit = audit or NullAuditSink()
+        self._store = store or InMemoryRegistryStore()
         self._entries: dict[tuple[str, str, str, str], RegistryEntry] = {}
         self._lock = asyncio.Lock()
 
@@ -120,6 +149,7 @@ class VersionedContractRegistry:
                 created_at=datetime.now(UTC),
             )
             self._entries[key] = entry
+            await self._store.save(entry)
         await self._record(entry, actor_id, "registry.version.created", "DRAFT")
         return self._copy_entry(entry)
 
@@ -144,9 +174,7 @@ class VersionedContractRegistry:
                 "AI recommendation cannot approve a registry version"
             ) from exc
         if resolved_authority not in {DecisionAuthority.IT, DecisionAuthority.DIRECTOR}:
-            raise RegistryConflictError(
-                "AI recommendation cannot approve a registry version"
-            )
+            raise RegistryConflictError("AI recommendation cannot approve a registry version")
         entry = await self._transition(
             tenant_id,
             workspace_id,
@@ -264,9 +292,73 @@ class VersionedContractRegistry:
         return tuple(
             sorted(
                 authorized,
-                key=lambda item: (item.subject_id, item.version),
+                key=lambda item: (item.subject_id, self._semver(item.version)),
             )
         )
+
+    def list_entries(
+        self,
+        *,
+        tenant_id: str,
+        organization_id: str,
+        workspace_id: str,
+        subject_id: str | None = None,
+    ) -> tuple[RegistryEntry, ...]:
+        entries = [
+            self._copy_entry(entry)
+            for entry in self._entries.values()
+            if entry.tenant_id == tenant_id
+            and entry.organization_id == organization_id
+            and entry.workspace_id == workspace_id
+            and (subject_id is None or entry.subject_id == subject_id)
+        ]
+        return tuple(
+            sorted(entries, key=lambda item: (item.subject_id, self._semver(item.version)))
+        )
+
+    def versions(
+        self,
+        *,
+        tenant_id: str,
+        organization_id: str,
+        workspace_id: str,
+        subject_id: str,
+    ) -> tuple[str, ...]:
+        return tuple(
+            entry.version
+            for entry in self.list_entries(
+                tenant_id=tenant_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                subject_id=subject_id,
+            )
+        )
+
+    def latest_entry(
+        self,
+        *,
+        tenant_id: str,
+        organization_id: str,
+        workspace_id: str,
+        subject_id: str,
+    ) -> RegistryEntry:
+        entries = self.list_entries(
+            tenant_id=tenant_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            subject_id=subject_id,
+        )
+        if not entries:
+            raise RegistryNotFoundError("registry subject was not found")
+        return entries[-1]
+
+    async def hydrate(self) -> None:
+        loaded = await self._store.load_subject_type(self._subject_type)
+        async with self._lock:
+            self._entries = {
+                (item.tenant_id, item.workspace_id, item.subject_id, item.version): item
+                for item in loaded
+            }
 
     async def _transition(
         self,
@@ -298,6 +390,7 @@ class VersionedContractRegistry:
                 release_id=release_id or current.release_id,
             )
             self._entries[key] = updated
+            await self._store.save(updated)
             return updated
 
     async def _record(
@@ -350,3 +443,11 @@ class VersionedContractRegistry:
             supplied = payload.get(field_name)
             if supplied is not None and str(supplied) != value:
                 raise RegistryConflictError(f"{field_name} does not match authority context")
+
+    @staticmethod
+    def _semver(version: str) -> tuple[int, int, int, str]:
+        core, _, suffix = version.partition("-")
+        parts = core.split(".")
+        if len(parts) != 3 or not all(part.isdigit() for part in parts):
+            raise RegistryConflictError(f"invalid semantic version: {version}")
+        return int(parts[0]), int(parts[1]), int(parts[2]), suffix

@@ -39,20 +39,20 @@ class SkillVersionRef(BaseModel):
 class SkillAssignmentRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     agent_id: str = Field(min_length=1, max_length=200)
+    agent_version: str = Field(min_length=1, max_length=50)
     skill_id: str = Field(min_length=1, max_length=200)
     skill_version: str = Field(min_length=1, max_length=50)
+    proposed_agent_version: str | None = Field(default=None, min_length=1, max_length=50)
 
 
 class SkillAssignmentResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     agent_id: str
-    skill_id: str
-    skill_version: str
-    status: Literal["ASSIGNED", "REJECTED"] = "ASSIGNED"
-    assigned_by: str
+    base_agent_version: str
+    draft_agent_version: str
+    skill_ref: SkillVersionRef
+    lifecycle_state: Literal["DRAFT"] = "DRAFT"
     correlation_id: str
-    scope_refs: list[str] = Field(default_factory=list)
-    permission_refs: list[str] = Field(default_factory=list)
 
 
 class SkillListResponse(BaseModel):

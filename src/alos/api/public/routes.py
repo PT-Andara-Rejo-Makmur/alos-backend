@@ -21,16 +21,13 @@ from alos.observability.correlation import current_correlation_id
 from alos.registry_contracts import RegistryAuthorizationError
 from alos.research import ResearchCommand, project_domain_access
 from alos.security.errors import PlatformError
+from alos.skills.assignment import SkillAssignmentError
 from alos.skills.models import SkillAssignmentRequest
 
 router = APIRouter(prefix="/api/v1", tags=["system"])
 
-CONTEXT_PROJECTION_SCHEMA = (
-    "https://schemas.alos.dev/v1/context/context-projection.schema.json"
-)
-DOMAIN_ACCESS_SCHEMA = (
-    "https://schemas.alos.dev/v1/research/domain-access-response.schema.json"
-)
+CONTEXT_PROJECTION_SCHEMA = "https://schemas.alos.dev/v1/context/context-projection.schema.json"
+DOMAIN_ACCESS_SCHEMA = "https://schemas.alos.dev/v1/research/domain-access-response.schema.json"
 
 
 @router.get("/genesis/context-options", tags=["context"])
@@ -62,7 +59,10 @@ async def list_skills(
     principal: CurrentPrincipalDependency,
     skills: SkillServiceDependency,
 ) -> dict[str, Any]:
-    return {"skills": skills.list_skills(principal=principal)}
+    return {
+        "skills": skills.list_skills(principal=principal),
+        "correlation_id": current_correlation_id(),
+    }
 
 
 @router.get("/skills/{skill_id}", tags=["skills"])
@@ -86,6 +86,7 @@ async def get_skill_versions(
             principal=principal,
             skill_id=skill_id,
         ),
+        "correlation_id": current_correlation_id(),
     }
 
 
@@ -95,26 +96,51 @@ async def list_agent_skills(
     principal: CurrentPrincipalDependency,
     skills: SkillServiceDependency,
 ) -> dict[str, Any]:
-    return {
-        "agent_id": agent_id,
-        "skills": skills.list_agent_skills(
+    try:
+        return skills.list_agent_skills(
             principal=principal,
             agent_id=agent_id,
-        ),
-    }
+            correlation_id=current_correlation_id(),
+        )
+    except (LookupError, RegistryAuthorizationError) as exc:
+        raise PlatformError(
+            "AGENT_NOT_FOUND",
+            "The requested AgentDefinition is not available.",
+            status_code=404,
+            correlation_id=current_correlation_id(),
+        ) from exc
 
 
-@router.post("/skills/assign", tags=["skills"])
+@router.post("/agents/{agent_id}/skills", tags=["skills"], status_code=201)
 async def assign_skill(
+    agent_id: str,
     payload: SkillAssignmentRequest,
     principal: CurrentPrincipalDependency,
     skills: SkillServiceDependency,
 ) -> dict[str, Any]:
-    response = await skills.assign_skill(
-        request=payload,
-        principal=principal,
-        correlation_id=current_correlation_id(),
-    )
+    if payload.agent_id != agent_id:
+        raise PlatformError(
+            "AGENT_ID_MISMATCH", "Path and payload agent_id must match.", status_code=400
+        )
+    try:
+        response = await skills.assign_skill(
+            request=payload,
+            principal=principal,
+            correlation_id=current_correlation_id(),
+        )
+    except SkillAssignmentError as exc:
+        if exc.code in {"AGENT_VERSION_NOT_FOUND", "SKILL_VERSION_NOT_FOUND"}:
+            status_code = 404
+        elif exc.code in {"AGENT_SKILL_DUPLICATE", "AGENT_VERSION_CONFLICT"}:
+            status_code = 409
+        else:
+            status_code = 403
+        raise PlatformError(
+            exc.code,
+            exc.message,
+            status_code=status_code,
+            correlation_id=current_correlation_id(),
+        ) from exc
     return response.model_dump()
 
 

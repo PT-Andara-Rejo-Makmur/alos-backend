@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
-RESEARCH_DOMAIN_SKILL_ID = "research.domain.skill"
+RESEARCH_SKILL_IDS = (
+    "skill.research.core",
+    "skill.research.technology",
+    "skill.research.property_business",
+    "skill.research.management",
+    "skill.research.property_market",
+)
 
 
-def build_research_skill_definition(*, version: str = "1.0.0") -> dict[str, object]:
+def build_research_skill_definition(
+    *, skill_id: str = "skill.research.core", version: str = "1.0.0"
+) -> dict[str, object]:
+    if skill_id not in RESEARCH_SKILL_IDS:
+        raise ValueError("research skill id is not canonical")
     return {
-        "skill_id": RESEARCH_DOMAIN_SKILL_ID,
+        "skill_id": skill_id,
         "skill_version": version,
         "name": "Research Domain Skill",
         "description": (
@@ -29,7 +39,6 @@ def build_research_skill_definition(*, version: str = "1.0.0") -> dict[str, obje
             "Select only approved tools and sources.",
             "Cite evidence and synthesize findings without bypassing ToolExecutor.",
         ],
-        "tool_ids": ["tool.executor", "tool.research.execute"],
         "required_tool_ids": ["tool.executor", "tool.research.execute"],
         "owner_actor_id": "actor_backend_authority",
         "risk_level": "MEDIUM",
@@ -46,10 +55,6 @@ def build_research_skill_definition(*, version: str = "1.0.0") -> dict[str, obje
             "Insufficient evidence",
             "Unauthorized tool invocation",
         ],
-        "escalation": [
-            "Escalate to a human reviewer when scope or evidence is ambiguous."
-        ],
-        "evaluation": [
-            "Validate evidence trail and tool usage against authorization rules."
-        ],
+        "escalation": ["Escalate to a human reviewer when scope or evidence is ambiguous."],
+        "evaluation": ["Validate evidence trail and tool usage against authorization rules."],
     }

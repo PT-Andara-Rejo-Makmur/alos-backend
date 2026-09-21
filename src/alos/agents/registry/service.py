@@ -2,13 +2,18 @@
 
 from alos.audit import AuditSink
 from alos.contracts import CanonicalContractCatalog
-from alos.registry import VersionedContractRegistry
+from alos.registry import RegistryStore, VersionedContractRegistry
 
 AGENT_DEFINITION_SCHEMA_ID = "https://schemas.alos.dev/v1/agent/agent-definition.schema.json"
 
 
 class AgentRegistry(VersionedContractRegistry):
-    def __init__(self, contracts: CanonicalContractCatalog, audit: AuditSink) -> None:
+    def __init__(
+        self,
+        contracts: CanonicalContractCatalog,
+        audit: AuditSink,
+        store: RegistryStore | None = None,
+    ) -> None:
         super().__init__(
             subject_type="agent",
             schema_id=AGENT_DEFINITION_SCHEMA_ID,
@@ -16,4 +21,5 @@ class AgentRegistry(VersionedContractRegistry):
             version_field="agent_version",
             contracts=contracts,
             audit=audit,
+            store=store,
         )

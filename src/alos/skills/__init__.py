@@ -9,11 +9,11 @@ from alos.skills.models import (
     SkillListResponse,
     SkillVersionRef,
 )
-from alos.skills.research import RESEARCH_DOMAIN_SKILL_ID, build_research_skill_definition
+from alos.skills.research import RESEARCH_SKILL_IDS, build_research_skill_definition
 from alos.skills.service import SkillService
 
 __all__ = [
-    "RESEARCH_DOMAIN_SKILL_ID",
+    "RESEARCH_SKILL_IDS",
     "SkillAssignmentError",
     "SkillAssignmentRequest",
     "SkillAssignmentResponse",

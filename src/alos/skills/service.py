@@ -5,19 +5,24 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from alos.agents.registry import AgentRegistry
 from alos.audit import AuditEvent, AuditSink
 from alos.identity import Principal
-from alos.registry import RegistryNotFoundError
+from alos.registry import RegistryNotFoundError, RegistryState
+from alos.registry_contracts import RegistryAuthorizationError
 from alos.skills.assignment import SkillAssignmentError, SkillAssignmentService
 from alos.skills.models import SkillAssignmentRequest, SkillAssignmentResponse
 from alos.skills.registry import SkillRegistry
 
 
 class SkillService:
-    def __init__(self, *, registry: SkillRegistry, audit: AuditSink | None = None) -> None:
+    def __init__(
+        self, *, registry: SkillRegistry, agents: AgentRegistry, audit: AuditSink | None = None
+    ) -> None:
         self._registry = registry
         self._audit = audit
-        self._assignments = SkillAssignmentService(registry=registry, audit=audit)
+        self._agents = agents
+        self._assignments = SkillAssignmentService(registry=registry, agents=agents, audit=audit)
 
     async def register_skill(
         self,
@@ -27,7 +32,7 @@ class SkillService:
         correlation_id: str,
     ) -> dict[str, Any]:
         if not principal.active:
-            raise SkillAssignmentError("Principal is inactive.")
+            raise SkillAssignmentError("ASSIGNMENT_NOT_AUTHORIZED", "Principal is inactive.")
         entry = await self._registry.register(
             payload,
             tenant_id=principal.tenant_id,
@@ -63,8 +68,9 @@ class SkillService:
                 "skill_version": item.version,
                 "name": item.payload.get("name"),
                 "description": item.payload.get("description"),
-                "status": item.state.value,
-                "owner": item.payload.get("owner_actor_id") or item.created_by,
+                "lifecycle_state": item.state.value,
+                "owner_actor_id": item.payload.get("owner_actor_id") or item.created_by,
+                "risk_level": item.payload.get("risk_level"),
             }
             for item in entries
         ]
@@ -86,34 +92,22 @@ class SkillService:
             subject_id=skill_id,
             version=target_version,
         )
-        view = self._registry.get_authorized(
+        self._registry.get_authorized(
             principal=principal,
             subject_id=skill_id,
             version=target_version,
         )
-        return {
-            "skill_id": entry.subject_id,
-            "skill_version": entry.version,
-            "name": entry.payload.get("name"),
-            "description": entry.payload.get("description"),
-            "purpose": entry.payload.get("purpose"),
-            "status": entry.state.value,
-            "owner": view.owner,
-            "scope_refs": list(view.scope),
-            "permission_refs": list(view.permissions),
-            "required_tool_ids": list(entry.payload.get("required_tool_ids") or []),
-        }
+        result = dict(entry.payload)
+        result.pop("tool_ids", None)
+        result.update(lifecycle_state=entry.state.value, correlation_id=entry.correlation_id)
+        return result
 
     def get_versions(self, *, principal: Principal, skill_id: str) -> list[str]:
-        values = [
+        return [
             entry.version
-            for entry in self._registry._entries.values()
+            for entry in self._registry.list_authorized_entries(principal=principal)
             if entry.subject_id == skill_id
-            and entry.tenant_id == principal.tenant_id
-            and entry.workspace_id == principal.workspace_id
-            and entry.organization_id == principal.organization_id
         ]
-        return sorted(set(values))
 
     async def assign_skill(
         self,
@@ -125,28 +119,54 @@ class SkillService:
     ) -> SkillAssignmentResponse:
         return await self._assignments.assign(
             agent_id=request.agent_id,
+            agent_version=request.agent_version,
             skill_id=request.skill_id,
             skill_version=request.skill_version,
+            proposed_agent_version=request.proposed_agent_version,
             principal=principal,
             correlation_id=correlation_id,
-            agent_scope=agent_scope,
         )
 
-    def list_agent_skills(self, *, principal: Principal, agent_id: str) -> list[dict[str, Any]]:
-        return [
-            {
-                "agent_id": item["agent_id"],
-                "skill_id": item["skill_id"],
-                "skill_version": item["skill_version"],
-                "scope_refs": item["scope_refs"],
-                "permission_refs": item["permission_refs"],
-            }
-            for item in self._assignments.list_for_agent(agent_id=agent_id)
-            if item["scope_refs"] and item["permission_refs"]
-        ]
+    def list_agent_skills(
+        self, *, principal: Principal, agent_id: str, correlation_id: str
+    ) -> dict[str, Any]:
+        entries = self._agents.list_entries(
+            tenant_id=principal.tenant_id,
+            organization_id=principal.organization_id,
+            workspace_id=principal.workspace_id,
+            subject_id=agent_id,
+        )
+        visible = []
+        for candidate in entries:
+            if (
+                candidate.state is RegistryState.DRAFT
+                and candidate.created_by == principal.actor_id
+            ):
+                visible.append(candidate)
+            elif candidate.state is RegistryState.ACTIVE:
+                try:
+                    self._agents.get_authorized(
+                        principal=principal,
+                        subject_id=candidate.subject_id,
+                        version=candidate.version,
+                    )
+                except RegistryAuthorizationError:
+                    continue
+                else:
+                    visible.append(candidate)
+        if not visible:
+            raise RegistryNotFoundError("authorized agent definition was not found")
+        entry = visible[-1]
+        return {
+            "agent_id": agent_id,
+            "agent_version": entry.version,
+            "lifecycle_state": entry.state.value,
+            "skill_refs": list(entry.payload.get("skill_refs", [])),
+            "correlation_id": correlation_id,
+        }
 
     def _latest_version(self, *, principal: Principal, skill_id: str) -> str:
         versions = self.get_versions(principal=principal, skill_id=skill_id)
         if not versions:
             raise RegistryNotFoundError("skill definition was not found")
-        return sorted(versions)[-1]
+        return versions[-1]
