@@ -4,9 +4,6 @@ from alos.skills.assignment import SkillAssignmentError, SkillAssignmentService
 from alos.skills.models import (
     SkillAssignmentRequest,
     SkillAssignmentResponse,
-    SkillDetailResponse,
-    SkillError,
-    SkillListResponse,
     SkillVersionRef,
 )
 from alos.skills.research import RESEARCH_SKILL_IDS
@@ -18,9 +15,6 @@ __all__ = [
     "SkillAssignmentRequest",
     "SkillAssignmentResponse",
     "SkillAssignmentService",
-    "SkillDetailResponse",
-    "SkillError",
-    "SkillListResponse",
     "SkillService",
     "SkillVersionRef",
 ]

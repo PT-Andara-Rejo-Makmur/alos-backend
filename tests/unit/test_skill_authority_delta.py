@@ -14,11 +14,19 @@ from alos.dependencies import get_factory_orchestrator, get_skill_service
 from alos.identity import Principal
 from alos.main import create_app
 from alos.registry import DecisionAuthority, InMemoryRegistryStore
+from alos.skills import models as skill_models
 from alos.skills.assignment import SkillAssignmentError, SkillAssignmentService
 from alos.skills.registry import SkillRegistry
 from alos.skills.service import SkillService
 
 CONTRACTS_ROOT = Path(__file__).resolve().parents[3] / "alos-contracts"
+
+
+def test_stale_internal_skill_response_models_are_removed() -> None:
+    assert not hasattr(skill_models, "SkillDefinitionContract")
+    assert not hasattr(skill_models, "SkillListResponse")
+    assert not hasattr(skill_models, "SkillDetailResponse")
+    assert not hasattr(skill_models, "SkillError")
 
 
 def skill_payload(

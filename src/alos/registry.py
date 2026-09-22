@@ -149,8 +149,8 @@ class VersionedContractRegistry:
                 correlation_id=correlation_id,
                 created_at=datetime.now(UTC),
             )
-            self._entries[key] = entry
             await self._store.save(entry)
+            self._entries[key] = entry
         await self._record(entry, actor_id, "registry.version.created", "DRAFT")
         return self._copy_entry(entry)
 
@@ -390,8 +390,8 @@ class VersionedContractRegistry:
                 decision_id=decision_id or current.decision_id,
                 release_id=release_id or current.release_id,
             )
-            self._entries[key] = updated
             await self._store.save(updated)
+            self._entries[key] = updated
             return updated
 
     async def _record(
