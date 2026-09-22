@@ -24,6 +24,7 @@ from alos.skills.service import SkillService
 from alos.tools.adapters.diagnostic import DiagnosticEchoAdapter
 from alos.tools.contracts import JsonSchemaToolContractValidator
 from alos.tools.executor.service import ToolExecutor
+from alos.tools.external_research import ExternalResearchToolAdapter
 from alos.tools.policy import DiagnosticPrincipalResolver
 from alos.tools.registry import ToolRegistration, ToolRegistry
 
@@ -258,6 +259,17 @@ def get_tool_registry(request: Request) -> ToolRegistry:
             allowlisted=settings.ENABLE_TEST_TOOLS,
             production_enabled=False,
             timeout_seconds=2.0,
+        )
+    )
+    registry.register(
+        ToolRegistration(
+            tool_id="external.research",
+            required_permission="research.external.read",
+            required_scopes=frozenset({"scope.sources.external_read"}),
+            adapter=ExternalResearchToolAdapter(),
+            allowlisted=True,
+            production_enabled=True,
+            timeout_seconds=15.0,
         )
     )
     return registry

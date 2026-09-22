@@ -299,7 +299,69 @@ class AgentRunRecord(Base):
     request_payload: Mapped[dict[str, object]] = mapped_column(JSON)
     result_payload: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cancellation_state: Mapped[str] = mapped_column(String(32), default="NONE")
+    evidence_refs: Mapped[list[str]] = mapped_column(JSON, default=list)
+    usage_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    cost_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    structured_result_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    model_provider: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    model_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tool_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+    budget_limit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    remaining_budget: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class AgentRunStepRecord(Base):
+    """Step-level persistence for run reconstruction without informal logs."""
+
+    __tablename__ = "agent_run_steps"
+    __table_args__ = {"schema": "ai_runtime"}  # noqa: RUF012
+
+    step_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(128), index=True)
+    sequence: Mapped[int] = mapped_column(Integer, default=0)
+    step_type: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    correlation_id: Mapped[str] = mapped_column(String(128), index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    tool_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    input_metadata: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    output_metadata: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_refs: Mapped[list[str]] = mapped_column(JSON, default=list)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tool_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class BacklogCandidateRecord(Base):
+    __tablename__ = "backlog_candidates"
+    __table_args__ = {"schema": "ai_runtime"}  # noqa: RUF012
+
+    candidate_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    finding_id: Mapped[str] = mapped_column(String(128), index=True)
+    recommendation_id: Mapped[str] = mapped_column(String(128), index=True)
+    impact: Mapped[str] = mapped_column(Text)
+    priority_suggestion: Mapped[str] = mapped_column(String(32))
+    owner_suggestion: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    evidence_refs: Mapped[list[str]] = mapped_column(JSON, default=list)
+    approval_state: Mapped[str] = mapped_column(String(32), default="DRAFT")
+    actor_id: Mapped[str] = mapped_column(String(128), index=True)
+    scope_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    correlation_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class DocumentAuthorityRecord(Base):

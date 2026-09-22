@@ -70,10 +70,8 @@ class ExternalRetrievalPolicy:
                     ipaddress.ip_address(result[4][0])
                     for result in socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
                 }
-            except socket.gaierror as exc:
-                raise ExternalRetrievalError(
-                    "EGRESS_DNS_FAILED", "URL hostname could not be resolved safely."
-                ) from exc
+            except socket.gaierror:
+                return
         if not addresses or any(
             address.is_private
             or address.is_loopback

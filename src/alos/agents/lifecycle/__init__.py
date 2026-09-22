@@ -6,8 +6,12 @@ from alos.agents.lifecycle.runs import (
     AgentRunStore,
     AuthoritativeRunRecord,
     AuthoritativeRunStatus,
+    AuthoritativeStepRecord,
+    AuthoritativeStepStatus,
     InMemoryAgentRunStore,
+    InMemoryRunStepStore,
     RunAuthorityError,
+    RunStepStore,
 )
 
 __all__ = [
@@ -15,7 +19,11 @@ __all__ = [
     "AgentRunStore",
     "AuthoritativeRunRecord",
     "AuthoritativeRunStatus",
+    "AuthoritativeStepRecord",
+    "AuthoritativeStepStatus",
     "InMemoryAgentRunStore",
+    "InMemoryRunStepStore",
     "RunAuthorityError",
+    "RunStepStore",
     "SqlAgentRunStore",
 ]
