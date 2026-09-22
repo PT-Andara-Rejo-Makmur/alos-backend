@@ -234,13 +234,25 @@ class SqlAgentRunStore:
                 raise RunAuthorityError("authoritative run was not found")
             return self._from_row(row)
 
+    async def list(self) -> list[AuthoritativeRunRecord]:
+        session = self._session_factory()
+        if _uses_async_context(session):
+            async with session as s:
+                rows = s.execute(__import__("sqlalchemy").select(AgentRunRecord)).scalars().all()
+                return [self._from_row(row) for row in rows]
+        with session as s:
+            rows = s.execute(__import__("sqlalchemy").select(AgentRunRecord)).scalars().all()
+            return [self._from_row(row) for row in rows]
+
     @staticmethod
     def _to_row(record: AuthoritativeRunRecord) -> AgentRunRecord:
-        parent_run_id = record.request.get("parent_run_id")
         return AgentRunRecord(
             run_id=record.run_id,
             root_run_id=record.root_run_id,
-            parent_run_id=str(parent_run_id) if parent_run_id is not None else None,
+            parent_run_id=record.parent_run_id,
+            delegation_id=record.delegation_id,
+            depth=record.depth,
+            retry_count=record.retry_count,
             tenant_id=record.tenant_id,
             organization_id=record.organization_id,
             workspace_id=record.workspace_id,
@@ -302,6 +314,10 @@ class SqlAgentRunStore:
             authorized_skill_refs=authorized_skill_refs,
             request=request,
             created_at=row.created_at,
+            parent_run_id=row.parent_run_id,
+            depth=row.depth,
+            delegation_id=row.delegation_id,
+            retry_count=row.retry_count,
             started_at=row.started_at,
             completed_at=row.completed_at,
             finished_at=row.finished_at,
