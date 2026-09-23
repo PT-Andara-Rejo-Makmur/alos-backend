@@ -98,6 +98,22 @@ async def test_tool_executor_propagates_correlation_id_and_audits_success() -> N
     assert [record.outcome for record in audit.records] == ["REQUESTED", "SUCCESS"]
 
 
+@pytest.mark.asyncio
+async def test_diagnostic_echo_allows_wait_for_cancellation_and_rejects_unknown() -> None:
+    from alos.tools.adapters.base import ToolInputError
+
+    adapter = DiagnosticEchoAdapter()
+    adapter.validate_arguments({"message": "valid"})
+    adapter.validate_arguments({"message": "valid", "wait_for_cancellation": True})
+    with pytest.raises(ToolInputError, match="accepts only the message field"):
+        adapter.validate_arguments({"message": "valid", "extra": "invalid"})
+    with pytest.raises(ToolInputError, match="accepts only the message field"):
+        adapter.validate_arguments({"wait_for_cancellation": True})
+    with pytest.raises(ToolInputError, match="must be a boolean"):
+        adapter.validate_arguments({"message": "valid", "wait_for_cancellation": "not-bool"})
+
+
+
 class CountingAdapter:
     def __init__(self) -> None:
         self.calls = 0
