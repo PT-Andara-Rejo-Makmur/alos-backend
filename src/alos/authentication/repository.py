@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from alos.persistence.models import (
@@ -90,7 +90,13 @@ class MembershipMutation:
 
 
 class AuthRepository(Protocol):
-    async def provision(self, command: ProvisionAccount, *, bootstrap: bool) -> AccountState: ...
+    async def provision(
+        self,
+        command: ProvisionAccount,
+        *,
+        bootstrap: bool,
+        initial_authority: bool = False,
+    ) -> AccountState: ...
 
     async def account_by_email(self, email: str) -> AccountState | None: ...
 
@@ -148,9 +154,31 @@ class SqlAuthRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
-    async def provision(self, command: ProvisionAccount, *, bootstrap: bool) -> AccountState:
+    async def provision(
+        self,
+        command: ProvisionAccount,
+        *,
+        bootstrap: bool,
+        initial_authority: bool = False,
+    ) -> AccountState:
         now = datetime.now(UTC)
         async with self._session_factory() as session, session.begin():
+            if initial_authority:
+                await session.execute(text("SELECT pg_advisory_xact_lock(1095515237)"))
+                memberships = (
+                    await session.scalars(
+                        select(WorkspaceMembershipRecord).where(
+                            WorkspaceMembershipRecord.active.is_(True),
+                            WorkspaceMembershipRecord.revoked_at.is_(None),
+                        )
+                    )
+                ).all()
+                if any(
+                    "IT_ADMIN" in membership.roles
+                    or "identity.accounts.manage" in membership.permission_refs
+                    for membership in memberships
+                ):
+                    raise ValueError("initial identity authority already exists")
             if await self._account_record(session, command.email) is not None:
                 raise ValueError("account already exists")
             tenant = await session.get(TenantRecord, command.tenant_id)

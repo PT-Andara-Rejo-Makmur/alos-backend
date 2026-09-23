@@ -19,6 +19,9 @@ dependencies = [
   "uvicorn[standard]>=0.34,<1",
 ]
 
+[project.scripts]
+alos-admin = "alos.cli:main"
+
 [project.optional-dependencies]
 dev = [
   "mypy>=1.14,<2",

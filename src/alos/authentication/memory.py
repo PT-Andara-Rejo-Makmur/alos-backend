@@ -24,7 +24,21 @@ class InMemoryAuthRepository:
         self._sessions: dict[str, tuple[str, SessionState]] = {}
         self._next_account_id = 1
 
-    async def provision(self, command: ProvisionAccount, *, bootstrap: bool) -> AccountState:
+    async def provision(
+        self,
+        command: ProvisionAccount,
+        *,
+        bootstrap: bool,
+        initial_authority: bool = False,
+    ) -> AccountState:
+        if initial_authority and any(
+            "IT_ADMIN" in access.role_refs
+            or "identity.accounts.manage" in access.permission_refs
+            for accesses in self._access.values()
+            for access in accesses
+            if access.active
+        ):
+            raise ValueError("initial identity authority already exists")
         if command.email in self._accounts:
             raise ValueError("account already exists")
         if not bootstrap:

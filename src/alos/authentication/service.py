@@ -53,11 +53,36 @@ class AuthService:
         """Bootstrap synthetic identity only when the application explicitly enables it."""
         return await self._provision(payload, bootstrap=True)
 
+    async def bootstrap_initial_admin(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Create the first identity authority through an operator-only call path."""
+        canonical = {
+            **payload,
+            "role_refs": ["IT_ADMIN"],
+            "permission_refs": [
+                "identity.accounts.manage",
+                "identity.memberships.manage",
+                "identity.memberships.read",
+            ],
+            "scope_refs": ["scope.identity.manage"],
+            "data_scope": "COMPANY",
+        }
+        return await self._provision(
+            canonical,
+            bootstrap=True,
+            initial_authority=True,
+        )
+
     async def provision(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Provision an account into an existing Backend-owned authority boundary."""
         return await self._provision(payload, bootstrap=False)
 
-    async def _provision(self, payload: dict[str, Any], *, bootstrap: bool) -> dict[str, Any]:
+    async def _provision(
+        self,
+        payload: dict[str, Any],
+        *,
+        bootstrap: bool,
+        initial_authority: bool = False,
+    ) -> dict[str, Any]:
         email = str(payload.get("email", "")).strip().lower()
         password = str(payload.get("password") or "")
         if not email:
@@ -125,9 +150,17 @@ class AuthService:
                 status_code=400,
             )
         try:
-            account = await self._repository.provision(command, bootstrap=bootstrap)
+            account = await self._repository.provision(
+                command,
+                bootstrap=bootstrap,
+                initial_authority=initial_authority,
+            )
         except ValueError as exc:
             message = str(exc)
+            if "initial identity authority already exists" in message:
+                raise PlatformError(
+                    "IDENTITY_BOOTSTRAP_EXISTS", message, status_code=409
+                ) from exc
             if "outside an active authority boundary" in message:
                 raise PlatformError(
                     "AUTHORITY_BOUNDARY_CONFLICT", message, status_code=403
