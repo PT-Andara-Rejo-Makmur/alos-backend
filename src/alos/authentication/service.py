@@ -1,4 +1,4 @@
-"""In-memory identity authority used by the backend as the canonical auth source of truth."""
+"""Persistent Backend authentication and canonical workspace projection service."""
 
 from __future__ import annotations
 
@@ -6,220 +6,404 @@ import hashlib
 import hmac
 import secrets
 import uuid
-from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from alos.identity import Actor, DataScope, Membership, Organization, Principal, Tenant, Workspace
-from alos.identity.directory import IdentityConflictError, IdentityDirectory
-from alos.permissions import PermissionRegistry, RoleGrant
+from alos.authentication.repository import (
+    AccessState,
+    AuthRepository,
+    MembershipMutation,
+    ProvisionAccount,
+    SessionState,
+)
 from alos.security.errors import PlatformError
 
-
-@dataclass(frozen=True, slots=True)
-class AccountRecord:
-    email: str
-    password_hash: str
-    actor_id: str
-    tenant_id: str
-    organization_id: str
-    workspace_id: str
+CANONICAL_ROLE_MAP = {
+    "DIRECTOR": "EXECUTIVE",
+    "DIVISION_LEAD": "WORKSPACE_LEAD",
+    "DIVISION_OWNER": "WORKSPACE_LEAD",
+    "DIVISION_MEMBER": "WORKSPACE_MEMBER",
+    "MEMBER": "WORKSPACE_MEMBER",
+    "IT_LEAD": "IT_ADMIN",
+    "ADMIN": "IT_ADMIN",
+    "QA_SECURITY": "QA_ASSURANCE",
+}
+CANONICAL_ROLES = frozenset(
+    {
+        "EXECUTIVE",
+        "WORKSPACE_LEAD",
+        "WORKSPACE_MEMBER",
+        "BUSINESS_REVIEWER",
+        "IT_ADMIN",
+        "AI_ADMIN",
+        "TECHNICAL_REVIEWER",
+        "QA_ASSURANCE",
+    }
+)
 
 
 class AuthService:
-    """Backend-owned source of truth for authenticating users and resolving principals."""
+    """Authenticate accounts and resolve access exclusively through an injected repository."""
 
-    def __init__(self) -> None:
-        self._directory = IdentityDirectory()
-        self._permissions = PermissionRegistry()
-        self._accounts: dict[str, AccountRecord] = {}
+    def __init__(self, repository: AuthRepository, *, session_ttl_minutes: int = 480) -> None:
+        self._repository = repository
+        self._session_ttl = timedelta(minutes=session_ttl_minutes)
 
-    def register(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def register_for_test(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Bootstrap synthetic identity only when the application explicitly enables it."""
+        return await self._provision(payload, bootstrap=True)
+
+    async def provision(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Provision an account into an existing Backend-owned authority boundary."""
+        return await self._provision(payload, bootstrap=False)
+
+    async def _provision(self, payload: dict[str, Any], *, bootstrap: bool) -> dict[str, Any]:
         email = str(payload.get("email", "")).strip().lower()
-        if not email:
-            raise PlatformError(
-                "INVALID_EMAIL",
-                "email is required",
-                status_code=400,
-            )
-        if email in self._accounts:
-            raise PlatformError(
-                "USER_ALREADY_EXISTS",
-                "user already exists",
-                status_code=409,
-            )
-
-        tenant_id = str(payload.get("tenant_id") or "tenant_default")
-        organization_id = str(payload.get("organization_id") or "org_default")
-        workspace_id = str(payload.get("workspace_id") or "workspace_default")
-        division_id = payload.get("division_id") or None
-        project_id = payload.get("project_id") or None
-        display_name = str(payload.get("display_name") or email.split("@", 1)[0])
-        roles = frozenset(str(item) for item in payload.get("roles", []))
-        permissions = frozenset(str(item) for item in payload.get("permissions", []))
-        scopes = frozenset(str(item) for item in payload.get("scopes", []))
-        data_scope_value = str(payload.get("data_scope", DataScope.OWN_ASSIGNED.value))
-
-        try:
-            self._directory.add_tenant(Tenant(tenant_id=tenant_id, name=tenant_id))
-        except IdentityConflictError:
-            pass
-        try:
-            self._directory.add_organization(
-                Organization(
-                    organization_id=organization_id,
-                    tenant_id=tenant_id,
-                    name=organization_id,
-                )
-            )
-        except IdentityConflictError:
-            pass
-        try:
-            self._directory.add_workspace(
-                Workspace(
-                    workspace_id=workspace_id,
-                    tenant_id=tenant_id,
-                    organization_id=organization_id,
-                    name=workspace_id,
-                )
-            )
-        except IdentityConflictError:
-            pass
-
-        actor_id = f"actor_{uuid.uuid4().hex[:12]}"
-        try:
-            self._directory.add_actor(
-                Actor(
-                    actor_id=actor_id,
-                    tenant_id=tenant_id,
-                    organization_id=organization_id,
-                    display_name=display_name,
-                    division_id=str(division_id) if division_id is not None else None,
-                    project_id=str(project_id) if project_id is not None else None,
-                )
-            )
-        except IdentityConflictError as exc:
-            raise PlatformError(
-                "IDENTITY_CONFLICT",
-                "actor identity could not be created",
-                status_code=409,
-                details={"reason": str(exc)},
-            ) from exc
-
-        try:
-            self._directory.add_membership(
-                Membership(
-                    actor_id=actor_id,
-                    tenant_id=tenant_id,
-                    organization_id=organization_id,
-                    workspace_id=workspace_id,
-                    roles=roles,
-                    permissions=permissions,
-                    scopes=scopes,
-                    data_scope=DataScope(data_scope_value),
-                    division_id=str(division_id) if division_id is not None else None,
-                    project_id=str(project_id) if project_id is not None else None,
-                )
-            )
-        except (IdentityConflictError, ValueError) as exc:
-            raise PlatformError(
-                "INVALID_SCOPE_OR_IDENTITY",
-                "membership is outside the backend identity boundary",
-                status_code=400,
-                details={"reason": str(exc)},
-            ) from exc
-
-        for role in roles:
-            self._permissions.register(
-                RoleGrant(
-                    role_id=role,
-                    tenant_id=tenant_id,
-                    organization_id=organization_id,
-                    permission_refs=permissions,
-                    scope_refs=scopes,
-                    active=True,
-                )
-            )
-
         password = str(payload.get("password") or "")
+        if not email:
+            raise PlatformError("INVALID_EMAIL", "email is required", status_code=400)
         if len(password) < 8:
             raise PlatformError(
-                "WEAK_PASSWORD",
-                "password must be at least 8 characters long",
+                "WEAK_PASSWORD", "password must be at least 8 characters long", status_code=400
+            )
+        role_refs = tuple(
+            sorted(
+                {
+                    CANONICAL_ROLE_MAP.get(str(item).upper(), str(item).upper())
+                    for item in (payload.get("role_refs") or payload.get("roles", []))
+                }
+            )
+        )
+        if not role_refs or not set(role_refs).issubset(CANONICAL_ROLES):
+            raise PlatformError(
+                "INVALID_AUTHORIZATION_ROLE",
+                "role_refs must use the canonical authorization vocabulary",
                 status_code=400,
             )
-        account = AccountRecord(
+        workspace_id = str(payload.get("workspace_id") or "")
+        workspace_key = str(payload.get("workspace_key") or workspace_id).upper().replace("-", "_")
+        command = ProvisionAccount(
+            actor_id=f"actor_{uuid.uuid4().hex}",
             email=email,
             password_hash=self._hash_password(password),
-            actor_id=actor_id,
-            tenant_id=tenant_id,
-            organization_id=organization_id,
+            display_name=str(payload.get("display_name") or email.split("@", 1)[0]),
+            tenant_id=str(payload.get("tenant_id") or ""),
+            organization_id=str(payload.get("organization_id") or ""),
             workspace_id=workspace_id,
+            workspace_key=workspace_key,
+            workspace_name=str(payload.get("workspace_name") or workspace_id),
+            workspace_type=str(payload.get("workspace_type") or "BUSINESS"),
+            organizational_unit_id=_optional(payload.get("organizational_unit_id")),
+            division_code=_optional(payload.get("division_code")),
+            role_refs=role_refs,
+            permission_refs=tuple(
+                sorted(
+                    str(item)
+                    for item in (payload.get("permission_refs") or payload.get("permissions", []))
+                )
+            ),
+            scope_refs=tuple(
+                sorted(
+                    str(item) for item in (payload.get("scope_refs") or payload.get("scopes", []))
+                )
+            ),
+            data_scope=str(payload.get("data_scope") or "OWN_ASSIGNED"),
         )
-        self._accounts[email] = account
-
-        principal = self._directory.principal_for(actor_id, workspace_id)
-        if principal is None:
-            raise PlatformError(
-                "PRINCIPAL_NOT_READY",
-                "user principal could not be resolved",
-                status_code=500,
+        if not all(
+            (
+                command.tenant_id,
+                command.organization_id,
+                command.workspace_id,
+                command.workspace_key,
             )
-        return self._serialize_principal(principal, include_email=email, include_name=display_name)
-
-    def login(self, email: str, password: str) -> dict[str, Any]:
-        key = str(email or "").strip().lower()
-        account = self._accounts.get(key)
-        if account is None or not self._verify_password(password, account.password_hash):
+        ):
             raise PlatformError(
-                "INVALID_CREDENTIALS",
-                "email or password is invalid",
-                status_code=401,
+                "INVALID_IDENTITY_BOUNDARY",
+                "tenant, organization, and workspace are required",
+                status_code=400,
             )
+        try:
+            account = await self._repository.provision(command, bootstrap=bootstrap)
+        except ValueError as exc:
+            code = "USER_ALREADY_EXISTS" if "already exists" in str(exc) else "IDENTITY_CONFLICT"
+            raise PlatformError(code, str(exc), status_code=409) from exc
+        accesses = await self._repository.active_access(account.actor_id)
+        return self._account_projection(
+            account.email,
+            account.actor_id,
+            account.tenant_id,
+            account.organization_id,
+            account.display_name,
+            accesses,
+        )
 
-        principal = self._directory.principal_for(account.actor_id, account.workspace_id)
-        if principal is None:
+    async def login(self, email: str, password: str) -> dict[str, Any]:
+        account = await self._repository.account_by_email(str(email or "").strip().lower())
+        if (
+            account is None
+            or not account.active
+            or not self._verify_password(password, account.password_hash)
+        ):
             raise PlatformError(
-                "ACCOUNT_DISABLED",
-                "account is not active in the configured workspace",
+                "INVALID_CREDENTIALS", "email or password is invalid", status_code=401
+            )
+        accesses = await self._repository.active_access(account.actor_id)
+        if not accesses:
+            raise PlatformError(
+                "ACCOUNT_DISABLED", "account has no active workspace membership", status_code=403
+            )
+        issued_at = datetime.now(UTC)
+        expires_at = issued_at + self._session_ttl
+        raw_token = "alos_" + secrets.token_urlsafe(48)
+        session = await self._repository.create_session(
+            session_id=f"session_{uuid.uuid4().hex}",
+            account=account,
+            token_hash=self._token_hash(raw_token),
+            active_workspace_id=accesses[0].workspace_id,
+            issued_at=issued_at,
+            expires_at=expires_at,
+        )
+        return {
+            "access_token": raw_token,
+            "token_type": "bearer",
+            "principal": self._session_projection(session, accesses),
+        }
+
+    async def whoami(self, token: str) -> dict[str, Any]:
+        session, accesses = await self._resolve_session(token)
+        return self._session_projection(session, accesses)
+
+    async def list_workspaces(self, token: str) -> list[dict[str, Any]]:
+        _, accesses = await self._resolve_session(token)
+        return [self._access_projection(access) for access in accesses]
+
+    async def select_active_workspace(self, token: str, workspace_id: str) -> dict[str, Any]:
+        session, accesses = await self._resolve_session(token)
+        selected = next((item for item in accesses if item.workspace_id == workspace_id), None)
+        if selected is None:
+            raise PlatformError(
+                "WORKSPACE_ACCESS_DENIED",
+                "workspace is not authorized by an active membership",
                 status_code=403,
             )
+        await self._repository.set_active_workspace(session.session_id, workspace_id)
+        return {
+            "actor_id": session.account.actor_id,
+            "organization_id": session.account.organization_id,
+            "workspace": self._workspace_projection(selected),
+            "membership": self._access_projection(selected),
+        }
 
-        token = self._issue_token(account)
-        body = self._serialize_principal(principal, include_email=account.email)
-        body["token_type"] = "bearer"  # noqa: S105 - OAuth2 token type constant, not a password
-        body["access_token"] = token
-        return body
+    async def logout(self, token: str) -> None:
+        session, _ = await self._resolve_session(token)
+        await self._repository.revoke_session(session.session_id, datetime.now(UTC))
 
-    def whoami(self, token: str) -> dict[str, Any]:
+    async def list_account_access(
+        self, actor_id: str, *, tenant_id: str, organization_id: str
+    ) -> dict[str, Any]:
+        try:
+            accesses = await self._repository.all_access(
+                actor_id, tenant_id=tenant_id, organization_id=organization_id
+            )
+        except ValueError as exc:
+            raise PlatformError("IDENTITY_NOT_FOUND", str(exc), status_code=404) from exc
+        return {
+            "actor_id": actor_id,
+            "workspace_access": [self._access_projection(access) for access in accesses],
+        }
+
+    async def assign_membership(
+        self,
+        actor_id: str,
+        payload: dict[str, Any],
+        *,
+        tenant_id: str,
+        organization_id: str,
+    ) -> dict[str, Any]:
+        command = self._membership_command(
+            actor_id, payload, tenant_id=tenant_id, organization_id=organization_id
+        )
+        try:
+            access = await self._repository.assign_membership(command)
+        except ValueError as exc:
+            status = 409 if "already exists" in str(exc) else 404
+            raise PlatformError("MEMBERSHIP_CONFLICT", str(exc), status_code=status) from exc
+        return self._access_projection(access)
+
+    async def update_membership(
+        self,
+        actor_id: str,
+        payload: dict[str, Any],
+        *,
+        tenant_id: str,
+        organization_id: str,
+    ) -> dict[str, Any]:
+        command = self._membership_command(
+            actor_id, payload, tenant_id=tenant_id, organization_id=organization_id
+        )
+        try:
+            access = await self._repository.update_membership(command)
+        except ValueError as exc:
+            raise PlatformError("MEMBERSHIP_NOT_FOUND", str(exc), status_code=404) from exc
+        return self._access_projection(access)
+
+    async def revoke_membership(
+        self,
+        actor_id: str,
+        workspace_id: str,
+        *,
+        tenant_id: str,
+        organization_id: str,
+    ) -> None:
+        try:
+            await self._repository.revoke_membership(
+                actor_id,
+                workspace_id,
+                tenant_id=tenant_id,
+                organization_id=organization_id,
+                revoked_at=datetime.now(UTC),
+            )
+        except ValueError as exc:
+            raise PlatformError("MEMBERSHIP_NOT_FOUND", str(exc), status_code=404) from exc
+
+    async def set_account_active(
+        self,
+        actor_id: str,
+        active: bool,
+        *,
+        tenant_id: str,
+        organization_id: str,
+    ) -> dict[str, Any]:
+        try:
+            account = await self._repository.set_account_active(
+                actor_id,
+                active,
+                tenant_id=tenant_id,
+                organization_id=organization_id,
+                changed_at=datetime.now(UTC),
+            )
+        except ValueError as exc:
+            raise PlatformError("IDENTITY_NOT_FOUND", str(exc), status_code=404) from exc
+        return {"actor_id": account.actor_id, "active": account.active}
+
+    async def _resolve_session(self, token: str) -> tuple[SessionState, list[AccessState]]:
         if not token:
             raise PlatformError("MISSING_TOKEN", "authorization token is required", status_code=401)
-        account = self._resolve_account_from_token(token)
-        if account is None:
-            raise PlatformError("INVALID_TOKEN", "token is invalid or expired", status_code=401)
-        principal = self._directory.principal_for(account.actor_id, account.workspace_id)
-        if principal is None:
+        session = await self._repository.session_by_token_hash(self._token_hash(token))
+        if session is None:
             raise PlatformError(
-                "ACCOUNT_DISABLED",
-                "account is not active in the configured workspace",
-                status_code=403,
+                "INVALID_TOKEN", "token is invalid, expired, or revoked", status_code=401
             )
-        return self._serialize_principal(principal, include_email=account.email)
+        accesses = await self._repository.active_access(session.account.actor_id)
+        if not accesses:
+            raise PlatformError(
+                "ACCESS_REVOKED", "all workspace memberships are inactive", status_code=403
+            )
+        return session, accesses
 
-    def _resolve_account_from_token(self, token: str) -> AccountRecord | None:
-        for account in self._accounts.values():
-            if self._issue_token(account) == token:
-                return account
-        return None
+    @staticmethod
+    def _account_projection(
+        email: str,
+        actor_id: str,
+        tenant_id: str,
+        organization_id: str,
+        display_name: str,
+        accesses: list[AccessState],
+    ) -> dict[str, Any]:
+        return {
+            "actor": {
+                "actor_id": actor_id,
+                "tenant_id": tenant_id,
+                "organization_id": organization_id,
+                "display_name": display_name,
+                "active": True,
+            },
+            "email": email,
+            "workspace_access": [AuthService._access_projection(item) for item in accesses],
+        }
+
+    @staticmethod
+    def _session_projection(session: SessionState, accesses: list[AccessState]) -> dict[str, Any]:
+        base = AuthService._account_projection(
+            session.account.email,
+            session.account.actor_id,
+            session.account.tenant_id,
+            session.account.organization_id,
+            session.account.display_name,
+            accesses,
+        )
+        active = next(
+            (item for item in accesses if item.workspace_id == session.active_workspace_id), None
+        )
+        base.update(
+            active_workspace=(AuthService._access_projection(active) if active else None),
+            issued_at=session.issued_at.isoformat().replace("+00:00", "Z"),
+            expires_at=session.expires_at.isoformat().replace("+00:00", "Z"),
+        )
+        return base
+
+    @staticmethod
+    def _access_projection(access: AccessState) -> dict[str, Any]:
+        return {
+            "workspace": AuthService._workspace_projection(access),
+            "role_refs": list(access.role_refs),
+            "permission_refs": list(access.permission_refs),
+            "scope_refs": list(access.scope_refs),
+            "data_scope": access.data_scope,
+            "access_level": access.role_refs[0] if access.role_refs else None,
+            "active": access.active,
+        }
+
+    @staticmethod
+    def _membership_command(
+        actor_id: str,
+        payload: dict[str, Any],
+        *,
+        tenant_id: str,
+        organization_id: str,
+    ) -> MembershipMutation:
+        role_refs = tuple(
+            sorted(
+                {
+                    CANONICAL_ROLE_MAP.get(str(item).upper(), str(item).upper())
+                    for item in payload.get("role_refs", [])
+                }
+            )
+        )
+        if not role_refs or not set(role_refs).issubset(CANONICAL_ROLES):
+            raise PlatformError(
+                "INVALID_AUTHORIZATION_ROLE",
+                "role_refs must use the canonical authorization vocabulary",
+                status_code=400,
+            )
+        return MembershipMutation(
+            actor_id=actor_id,
+            workspace_id=str(payload.get("workspace_id") or ""),
+            tenant_id=tenant_id,
+            organization_id=organization_id,
+            role_refs=role_refs,
+            permission_refs=tuple(sorted(str(item) for item in payload.get("permission_refs", []))),
+            scope_refs=tuple(sorted(str(item) for item in payload.get("scope_refs", []))),
+            data_scope=str(payload.get("data_scope") or "OWN_ASSIGNED"),
+        )
+
+    @staticmethod
+    def _workspace_projection(access: AccessState) -> dict[str, Any]:
+        return {
+            "workspace_id": access.workspace_id,
+            "workspace_key": access.workspace_key,
+            "organization_id": access.organization_id,
+            "workspace_name": access.workspace_name,
+            "workspace_type": access.workspace_type,
+            "organizational_unit_id": access.organizational_unit_id,
+            "division_code": access.division_code,
+            "active": access.active,
+        }
 
     @staticmethod
     def _hash_password(password: str) -> str:
         salt = secrets.token_hex(16)
-        digest = hashlib.pbkdf2_hmac(
-            "sha256",
-            password.encode("utf-8"),
-            salt.encode("utf-8"),
-            200_000,
-        )
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 200_000)
         return f"pbkdf2_sha256${salt}${digest.hex()}"
 
     @staticmethod
@@ -230,41 +414,13 @@ class AuthService:
             return False
         if algorithm != "pbkdf2_sha256":
             return False
-        expected = hashlib.pbkdf2_hmac(
-            "sha256",
-            password.encode("utf-8"),
-            salt.encode("utf-8"),
-            200_000,
-        ).hex()
+        expected = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 200_000).hex()
         return hmac.compare_digest(expected, digest)
 
     @staticmethod
-    def _issue_token(account: AccountRecord) -> str:
-        raw = f"{account.email}:{account.actor_id}:{account.workspace_id}:{account.tenant_id}"
-        return "alos_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    def _token_hash(token: str) -> str:
+        return hashlib.sha256(token.encode()).hexdigest()
 
-    @staticmethod
-    def _serialize_principal(
-        principal: Principal,
-        *,
-        include_email: str | None = None,
-        include_name: str | None = None,
-    ) -> dict[str, Any]:
-        response: dict[str, Any] = {
-            "actor_id": principal.actor_id,
-            "tenant_id": principal.tenant_id,
-            "organization_id": principal.organization_id,
-            "workspace_id": principal.workspace_id,
-            "division_id": principal.division_id,
-            "project_id": principal.project_id,
-            "permissions": sorted(principal.permissions),
-            "scopes": sorted(principal.scopes),
-            "roles": sorted(principal.roles),
-            "data_scope": principal.data_scope.value,
-            "active": principal.active,
-        }
-        if include_email is not None:
-            response["email"] = include_email
-        if include_name is not None:
-            response["display_name"] = include_name
-        return response
+
+def _optional(value: object) -> str | None:
+    return str(value) if value not in {None, ""} else None

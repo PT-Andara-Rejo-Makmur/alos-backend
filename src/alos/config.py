@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     OTEL_SERVICE_NAME: str = "alos-backend"
     ALOS_CONTRACTS_PATH: Path | None = None
     ENABLE_TEST_TOOLS: bool = False
+    ENABLE_TEST_REGISTRATION: bool = False
+    AUTH_SESSION_TTL_MINUTES: int = Field(default=480, ge=5, le=43200)
     EGRESS_ALLOWED_PROTOCOLS: str = "https"
     EGRESS_ALLOWED_DOMAINS: str = ""
     EGRESS_TIMEOUT_SECONDS: float = Field(default=10.0, gt=0, le=120)
@@ -80,6 +82,14 @@ class Settings(BaseSettings):
         data = getattr(info, "data", {})
         if value and data.get("APP_ENV") == "production":
             raise ValueError("ENABLE_TEST_TOOLS cannot be enabled in production")
+        return value
+
+    @field_validator("ENABLE_TEST_REGISTRATION")
+    @classmethod
+    def forbid_test_registration_in_production(cls, value: bool, info: object) -> bool:
+        data = getattr(info, "data", {})
+        if value and data.get("APP_ENV") in {"staging", "production"}:
+            raise ValueError("ENABLE_TEST_REGISTRATION cannot be enabled outside development/test")
         return value
 
 

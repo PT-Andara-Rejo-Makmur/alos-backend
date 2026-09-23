@@ -78,7 +78,7 @@ ExternalRetrievalDependency = Annotated[
 ]
 
 
-def get_current_principal(request: Request) -> Principal:
+async def get_current_principal(request: Request) -> Principal:
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
         raise PlatformError(
@@ -87,21 +87,28 @@ def get_current_principal(request: Request) -> Principal:
             status_code=401,
         )
     token = auth_header.split(" ", 1)[1].strip()
-    payload = request.app.state.auth_service.whoami(token)
-    division_id = payload.get("division_id") or None
-    project_id = payload.get("project_id") or None
+    payload = await request.app.state.auth_service.whoami(token)
+    active_access = payload.get("active_workspace")
+    if not isinstance(active_access, dict):
+        raise PlatformError(
+            "ACTIVE_WORKSPACE_REQUIRED",
+            "an active workspace must be selected",
+            status_code=403,
+        )
+    workspace = active_access["workspace"]
+    actor = payload["actor"]
     return Principal(
-        actor_id=str(payload["actor_id"]),
-        tenant_id=str(payload["tenant_id"]),
-        organization_id=str(payload["organization_id"]),
-        workspace_id=str(payload["workspace_id"]),
-        permissions=frozenset(str(item) for item in payload["permissions"]),
-        scopes=frozenset(str(item) for item in payload["scopes"]),
-        roles=frozenset(str(item) for item in payload["roles"]),
-        data_scope=DataScope(str(payload["data_scope"])),
-        division_id=str(division_id) if division_id is not None else None,
-        project_id=str(project_id) if project_id is not None else None,
-        active=bool(payload["active"]),
+        actor_id=str(actor["actor_id"]),
+        tenant_id=str(actor["tenant_id"]),
+        organization_id=str(actor["organization_id"]),
+        workspace_id=str(workspace["workspace_id"]),
+        permissions=frozenset(str(item) for item in active_access["permission_refs"]),
+        scopes=frozenset(str(item) for item in active_access["scope_refs"]),
+        roles=frozenset(str(item) for item in active_access["role_refs"]),
+        data_scope=DataScope(str(active_access["data_scope"])),
+        division_id=(str(workspace["division_code"]) if workspace.get("division_code") else None),
+        project_id=None,
+        active=bool(actor["active"] and active_access["active"]),
     )
 
 

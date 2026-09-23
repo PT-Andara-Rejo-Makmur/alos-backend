@@ -2,15 +2,30 @@ import hashlib
 from datetime import UTC, datetime
 from typing import Any, NoReturn
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 
 from alos import __version__
 from alos.agents.lifecycle import RunAuthorityError
 from alos.api.models import ResearchRequestBody, SystemInfoResponse
-from alos.authentication.models import AuthTokenResponse, LoginRequest, RegisterRequest
+from alos.audit import AuditEvent
+from alos.authentication.models import (
+    AccountAccessProjection,
+    AccountStateProjection,
+    ActiveWorkspaceProjection,
+    ActiveWorkspaceRequest,
+    AuthenticatedPrincipalProjection,
+    AuthTokenResponse,
+    LoginRequest,
+    MembershipMutationRequest,
+    ProvisionAccountRequest,
+    RegisterRequest,
+    WorkspaceAccessProjection,
+)
+from alos.authorization import AuthorizationEnforcer
 from alos.context import build_context_projection
 from alos.contracts import ContractValidationError
 from alos.dependencies import (
+    AuthorizationEnforcerDependency,
     CapabilityRegistryDependency,
     ContractCatalogDependency,
     CurrentPrincipalDependency,
@@ -22,6 +37,7 @@ from alos.dependencies import (
     SkillServiceDependency,
 )
 from alos.evidence import resolve_registry_result
+from alos.identity import Principal
 from alos.integrations.genesis import GenesisClientError, IntegrationContractError
 from alos.observability.correlation import current_correlation_id
 from alos.persistence.models import (
@@ -955,72 +971,337 @@ async def analyze_factory_requirement(
     )
 
 
-@router.post("/auth/register", status_code=201)
+@router.post("/auth/register", status_code=201, include_in_schema=False)
 async def register(request: Request, payload: RegisterRequest) -> dict[str, Any]:
+    settings = request.app.state.settings
+    if settings.APP_ENV != "test" and not (
+        settings.APP_ENV == "development" and settings.ENABLE_TEST_REGISTRATION
+    ):
+        raise PlatformError(
+            "REGISTRATION_DISABLED",
+            "public self-registration is disabled",
+            status_code=404,
+        )
     service = request.app.state.auth_service
-    response = service.register(payload.model_dump())
-    return {
-        "actor_id": response["actor_id"],
-        "tenant_id": response["tenant_id"],
-        "organization_id": response["organization_id"],
-        "workspace_id": response["workspace_id"],
-        "email": response["email"],
-        "display_name": response["display_name"],
-        "permissions": response["permissions"],
-        "scopes": response["scopes"],
-        "roles": response["roles"],
-        "data_scope": response["data_scope"],
-        "active": response["active"],
-    }
+    result: dict[str, Any] = await service.register_for_test(payload.model_dump())
+    return result
+
+
+@router.post("/identity/accounts", status_code=201, tags=["identity"])
+async def provision_account(
+    request: Request,
+    payload: ProvisionAccountRequest,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+) -> dict[str, Any]:
+    correlation_id = current_correlation_id()
+    decision = await authorization.enforce(
+        principal=principal,
+        required_permission="identity.accounts.manage",
+        correlation_id=correlation_id,
+        command="identity.account.provision",
+    )
+    if not decision.is_allowed:
+        raise PlatformError(
+            "AUTHORIZATION_DENIED",
+            "identity.accounts.manage permission is required",
+            status_code=403,
+        )
+    result: dict[str, Any] = await request.app.state.auth_service.provision(payload.model_dump())
+    await request.app.state.identity_audit.append(
+        AuditEvent(
+            event_type="identity.account.provisioned",
+            entity_type="actor",
+            entity_id=str(result["actor"]["actor_id"]),
+            tenant_id=payload.tenant_id,
+            organization_id=payload.organization_id,
+            workspace_id=payload.workspace_id,
+            actor_id=principal.actor_id,
+            correlation_id=correlation_id,
+            outcome="SUCCEEDED",
+            occurred_at=datetime.now(UTC),
+            reason="Governed identity account provisioned",
+            metadata={"email": payload.email, "role_refs": list(payload.role_refs)},
+        )
+    )
+    return result
+
+
+@router.get(
+    "/identity/actors/{actor_id}/access",
+    response_model=AccountAccessProjection,
+    tags=["identity"],
+)
+async def list_account_access(
+    request: Request,
+    actor_id: str,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+) -> AccountAccessProjection:
+    await _require_identity_permission(
+        authorization, principal, "identity.memberships.read", "identity.access.read"
+    )
+    result = await request.app.state.auth_service.list_account_access(
+        actor_id,
+        tenant_id=principal.tenant_id,
+        organization_id=principal.organization_id,
+    )
+    return AccountAccessProjection.model_validate(result)
+
+
+@router.post(
+    "/identity/actors/{actor_id}/memberships",
+    response_model=WorkspaceAccessProjection,
+    status_code=201,
+    tags=["identity"],
+)
+async def assign_workspace_membership(
+    request: Request,
+    actor_id: str,
+    payload: MembershipMutationRequest,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+) -> WorkspaceAccessProjection:
+    correlation_id = await _require_identity_permission(
+        authorization,
+        principal,
+        "identity.memberships.manage",
+        "identity.membership.assign",
+    )
+    result = await request.app.state.auth_service.assign_membership(
+        actor_id,
+        payload.model_dump(),
+        tenant_id=principal.tenant_id,
+        organization_id=principal.organization_id,
+    )
+    await _record_identity_change(
+        request,
+        principal,
+        correlation_id,
+        event_type="identity.membership.assigned",
+        actor_id=actor_id,
+        workspace_id=payload.workspace_id,
+    )
+    return WorkspaceAccessProjection.model_validate(result)
+
+
+@router.put(
+    "/identity/actors/{actor_id}/memberships",
+    response_model=WorkspaceAccessProjection,
+    tags=["identity"],
+)
+async def update_workspace_membership(
+    request: Request,
+    actor_id: str,
+    payload: MembershipMutationRequest,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+) -> WorkspaceAccessProjection:
+    correlation_id = await _require_identity_permission(
+        authorization,
+        principal,
+        "identity.memberships.manage",
+        "identity.membership.update",
+    )
+    result = await request.app.state.auth_service.update_membership(
+        actor_id,
+        payload.model_dump(),
+        tenant_id=principal.tenant_id,
+        organization_id=principal.organization_id,
+    )
+    await _record_identity_change(
+        request,
+        principal,
+        correlation_id,
+        event_type="identity.membership.updated",
+        actor_id=actor_id,
+        workspace_id=payload.workspace_id,
+    )
+    return WorkspaceAccessProjection.model_validate(result)
+
+
+@router.delete(
+    "/identity/actors/{actor_id}/memberships/{workspace_id}",
+    status_code=204,
+    tags=["identity"],
+)
+async def revoke_workspace_membership(
+    request: Request,
+    actor_id: str,
+    workspace_id: str,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+) -> Response:
+    correlation_id = await _require_identity_permission(
+        authorization,
+        principal,
+        "identity.memberships.manage",
+        "identity.membership.revoke",
+    )
+    await request.app.state.auth_service.revoke_membership(
+        actor_id,
+        workspace_id,
+        tenant_id=principal.tenant_id,
+        organization_id=principal.organization_id,
+    )
+    await _record_identity_change(
+        request,
+        principal,
+        correlation_id,
+        event_type="identity.membership.revoked",
+        actor_id=actor_id,
+        workspace_id=workspace_id,
+    )
+    return Response(status_code=204)
+
+
+@router.post(
+    "/identity/actors/{actor_id}/activate",
+    response_model=AccountStateProjection,
+    tags=["identity"],
+)
+async def activate_account(
+    request: Request,
+    actor_id: str,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+) -> AccountStateProjection:
+    return await _change_account_state(
+        request, actor_id, True, principal=principal, authorization=authorization
+    )
+
+
+@router.post(
+    "/identity/actors/{actor_id}/suspend",
+    response_model=AccountStateProjection,
+    tags=["identity"],
+)
+async def suspend_account(
+    request: Request,
+    actor_id: str,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+) -> AccountStateProjection:
+    return await _change_account_state(
+        request, actor_id, False, principal=principal, authorization=authorization
+    )
+
+
+async def _change_account_state(
+    request: Request,
+    actor_id: str,
+    active: bool,
+    *,
+    principal: Principal,
+    authorization: AuthorizationEnforcer,
+) -> AccountStateProjection:
+    action = "activate" if active else "suspend"
+    correlation_id = await _require_identity_permission(
+        authorization, principal, "identity.accounts.manage", f"identity.account.{action}"
+    )
+    result = await request.app.state.auth_service.set_account_active(
+        actor_id,
+        active,
+        tenant_id=principal.tenant_id,
+        organization_id=principal.organization_id,
+    )
+    await _record_identity_change(
+        request,
+        principal,
+        correlation_id,
+        event_type=f"identity.account.{'activated' if active else 'suspended'}",
+        actor_id=actor_id,
+        workspace_id=principal.workspace_id,
+    )
+    return AccountStateProjection.model_validate(result)
+
+
+async def _require_identity_permission(
+    authorization: AuthorizationEnforcer,
+    principal: Principal,
+    permission: str,
+    command: str,
+) -> str:
+    correlation_id = current_correlation_id()
+    decision = await authorization.enforce(
+        principal=principal,
+        required_permission=permission,
+        correlation_id=correlation_id,
+        command=command,
+    )
+    if not decision.is_allowed:
+        raise PlatformError(
+            "AUTHORIZATION_DENIED", f"{permission} permission is required", status_code=403
+        )
+    return correlation_id
+
+
+async def _record_identity_change(
+    request: Request,
+    principal: Principal,
+    correlation_id: str,
+    *,
+    event_type: str,
+    actor_id: str,
+    workspace_id: str,
+) -> None:
+    await request.app.state.identity_audit.append(
+        AuditEvent(
+            event_type=event_type,
+            entity_type="actor",
+            entity_id=actor_id,
+            tenant_id=principal.tenant_id,
+            organization_id=principal.organization_id,
+            workspace_id=workspace_id,
+            actor_id=principal.actor_id,
+            correlation_id=correlation_id,
+            outcome="SUCCEEDED",
+            occurred_at=datetime.now(UTC),
+            reason="Governed identity authority state changed",
+        )
+    )
 
 
 @router.post("/auth/login", response_model=AuthTokenResponse)
 async def login(request: Request, payload: LoginRequest) -> AuthTokenResponse:
     service = request.app.state.auth_service
-    response = service.login(payload.email, payload.password)
-    return AuthTokenResponse(
-        access_token=response["access_token"],
-        token_type=response["token_type"],
-        principal={
-            "actor_id": response["actor_id"],
-            "tenant_id": response["tenant_id"],
-            "organization_id": response["organization_id"],
-            "workspace_id": response["workspace_id"],
-            "email": response.get("email"),
-            "display_name": response.get("display_name"),
-            "permissions": response["permissions"],
-            "scopes": response["scopes"],
-            "roles": response["roles"],
-            "data_scope": response["data_scope"],
-            "active": response["active"],
-        },
+    response = await service.login(payload.email, payload.password)
+    return AuthTokenResponse.model_validate(response)
+
+
+@router.get("/auth/whoami", response_model=AuthenticatedPrincipalProjection)
+async def whoami(request: Request) -> AuthenticatedPrincipalProjection:
+    principal = await request.app.state.auth_service.whoami(_bearer_token(request))
+    return AuthenticatedPrincipalProjection.model_validate(principal)
+
+
+@router.post("/auth/logout", status_code=204)
+async def logout(request: Request) -> Response:
+    await request.app.state.auth_service.logout(_bearer_token(request))
+    return Response(status_code=204)
+
+
+@router.get("/workspaces", response_model=list[WorkspaceAccessProjection])
+async def list_workspaces(request: Request) -> list[WorkspaceAccessProjection]:
+    workspaces = await request.app.state.auth_service.list_workspaces(_bearer_token(request))
+    return [WorkspaceAccessProjection.model_validate(item) for item in workspaces]
+
+
+@router.put("/auth/active-workspace", response_model=ActiveWorkspaceProjection)
+async def select_active_workspace(
+    request: Request, payload: ActiveWorkspaceRequest
+) -> ActiveWorkspaceProjection:
+    selected = await request.app.state.auth_service.select_active_workspace(
+        _bearer_token(request), payload.workspace_id
     )
+    return ActiveWorkspaceProjection.model_validate(selected)
 
 
-@router.get("/auth/whoami")
-async def whoami(request: Request) -> dict[str, Any]:
+def _bearer_token(request: Request) -> str:
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
-        raise PlatformError(
-            "MISSING_TOKEN",
-            "authorization header is required",
-            status_code=401,
-        )
-    token = auth_header.split(" ", 1)[1].strip()
-    principal = request.app.state.auth_service.whoami(token)
-    return {
-        "actor_id": principal["actor_id"],
-        "tenant_id": principal["tenant_id"],
-        "organization_id": principal["organization_id"],
-        "workspace_id": principal["workspace_id"],
-        "email": principal.get("email"),
-        "display_name": principal.get("display_name"),
-        "permissions": principal["permissions"],
-        "scopes": principal["scopes"],
-        "roles": principal["roles"],
-        "data_scope": principal["data_scope"],
-        "active": principal["active"],
-    }
+        raise PlatformError("MISSING_TOKEN", "authorization header is required", status_code=401)
+    return auth_header.split(" ", 1)[1].strip()
 
 
 @router.get("/system/info", response_model=SystemInfoResponse)

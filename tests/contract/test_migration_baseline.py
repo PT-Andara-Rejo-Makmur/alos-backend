@@ -133,3 +133,17 @@ def test_runtime_research_migration_is_append_only() -> None:
     assert migration.revision == "0007_runtime_research"
     assert migration.down_revision == "0006_auth_accounts"
 
+
+def test_canonical_identity_migration_is_append_only() -> None:
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "migrations"
+        / "versions"
+        / "0008_canonical_identity_access.py"
+    )
+    spec = importlib.util.spec_from_file_location("alos_canonical_identity_migration", path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    assert migration.revision == "0008_canonical_identity_access"
+    assert migration.down_revision == "0007_runtime_research"

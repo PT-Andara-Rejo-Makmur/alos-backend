@@ -111,7 +111,10 @@ class OrganizationRecord(Base):
 
 class WorkspaceRecord(Base):
     __tablename__ = "workspaces"
-    __table_args__ = {"schema": "core"}  # noqa: RUF012
+    __table_args__ = (
+        UniqueConstraint("organization_id", "workspace_key", name="uq_workspaces_organization_key"),
+        {"schema": "core"},
+    )
 
     workspace_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("core.tenants.tenant_id"), index=True)
@@ -119,6 +122,10 @@ class WorkspaceRecord(Base):
         ForeignKey("core.organizations.organization_id"), index=True
     )
     name: Mapped[str] = mapped_column(String(200))
+    workspace_key: Mapped[str] = mapped_column(String(64))
+    workspace_type: Mapped[str] = mapped_column(String(32), default="BUSINESS")
+    organizational_unit_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    division_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
@@ -150,6 +157,8 @@ class WorkspaceMembershipRecord(Base):
     scope_refs: Mapped[list[str]] = mapped_column(JSON, default=list)
     data_scope: Mapped[str] = mapped_column(String(32), default="OWN_ASSIGNED")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class RoleGrantRecord(Base):
@@ -538,7 +547,9 @@ class AuthAccountRecord(Base):
     actor_id: Mapped[str] = mapped_column(String(128), index=True)
     tenant_id: Mapped[str] = mapped_column(String(128), index=True)
     organization_id: Mapped[str] = mapped_column(String(128), index=True)
-    workspace_id: Mapped[str] = mapped_column(String(128), index=True)
+    legacy_workspace_id: Mapped[str | None] = mapped_column(
+        "workspace_id", String(128), nullable=True, index=True
+    )
     display_name: Mapped[str] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -558,7 +569,10 @@ class AuthSessionRecord(Base):
     actor_id: Mapped[str] = mapped_column(String(128), index=True)
     tenant_id: Mapped[str] = mapped_column(String(128), index=True)
     organization_id: Mapped[str] = mapped_column(String(128), index=True)
-    workspace_id: Mapped[str] = mapped_column(String(128), index=True)
+    legacy_workspace_id: Mapped[str | None] = mapped_column(
+        "workspace_id", String(128), nullable=True, index=True
+    )
+    active_workspace_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     token_hash: Mapped[str] = mapped_column(Text)
     issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

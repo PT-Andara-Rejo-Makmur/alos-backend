@@ -1,3 +1,6 @@
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import httpx
 import pytest
 
@@ -46,6 +49,24 @@ async def test_internal_namespace_is_deny_by_default(client: httpx.AsyncClient) 
     response = await client.get("/internal/v1/health")
     assert response.status_code == 401
     assert response.json()["code"] == "INTERNAL_AUTH_DENIED"
+
+
+@pytest.mark.asyncio
+async def test_integration_run_poll_returns_not_found_while_run_is_pending(
+    settings: Settings,
+) -> None:
+    app = create_app(settings.model_copy(update={"ENABLE_TEST_TOOLS": True}))
+    app.state.agent_run_authority = SimpleNamespace(list_runs=AsyncMock(return_value=[]))
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as test_client:
+        response = await test_client.get(
+            "/internal/v1/integration/agent-runs",
+            params={"correlation_id": "corr_pending_001"},
+            headers={"Authorization": "Bearer test-only-token"},
+        )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "integration run was not found"}
 
 
 @pytest.mark.asyncio

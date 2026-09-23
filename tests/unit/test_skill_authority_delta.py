@@ -342,7 +342,7 @@ async def test_public_skill_endpoints_omit_absent_optional_values() -> None:
             ALOS_CONTRACTS_PATH=CONTRACTS_ROOT,
         )
     )
-    app.state.auth_service.register(
+    await app.state.auth_service.register_for_test(
         {
             "email": "skill-delta@andara.local",
             "password": "StrongPass!123",
@@ -350,11 +350,12 @@ async def test_public_skill_endpoints_omit_absent_optional_values() -> None:
             "tenant_id": "tenant_delta",
             "organization_id": "organization_delta",
             "workspace_id": "workspace_delta",
+            "role_refs": ["WORKSPACE_MEMBER"],
             "permissions": ["permission.a", "permission.b"],
             "scopes": ["scope.x", "scope.y"],
         }
     )
-    token = app.state.auth_service.login("skill-delta@andara.local", "StrongPass!123")[
+    token = (await app.state.auth_service.login("skill-delta@andara.local", "StrongPass!123"))[
         "access_token"
     ]
     await activate(app.state.skill_registry, skill_payload())

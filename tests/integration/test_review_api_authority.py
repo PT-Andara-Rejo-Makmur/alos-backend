@@ -97,7 +97,7 @@ async def test_public_review_rejects_forged_observations_before_genesis() -> Non
         )
         subject["capability"].update(
             {
-                "owner": login.json()["principal"]["actor_id"],
+                    "owner": login.json()["principal"]["actor"]["actor_id"],
                 "purpose": subject["purpose"],
                 "tool_ids": ["diagnostic.echo"],
                 "permission_refs": ["tools.diagnostic.execute"],
@@ -135,7 +135,7 @@ async def test_public_review_rejects_forged_observations_before_genesis() -> Non
             workspace_id=registration["workspace_id"],
             subject_id=bootstrap["agent_id"],
             version=bootstrap["agent_version"],
-            actor_id=login.json()["principal"]["actor_id"],
+                actor_id=login.json()["principal"]["actor"]["actor_id"],
             correlation_id=headers["X-Correlation-ID"],
         )
         suspended = await client.post("/api/v1/reviews", json=invocation, headers=headers)

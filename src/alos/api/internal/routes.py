@@ -1,7 +1,7 @@
 from collections.abc import Mapping
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from alos.agents.lifecycle import RunAuthorityError
 from alos.authentication.internal import verify_internal_token
@@ -39,14 +39,14 @@ async def find_integration_agent_run(
 ) -> dict[str, str]:
     settings = request.app.state.settings
     if not settings.ENABLE_TEST_TOOLS or settings.APP_ENV not in {"development", "test"}:
-        raise RunAuthorityError("integration inspection is disabled")
+        raise HTTPException(status_code=404, detail="integration inspection is disabled")
     matches = [
         record
         for record in await request.app.state.agent_run_authority.list_runs()
         if record.correlation_id == correlation_id
     ]
     if not matches:
-        raise RunAuthorityError("integration run was not found")
+        raise HTTPException(status_code=404, detail="integration run was not found")
     record = max(matches, key=lambda item: item.created_at)
     return {"run_id": record.run_id, "status": record.status.value}
 

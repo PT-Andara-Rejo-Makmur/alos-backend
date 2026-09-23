@@ -1,7 +1,7 @@
 """Authentication boundaries. Identity storage is intentionally separate."""
 
 from alos.authentication.models import (
-    AuthPrincipalResponse,
+    AuthenticatedPrincipalProjection,
     AuthTokenResponse,
     LoginRequest,
     RegisterRequest,
@@ -9,9 +9,9 @@ from alos.authentication.models import (
 from alos.authentication.service import AuthService
 
 __all__ = [
-    "AuthPrincipalResponse",
     "AuthService",
     "AuthTokenResponse",
+    "AuthenticatedPrincipalProjection",
     "LoginRequest",
     "RegisterRequest",
 ]

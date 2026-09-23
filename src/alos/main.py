@@ -13,6 +13,8 @@ from alos.api.internal.routes import router as internal_router
 from alos.api.models import HealthResponse, ReadinessResponse
 from alos.api.public.routes import router as public_router
 from alos.audit import InMemoryAuditRepository, SqlAuditRepository, SqlToolAuditSink
+from alos.authentication.memory import InMemoryAuthRepository
+from alos.authentication.repository import SqlAuthRepository
 from alos.authentication.service import AuthService
 from alos.capabilities.registry import CapabilityRegistry
 from alos.config import Settings, get_settings
@@ -59,8 +61,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = resolved
     app.state.started = False
-    app.state.auth_service = AuthService()
     app.state.database = Database(resolved.DATABASE_URL)
+    auth_repository = (
+        InMemoryAuthRepository()
+        if resolved.APP_ENV == "test"
+        else SqlAuthRepository(app.state.database.session_factory)
+    )
+    app.state.auth_service = AuthService(
+        auth_repository, session_ttl_minutes=resolved.AUTH_SESSION_TTL_MINUTES
+    )
+    app.state.identity_audit = (
+        InMemoryAuditRepository()
+        if resolved.APP_ENV == "test"
+        else SqlAuditRepository(app.state.database.session_factory)
+    )
     app.state.registry_store = (
         InMemoryRegistryStore()
         if resolved.APP_ENV == "test"
