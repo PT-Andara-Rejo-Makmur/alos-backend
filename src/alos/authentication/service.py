@@ -125,8 +125,13 @@ class AuthService:
         try:
             account = await self._repository.provision(command, bootstrap=bootstrap)
         except ValueError as exc:
-            code = "USER_ALREADY_EXISTS" if "already exists" in str(exc) else "IDENTITY_CONFLICT"
-            raise PlatformError(code, str(exc), status_code=409) from exc
+            message = str(exc)
+            if "outside an active authority boundary" in message:
+                raise PlatformError(
+                    "AUTHORITY_BOUNDARY_CONFLICT", message, status_code=403
+                ) from exc
+            code = "USER_ALREADY_EXISTS" if "already exists" in message else "IDENTITY_CONFLICT"
+            raise PlatformError(code, message, status_code=409) from exc
         accesses = await self._repository.active_access(account.actor_id)
         return self._account_projection(
             account.email,

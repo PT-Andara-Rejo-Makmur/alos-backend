@@ -20,13 +20,22 @@ class InMemoryAuthRepository:
         self._accounts: dict[str, AccountState] = {}
         self._access: dict[str, list[AccessState]] = {}
         self._workspaces: dict[str, AccessState] = {}
+        self._workspace_tenants: dict[str, str] = {}
         self._sessions: dict[str, tuple[str, SessionState]] = {}
         self._next_account_id = 1
 
     async def provision(self, command: ProvisionAccount, *, bootstrap: bool) -> AccountState:
-        del bootstrap
         if command.email in self._accounts:
             raise ValueError("account already exists")
+        if not bootstrap:
+            workspace = self._workspaces.get(command.workspace_id)
+            if (
+                workspace is None
+                or self._workspace_tenants.get(command.workspace_id) != command.tenant_id
+                or workspace.organization_id != command.organization_id
+                or not workspace.active
+            ):
+                raise ValueError("provisioning target is outside an active authority boundary")
         account = AccountState(
             self._next_account_id,
             command.email,
@@ -55,6 +64,7 @@ class InMemoryAuthRepository:
             )
         self._access[command.actor_id] = [initial_access]
         self._workspaces[command.workspace_id] = initial_access
+        self._workspace_tenants[command.workspace_id] = command.tenant_id
         return account
 
     async def account_by_email(self, email: str) -> AccountState | None:
@@ -222,7 +232,12 @@ class InMemoryAuthRepository:
 
     def _bounded_workspace(self, command: MembershipMutation) -> AccessState:
         workspace = self._workspaces.get(command.workspace_id)
-        if workspace is None or workspace.organization_id != command.organization_id:
+        if (
+            workspace is None
+            or self._workspace_tenants.get(command.workspace_id) != command.tenant_id
+            or workspace.organization_id != command.organization_id
+            or not workspace.active
+        ):
             raise ValueError("membership target is outside the active authority boundary")
         return workspace
 

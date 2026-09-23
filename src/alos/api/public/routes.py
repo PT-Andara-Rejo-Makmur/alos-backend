@@ -1007,14 +1007,28 @@ async def provision_account(
             "identity.accounts.manage permission is required",
             status_code=403,
         )
-    result: dict[str, Any] = await request.app.state.auth_service.provision(payload.model_dump())
+    if (
+        payload.tenant_id != principal.tenant_id
+        or payload.organization_id != principal.organization_id
+    ):
+        raise PlatformError(
+            "AUTHORITY_BOUNDARY_CONFLICT",
+            "tenant and organization must match the authenticated authority boundary",
+            status_code=403,
+        )
+    canonical_payload = payload.model_dump()
+    canonical_payload.update(
+        tenant_id=principal.tenant_id,
+        organization_id=principal.organization_id,
+    )
+    result: dict[str, Any] = await request.app.state.auth_service.provision(canonical_payload)
     await request.app.state.identity_audit.append(
         AuditEvent(
             event_type="identity.account.provisioned",
             entity_type="actor",
             entity_id=str(result["actor"]["actor_id"]),
-            tenant_id=payload.tenant_id,
-            organization_id=payload.organization_id,
+            tenant_id=principal.tenant_id,
+            organization_id=principal.organization_id,
             workspace_id=payload.workspace_id,
             actor_id=principal.actor_id,
             correlation_id=correlation_id,

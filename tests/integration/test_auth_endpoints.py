@@ -2,6 +2,61 @@ import httpx
 import pytest
 
 
+async def _register_identity(
+    client: httpx.AsyncClient,
+    *,
+    email: str,
+    tenant_id: str,
+    organization_id: str,
+    workspace_id: str,
+    permissions: list[str] | None = None,
+) -> dict:
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": email,
+            "password": "StrongPass!123",
+            "display_name": email.split("@", 1)[0],
+            "tenant_id": tenant_id,
+            "organization_id": organization_id,
+            "workspace_id": workspace_id,
+            "workspace_key": workspace_id,
+            "workspace_name": workspace_id,
+            "role_refs": ["IT_ADMIN"],
+            "permission_refs": permissions or [],
+            "scope_refs": ["scope.identity.manage"] if permissions else [],
+        },
+    )
+    assert response.status_code == 201
+    return response.json()
+
+
+async def _login_headers(client: httpx.AsyncClient, email: str) -> dict[str, str]:
+    response = await client.post(
+        "/api/v1/auth/login",
+        json={"email": email, "password": "StrongPass!123"},
+    )
+    assert response.status_code == 200
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+def _provision_payload(
+    *, tenant_id: str, organization_id: str, workspace_id: str, email: str
+) -> dict:
+    return {
+        "email": email,
+        "password": "StrongPass!456",
+        "display_name": "Provisioned Account",
+        "tenant_id": tenant_id,
+        "organization_id": organization_id,
+        "workspace_id": workspace_id,
+        "workspace_key": workspace_id,
+        "workspace_name": workspace_id,
+        "workspace_type": "BUSINESS",
+        "role_refs": ["WORKSPACE_MEMBER"],
+    }
+
+
 @pytest.mark.asyncio
 async def test_register_and_login_round_trip(client: httpx.AsyncClient) -> None:
     register_response = await client.post(
@@ -242,6 +297,144 @@ async def test_account_provisioning_denies_missing_permission(client: httpx.Asyn
 
     assert response.status_code == 403
     assert response.json()["code"] == "AUTHORIZATION_DENIED"
+
+
+@pytest.mark.asyncio
+async def test_account_provisioning_denies_cross_tenant_boundary(
+    client: httpx.AsyncClient,
+) -> None:
+    await _register_identity(
+        client,
+        email="tenant-admin@andara.local",
+        tenant_id="tenant_a",
+        organization_id="org_a",
+        workspace_id="workspace_a",
+        permissions=["identity.accounts.manage"],
+    )
+    await _register_identity(
+        client,
+        email="tenant-b@andara.local",
+        tenant_id="tenant_b",
+        organization_id="org_b",
+        workspace_id="workspace_b",
+    )
+
+    response = await client.post(
+        "/api/v1/identity/accounts",
+        headers=await _login_headers(client, "tenant-admin@andara.local"),
+        json=_provision_payload(
+            tenant_id="tenant_b",
+            organization_id="org_b",
+            workspace_id="workspace_b",
+            email="cross-tenant@andara.local",
+        ),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "AUTHORITY_BOUNDARY_CONFLICT"
+
+
+@pytest.mark.asyncio
+async def test_account_provisioning_denies_cross_organization_boundary(
+    client: httpx.AsyncClient,
+) -> None:
+    await _register_identity(
+        client,
+        email="org-admin@andara.local",
+        tenant_id="tenant_shared",
+        organization_id="org_a",
+        workspace_id="workspace_a",
+        permissions=["identity.accounts.manage"],
+    )
+    await _register_identity(
+        client,
+        email="org-b@andara.local",
+        tenant_id="tenant_shared",
+        organization_id="org_b",
+        workspace_id="workspace_b",
+    )
+
+    response = await client.post(
+        "/api/v1/identity/accounts",
+        headers=await _login_headers(client, "org-admin@andara.local"),
+        json=_provision_payload(
+            tenant_id="tenant_shared",
+            organization_id="org_b",
+            workspace_id="workspace_b",
+            email="cross-org@andara.local",
+        ),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "AUTHORITY_BOUNDARY_CONFLICT"
+
+
+@pytest.mark.asyncio
+async def test_account_provisioning_denies_foreign_workspace(
+    client: httpx.AsyncClient,
+) -> None:
+    await _register_identity(
+        client,
+        email="workspace-admin@andara.local",
+        tenant_id="tenant_shared",
+        organization_id="org_a",
+        workspace_id="workspace_a",
+        permissions=["identity.accounts.manage"],
+    )
+    await _register_identity(
+        client,
+        email="foreign-workspace@andara.local",
+        tenant_id="tenant_shared",
+        organization_id="org_b",
+        workspace_id="workspace_b",
+    )
+
+    response = await client.post(
+        "/api/v1/identity/accounts",
+        headers=await _login_headers(client, "workspace-admin@andara.local"),
+        json=_provision_payload(
+            tenant_id="tenant_shared",
+            organization_id="org_a",
+            workspace_id="workspace_b",
+            email="foreign-workspace-target@andara.local",
+        ),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "AUTHORITY_BOUNDARY_CONFLICT"
+
+
+@pytest.mark.asyncio
+async def test_membership_assignment_denies_cross_organization_actor(
+    client: httpx.AsyncClient,
+) -> None:
+    await _register_identity(
+        client,
+        email="membership-admin@andara.local",
+        tenant_id="tenant_shared",
+        organization_id="org_a",
+        workspace_id="workspace_a",
+        permissions=["identity.memberships.manage"],
+    )
+    foreign = await _register_identity(
+        client,
+        email="foreign-actor@andara.local",
+        tenant_id="tenant_shared",
+        organization_id="org_b",
+        workspace_id="workspace_b",
+    )
+
+    response = await client.post(
+        f"/api/v1/identity/actors/{foreign['actor']['actor_id']}/memberships",
+        headers=await _login_headers(client, "membership-admin@andara.local"),
+        json={
+            "workspace_id": "workspace_a",
+            "role_refs": ["WORKSPACE_MEMBER"],
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "MEMBERSHIP_CONFLICT"
 
 
 @pytest.mark.asyncio

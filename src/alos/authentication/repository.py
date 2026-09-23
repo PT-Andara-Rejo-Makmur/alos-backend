@@ -194,6 +194,7 @@ class SqlAuthRepository:
                 or not organization.active
                 or not workspace.active
                 or organization.tenant_id != command.tenant_id
+                or workspace.tenant_id != command.tenant_id
                 or workspace.organization_id != command.organization_id
             ):
                 raise ValueError("provisioning target is outside an active authority boundary")
