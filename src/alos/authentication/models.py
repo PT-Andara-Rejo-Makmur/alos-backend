@@ -52,14 +52,7 @@ class ProvisionAccountRequest(BaseModel):
     email: str = Field(min_length=3, max_length=255)
     password: str = Field(min_length=8, max_length=256)
     display_name: str = Field(min_length=1, max_length=200)
-    tenant_id: str = Field(min_length=3, max_length=128)
-    organization_id: str = Field(min_length=3, max_length=128)
     workspace_id: str = Field(min_length=3, max_length=128)
-    workspace_key: str = Field(min_length=2, max_length=64)
-    workspace_name: str = Field(min_length=1, max_length=200)
-    workspace_type: WorkspaceType
-    organizational_unit_id: str | None = None
-    division_code: str | None = None
     role_refs: list[str]
     permission_refs: list[str] = Field(default_factory=list)
     scope_refs: list[str] = Field(default_factory=list)

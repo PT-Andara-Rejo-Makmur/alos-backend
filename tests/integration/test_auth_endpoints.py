@@ -40,19 +40,12 @@ async def _login_headers(client: httpx.AsyncClient, email: str) -> dict[str, str
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
-def _provision_payload(
-    *, tenant_id: str, organization_id: str, workspace_id: str, email: str
-) -> dict:
+def _provision_payload(*, workspace_id: str, email: str) -> dict:
     return {
         "email": email,
         "password": "StrongPass!456",
         "display_name": "Provisioned Account",
-        "tenant_id": tenant_id,
-        "organization_id": organization_id,
         "workspace_id": workspace_id,
-        "workspace_key": workspace_id,
-        "workspace_name": workspace_id,
-        "workspace_type": "BUSINESS",
         "role_refs": ["WORKSPACE_MEMBER"],
     }
 
@@ -235,12 +228,7 @@ async def test_account_provisioning_uses_permission_policy_and_records_actor(
             "email": "provisioned@andara.local",
             "password": "StrongPass!456",
             "display_name": "Provisioned Account",
-            "tenant_id": "tenant_default",
-            "organization_id": "org_default",
             "workspace_id": "workspace_operations",
-            "workspace_key": "operations",
-            "workspace_name": "Operations",
-            "workspace_type": "BUSINESS",
             "role_refs": ["WORKSPACE_MEMBER"],
             "permission_refs": ["documents.read"],
             "scope_refs": ["scope.workspace.operations"],
@@ -285,12 +273,7 @@ async def test_account_provisioning_denies_missing_permission(client: httpx.Asyn
             "email": "denied@andara.local",
             "password": "StrongPass!456",
             "display_name": "Denied Account",
-            "tenant_id": "tenant_default",
-            "organization_id": "org_default",
             "workspace_id": "workspace_operations",
-            "workspace_key": "operations",
-            "workspace_name": "Operations",
-            "workspace_type": "BUSINESS",
             "role_refs": ["WORKSPACE_MEMBER"],
         },
     )
@@ -322,16 +305,17 @@ async def test_account_provisioning_denies_cross_tenant_boundary(
     response = await client.post(
         "/api/v1/identity/accounts",
         headers=await _login_headers(client, "tenant-admin@andara.local"),
-        json=_provision_payload(
-            tenant_id="tenant_b",
-            organization_id="org_b",
-            workspace_id="workspace_b",
-            email="cross-tenant@andara.local",
-        ),
+        json={
+            **_provision_payload(
+                workspace_id="workspace_a",
+                email="cross-tenant@andara.local",
+            ),
+            "tenant_id": "tenant_b",
+        },
     )
 
-    assert response.status_code == 403
-    assert response.json()["code"] == "AUTHORITY_BOUNDARY_CONFLICT"
+    assert response.status_code == 422
+    assert response.json()["code"] == "REQUEST_VALIDATION_FAILED"
 
 
 @pytest.mark.asyncio
@@ -357,16 +341,17 @@ async def test_account_provisioning_denies_cross_organization_boundary(
     response = await client.post(
         "/api/v1/identity/accounts",
         headers=await _login_headers(client, "org-admin@andara.local"),
-        json=_provision_payload(
-            tenant_id="tenant_shared",
-            organization_id="org_b",
-            workspace_id="workspace_b",
-            email="cross-org@andara.local",
-        ),
+        json={
+            **_provision_payload(
+                workspace_id="workspace_a",
+                email="cross-org@andara.local",
+            ),
+            "organization_id": "org_b",
+        },
     )
 
-    assert response.status_code == 403
-    assert response.json()["code"] == "AUTHORITY_BOUNDARY_CONFLICT"
+    assert response.status_code == 422
+    assert response.json()["code"] == "REQUEST_VALIDATION_FAILED"
 
 
 @pytest.mark.asyncio
@@ -393,8 +378,6 @@ async def test_account_provisioning_denies_foreign_workspace(
         "/api/v1/identity/accounts",
         headers=await _login_headers(client, "workspace-admin@andara.local"),
         json=_provision_payload(
-            tenant_id="tenant_shared",
-            organization_id="org_a",
             workspace_id="workspace_b",
             email="foreign-workspace-target@andara.local",
         ),
@@ -529,8 +512,6 @@ async def test_production_provisioning_rejects_legacy_role_alias(
         permissions=["identity.accounts.manage"],
     )
     payload = _provision_payload(
-        tenant_id="tenant_roles",
-        organization_id="org_roles",
         workspace_id="workspace_roles",
         email="legacy-role@andara.local",
     )

@@ -62,17 +62,22 @@ class InMemoryAuthRepository:
         )
         self._next_account_id += 1
         self._accounts[command.email] = account
+        workspace_state = self._workspaces.get(command.workspace_id)
         initial_access = AccessState(
-                command.workspace_id,
-                command.workspace_key,
-                command.workspace_name,
-                command.workspace_type,
-                command.organization_id,
-                command.organizational_unit_id,
-                command.division_code,
-                command.role_refs,
-                command.permission_refs,
-                command.scope_refs,
+            command.workspace_id,
+            workspace_state.workspace_key if workspace_state else command.workspace_key,
+            workspace_state.workspace_name if workspace_state else command.workspace_name,
+            workspace_state.workspace_type if workspace_state else command.workspace_type,
+            command.organization_id,
+            (
+                workspace_state.organizational_unit_id
+                if workspace_state
+                else command.organizational_unit_id
+            ),
+            workspace_state.division_code if workspace_state else command.division_code,
+            command.role_refs,
+            command.permission_refs,
+            command.scope_refs,
                 command.data_scope,
                 True,
             )

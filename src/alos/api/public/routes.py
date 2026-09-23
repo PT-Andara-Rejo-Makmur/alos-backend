@@ -1007,15 +1007,6 @@ async def provision_account(
             "identity.accounts.manage permission is required",
             status_code=403,
         )
-    if (
-        payload.tenant_id != principal.tenant_id
-        or payload.organization_id != principal.organization_id
-    ):
-        raise PlatformError(
-            "AUTHORITY_BOUNDARY_CONFLICT",
-            "tenant and organization must match the authenticated authority boundary",
-            status_code=403,
-        )
     canonical_payload = payload.model_dump()
     canonical_payload.update(
         tenant_id=principal.tenant_id,
