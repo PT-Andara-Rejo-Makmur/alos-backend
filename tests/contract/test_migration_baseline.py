@@ -53,6 +53,10 @@ def test_authoritative_tables_have_explicit_schema_ownership() -> None:
     assert ("governance", "tool_idempotency") in owned
     assert ("governance", "release_lifecycle_events") in owned
     assert ("ai_runtime", "agent_runs") in owned
+    assert ("ai_runtime", "agent_run_steps") in owned
+    assert ("ai_runtime", "backlog_candidates") in owned
+    assert ("research", "research_findings") in owned
+    assert ("research", "research_recommendations") in owned
     assert ("core", "documents") in owned
     assert ("core", "document_versions") in owned
     assert ("core", "sources") in owned
@@ -113,3 +117,19 @@ def test_auth_account_migration_is_append_only() -> None:
     spec.loader.exec_module(migration)
     assert migration.revision == "0006_auth_accounts"
     assert migration.down_revision == "0005_knowledge_authority"
+
+
+def test_runtime_research_migration_is_append_only() -> None:
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "migrations"
+        / "versions"
+        / "0007_runtime_research.py"
+    )
+    spec = importlib.util.spec_from_file_location("alos_runtime_research_migration", path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    assert migration.revision == "0007_runtime_research"
+    assert migration.down_revision == "0006_auth_accounts"
+

@@ -1,13 +1,13 @@
 """Align runtime and research persistence with authoritative ORM metadata.
 
-Revision ID: 0007_runtime_research_persistence
+Revision ID: 0007_runtime_research
 Revises: 0006_auth_accounts
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0007_runtime_research_persistence"
+revision = "0007_runtime_research"
 down_revision = "0006_auth_accounts"
 branch_labels = None
 depends_on = None
