@@ -130,7 +130,7 @@ class AuthRepository(Protocol):
         session_id: str,
         account: AccountState,
         token_hash: str,
-        active_workspace_id: str,
+        active_workspace_id: str | None,
         issued_at: datetime,
         expires_at: datetime,
     ) -> SessionState: ...
@@ -393,7 +393,7 @@ class SqlAuthRepository:
         session_id: str,
         account: AccountState,
         token_hash: str,
-        active_workspace_id: str,
+        active_workspace_id: str | None,
         issued_at: datetime,
         expires_at: datetime,
     ) -> SessionState:

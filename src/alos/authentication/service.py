@@ -164,7 +164,7 @@ class AuthService:
             session_id=f"session_{uuid.uuid4().hex}",
             account=account,
             token_hash=self._token_hash(raw_token),
-            active_workspace_id=accesses[0].workspace_id,
+            active_workspace_id=(accesses[0].workspace_id if len(accesses) == 1 else None),
             issued_at=issued_at,
             expires_at=expires_at,
         )

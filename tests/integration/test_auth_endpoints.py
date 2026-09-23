@@ -438,6 +438,85 @@ async def test_membership_assignment_denies_cross_organization_actor(
 
 
 @pytest.mark.asyncio
+async def test_multi_workspace_login_requires_explicit_selection_and_revocation_fails_closed(
+    client: httpx.AsyncClient,
+) -> None:
+    admin = await _register_identity(
+        client,
+        email="multi-workspace@andara.local",
+        tenant_id="tenant_shared",
+        organization_id="org_shared",
+        workspace_id="workspace_alpha",
+        permissions=["identity.memberships.manage", "identity.memberships.read"],
+    )
+    await _register_identity(
+        client,
+        email="workspace-beta-seed@andara.local",
+        tenant_id="tenant_shared",
+        organization_id="org_shared",
+        workspace_id="workspace_beta",
+    )
+    actor_id = admin["actor"]["actor_id"]
+    initial_headers = await _login_headers(client, "multi-workspace@andara.local")
+    assigned = await client.post(
+        f"/api/v1/identity/actors/{actor_id}/memberships",
+        headers=initial_headers,
+        json={
+            "workspace_id": "workspace_beta",
+            "role_refs": ["WORKSPACE_LEAD"],
+            "permission_refs": ["identity.memberships.manage"],
+            "scope_refs": ["scope.identity.manage"],
+        },
+    )
+    assert assigned.status_code == 201
+
+    login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "multi-workspace@andara.local", "password": "StrongPass!123"},
+    )
+    assert login.status_code == 200
+    body = login.json()
+    assert body["principal"]["active_workspace"] is None
+    token = body["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    selected = await client.put(
+        "/api/v1/auth/active-workspace",
+        headers=headers,
+        json={"workspace_id": "workspace_beta"},
+    )
+    assert selected.status_code == 200
+    assert selected.json()["actor_id"] == actor_id
+
+    whoami = await client.get("/api/v1/auth/whoami", headers=headers)
+    assert whoami.status_code == 200
+    active = whoami.json()["active_workspace"]
+    assert active["workspace"]["workspace_id"] == "workspace_beta"
+    assert active["role_refs"] == ["WORKSPACE_LEAD"]
+    assert whoami.json()["actor"]["actor_id"] == actor_id
+
+    revoked = await client.delete(
+        f"/api/v1/identity/actors/{actor_id}/memberships/workspace_beta",
+        headers=initial_headers,
+    )
+    assert revoked.status_code == 204
+
+    after_revocation = await client.get("/api/v1/auth/whoami", headers=headers)
+    assert after_revocation.status_code == 200
+    assert after_revocation.json()["active_workspace"] is None
+    assert {
+        item["workspace"]["workspace_id"]
+        for item in after_revocation.json()["workspace_access"]
+    } == {"workspace_alpha"}
+    protected = await client.get(
+        f"/api/v1/identity/actors/{actor_id}/access",
+        headers=headers,
+    )
+    assert protected.status_code == 403
+    assert protected.json()["code"] == "ACTIVE_WORKSPACE_REQUIRED"
+
+
+@pytest.mark.asyncio
 async def test_admin_manages_multi_workspace_membership_and_account_state(
     client: httpx.AsyncClient,
 ) -> None:
