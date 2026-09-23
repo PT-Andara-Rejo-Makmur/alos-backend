@@ -297,7 +297,7 @@ class AgentRunAuthority:
                     )
                 self._delegation_counts[parent_record.run_id] = active_children + 1
         else:
-            request["parent_run_id"] = None
+            request.pop("parent_run_id", None)
             request["root_run_id"] = str(request.get("root_run_id") or run_id)
             depth = 0
 

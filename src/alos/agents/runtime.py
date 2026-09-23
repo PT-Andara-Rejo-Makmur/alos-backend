@@ -78,9 +78,14 @@ class AuthoritativeRuntimeOrchestrator:
             "execution_mode": execution_mode,
         }
         started = await self._authority.begin(run_request, agent=agent)
+        run_request_payload = {
+            key: value
+            for key, value in started.request.items()
+            if value is not None and key != "delegation_policy"
+        }
         invocation = {
             "agent_definition": agent.payload,
-            "run_request": started.request,
+            "run_request": run_request_payload,
             "runtime_authorization": {
                 "run_id": started.run_id,
                 "registry_digest": started.registry_digest,
