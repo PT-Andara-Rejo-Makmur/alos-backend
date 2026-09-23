@@ -55,6 +55,8 @@ class ExternalResearchToolAdapter:
         lowered = sanitized.lower()
         blocked = (
             "ignore all permissions",
+            "ignore previous instructions",
+            "access internal database",
             "set scope=",
             "grant scope",
             "override authority",
@@ -62,6 +64,11 @@ class ExternalResearchToolAdapter:
             "drop policy",
             "ignore policy",
             "change permission",
+            "access private",
+            "change role",
+            "become admin",
+            "grant admin",
+            "internal database",
         )
         for token in blocked:
             sanitized = re.sub(re.escape(token), " ", sanitized, flags=re.IGNORECASE)

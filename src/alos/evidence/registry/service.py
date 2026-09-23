@@ -19,6 +19,7 @@ class EvidenceRegistry:
     def __init__(self, contracts: CanonicalContractCatalog) -> None:
         self._contracts = contracts
         self._evidence: dict[str, dict[str, Any]] = {}
+        self._claim_lineage: dict[str, list[dict[str, Any]]] = {}
 
     def register(self, payload: dict[str, Any]) -> dict[str, Any]:
         validated = self._contracts.validate(EVIDENCE_REF_SCHEMA, payload)
@@ -28,6 +29,48 @@ class EvidenceRegistry:
             raise EvidenceConflictError("immutable evidence_id already has different content")
         self._evidence[evidence_id] = copy.deepcopy(validated)
         return copy.deepcopy(validated)
+
+    def register_claim_lineage(
+        self,
+        *,
+        claim_id: str,
+        evidence_id: str,
+        source_id: str,
+        retrieval_id: str | None = None,
+        research_run_id: str | None = None,
+        source_ref: str | None = None,
+        provenance: str | None = None,
+        freshness: str | None = None,
+        correlation_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "claim_id": claim_id,
+            "evidence_id": evidence_id,
+            "source_id": source_id,
+            "retrieval_id": retrieval_id,
+            "research_run_id": research_run_id,
+            "source_ref": source_ref,
+            "provenance": provenance or "backend-authorized-retrieval",
+            "freshness": freshness or "CURRENT",
+            "correlation_id": correlation_id or "unknown",
+            "metadata": dict(metadata or {}),
+        }
+        self._claim_lineage.setdefault(claim_id, []).append(payload)
+        return copy.deepcopy(payload)
+
+    def get_claim_lineage(self, claim_id: str) -> list[dict[str, Any]]:
+        return copy.deepcopy(self._claim_lineage.get(claim_id, []))
+
+    def verify_claim(self, *, claim_id: str, evidence_ids: list[str] | tuple[str, ...], minimum: int = 1) -> bool:
+        lineage = self._claim_lineage.get(claim_id, [])
+        if len(lineage) < minimum:
+            return False
+        known = {item["evidence_id"] for item in lineage}
+        for evidence_id in evidence_ids:
+            if evidence_id in known:
+                return True
+        return False
 
     def bundle(self, payload: dict[str, Any]) -> dict[str, Any]:
         validated = self._contracts.validate(EVIDENCE_BUNDLE_SCHEMA, payload)

@@ -365,6 +365,48 @@ class BacklogCandidateRecord(Base):
     scope_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
     correlation_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    reviewed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ResearchFindingRecord(Base):
+    __tablename__ = "research_findings"
+    __table_args__ = {"schema": "research"}  # noqa: RUF012
+
+    finding_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), index=True, default="unknown")
+    organization_id: Mapped[str] = mapped_column(String(128), index=True, default="unknown")
+    workspace_id: Mapped[str] = mapped_column(String(128), index=True, default="unknown")
+    actor_id: Mapped[str] = mapped_column(String(128), default="unknown")
+    correlation_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(32), default="RESEARCH")
+    domain: Mapped[str] = mapped_column(String(32), default="TECHNOLOGY")
+    statement: Mapped[str] = mapped_column(Text)
+    evidence_refs: Mapped[list[str]] = mapped_column(JSON, default=list)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    source_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    retrieval_metadata: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.now)
+
+
+class ResearchRecommendationRecord(Base):
+    __tablename__ = "research_recommendations"
+    __table_args__ = {"schema": "research"}  # noqa: RUF012
+
+    recommendation_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    finding_id: Mapped[str] = mapped_column(String(128), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), index=True, default="unknown")
+    organization_id: Mapped[str] = mapped_column(String(128), index=True, default="unknown")
+    workspace_id: Mapped[str] = mapped_column(String(128), index=True, default="unknown")
+    actor_id: Mapped[str] = mapped_column(String(128), default="unknown")
+    correlation_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    recommendation: Mapped[str] = mapped_column(Text)
+    impact: Mapped[str] = mapped_column(Text)
+    priority_suggestion: Mapped[str] = mapped_column(String(32))
+    owner_suggestion: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    evidence_refs: Mapped[list[str]] = mapped_column(JSON, default=list)
+    domain: Mapped[str] = mapped_column(String(32), default="TECHNOLOGY")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.now)
 
 
 class DocumentAuthorityRecord(Base):
