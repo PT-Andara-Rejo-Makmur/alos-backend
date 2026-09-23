@@ -66,12 +66,14 @@ class AuthService:
             raise PlatformError(
                 "WEAK_PASSWORD", "password must be at least 8 characters long", status_code=400
             )
+        requested_roles = {
+            str(item).upper()
+            for item in (payload.get("role_refs") or payload.get("roles", []))
+        }
         role_refs = tuple(
             sorted(
-                {
-                    CANONICAL_ROLE_MAP.get(str(item).upper(), str(item).upper())
-                    for item in (payload.get("role_refs") or payload.get("roles", []))
-                }
+                CANONICAL_ROLE_MAP.get(item, item) if bootstrap else item
+                for item in requested_roles
             )
         )
         if not role_refs or not set(role_refs).issubset(CANONICAL_ROLES):
@@ -367,14 +369,7 @@ class AuthService:
         tenant_id: str,
         organization_id: str,
     ) -> MembershipMutation:
-        role_refs = tuple(
-            sorted(
-                {
-                    CANONICAL_ROLE_MAP.get(str(item).upper(), str(item).upper())
-                    for item in payload.get("role_refs", [])
-                }
-            )
-        )
+        role_refs = tuple(sorted({str(item).upper() for item in payload.get("role_refs", [])}))
         if not role_refs or not set(role_refs).issubset(CANONICAL_ROLES):
             raise PlatformError(
                 "INVALID_AUTHORIZATION_ROLE",

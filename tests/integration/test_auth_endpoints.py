@@ -517,6 +517,62 @@ async def test_multi_workspace_login_requires_explicit_selection_and_revocation_
 
 
 @pytest.mark.asyncio
+async def test_production_provisioning_rejects_legacy_role_alias(
+    client: httpx.AsyncClient,
+) -> None:
+    await _register_identity(
+        client,
+        email="role-admin@andara.local",
+        tenant_id="tenant_roles",
+        organization_id="org_roles",
+        workspace_id="workspace_roles",
+        permissions=["identity.accounts.manage"],
+    )
+    payload = _provision_payload(
+        tenant_id="tenant_roles",
+        organization_id="org_roles",
+        workspace_id="workspace_roles",
+        email="legacy-role@andara.local",
+    )
+    payload["role_refs"] = ["IT_LEAD"]
+
+    response = await client.post(
+        "/api/v1/identity/accounts",
+        headers=await _login_headers(client, "role-admin@andara.local"),
+        json=payload,
+    )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "INVALID_AUTHORIZATION_ROLE"
+
+
+@pytest.mark.asyncio
+async def test_membership_mutation_rejects_legacy_role_alias(
+    client: httpx.AsyncClient,
+) -> None:
+    admin = await _register_identity(
+        client,
+        email="membership-role-admin@andara.local",
+        tenant_id="tenant_roles",
+        organization_id="org_roles",
+        workspace_id="workspace_roles",
+        permissions=["identity.memberships.manage"],
+    )
+
+    response = await client.post(
+        f"/api/v1/identity/actors/{admin['actor']['actor_id']}/memberships",
+        headers=await _login_headers(client, "membership-role-admin@andara.local"),
+        json={
+            "workspace_id": "workspace_roles",
+            "role_refs": ["IT_LEAD"],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "INVALID_AUTHORIZATION_ROLE"
+
+
+@pytest.mark.asyncio
 async def test_admin_manages_multi_workspace_membership_and_account_state(
     client: httpx.AsyncClient,
 ) -> None:

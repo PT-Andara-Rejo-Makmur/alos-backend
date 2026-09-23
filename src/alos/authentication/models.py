@@ -60,7 +60,7 @@ class ProvisionAccountRequest(BaseModel):
     workspace_type: WorkspaceType
     organizational_unit_id: str | None = None
     division_code: str | None = None
-    role_refs: list[AuthorizationRole]
+    role_refs: list[str]
     permission_refs: list[str] = Field(default_factory=list)
     scope_refs: list[str] = Field(default_factory=list)
     data_scope: IdentityDataScope = "OWN_ASSIGNED"
@@ -137,7 +137,7 @@ class ActiveWorkspaceProjection(BaseModel):
 class MembershipMutationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     workspace_id: str = Field(min_length=1, max_length=128)
-    role_refs: list[AuthorizationRole]
+    role_refs: list[str]
     permission_refs: list[str] = Field(default_factory=list)
     scope_refs: list[str] = Field(default_factory=list)
     data_scope: IdentityDataScope = "OWN_ASSIGNED"
