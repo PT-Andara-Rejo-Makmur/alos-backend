@@ -188,6 +188,9 @@ class InMemoryReleaseAuthority:
         if decision.authority is not AuthorityLevel.IT:
             raise ReleaseConflictError("IT gate requires an IT decision")
         self._require_decision_context(release_id, decision)
+        release = self.get(release_id)
+        if decision.actor_id == release.created_by:
+            raise ReleaseConflictError("maker cannot self-approve a release decision")
         target = self._decision_target(decision.outcome, ReleaseState.IT_APPROVED)
         return await self._transition(
             release_id,
@@ -222,6 +225,9 @@ class InMemoryReleaseAuthority:
         if decision.authority is not AuthorityLevel.DIRECTOR:
             raise ReleaseConflictError("Director gate requires a Director decision")
         self._require_decision_context(release_id, decision)
+        release = self.get(release_id)
+        if decision.actor_id == release.created_by:
+            raise ReleaseConflictError("maker cannot self-approve a release decision")
         target = self._decision_target(decision.outcome, ReleaseState.DIRECTOR_APPROVED)
         return await self._transition(
             release_id,
