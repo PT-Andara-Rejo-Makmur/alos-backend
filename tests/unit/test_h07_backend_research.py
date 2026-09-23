@@ -55,7 +55,7 @@ def test_research_findings_persist_and_deduplicate(session_factory) -> None:
     assert stored.finding_id == "finding_h07_001"
     assert service.get("finding_h07_001").statement == "Public evidence confirms the issue."
 
-    with pytest.raises(ValueError, match="duplicate|Duplicate"):
+    with pytest.raises(ValueError, match=r"duplicate|Duplicate"):
         service.create(
             ResearchFinding(
                 finding_id="finding_h07_001",
@@ -105,5 +105,5 @@ def test_backlog_candidates_can_progress_from_draft_to_review(session_factory) -
     updated = service.promote_to_review(candidate.candidate_id, actor_id="reviewer_001")
     assert updated.approval_state is BacklogCandidateState.REVIEW
 
-    with pytest.raises(ValueError, match="review|REVIEW"):
+    with pytest.raises(ValueError, match=r"review|REVIEW"):
         service.promote_to_review(candidate.candidate_id, actor_id="reviewer_002")

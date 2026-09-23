@@ -105,9 +105,7 @@ def factory_result(
             "understanding": {
                 "normalized_intent": "Create an evidence-backed operational report.",
                 "domains": ["operations"],
-                "candidate_capability_ids": (
-                    ["capability_existing_report"] if not create else []
-                ),
+                "candidate_capability_ids": (["capability_existing_report"] if not create else []),
                 "recommended_type": "REPORT",
                 "risk_level": "LOW",
                 "requires_agent": False,

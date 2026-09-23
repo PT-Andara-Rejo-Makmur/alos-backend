@@ -70,6 +70,13 @@ class GenesisClient:
             "POST", "/internal/v1/research", correlation_id=correlation_id, payload=payload
         )
 
+    async def execute_research(
+        self, payload: Mapping[str, Any], *, correlation_id: str
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST", "/internal/v1/research/run", correlation_id=correlation_id, payload=payload
+        )
+
     async def review(self, payload: Mapping[str, Any], *, correlation_id: str) -> dict[str, Any]:
         return await self._request(
             "POST", "/internal/v1/reviews", correlation_id=correlation_id, payload=payload

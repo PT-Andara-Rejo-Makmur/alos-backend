@@ -12,23 +12,22 @@ from alos.agents.lifecycle.repository import SqlAgentRunStepStore, SqlAgentRunSt
 from alos.agents.lifecycle.runs import RunAuthorityError
 from alos.agents.registry import AgentRegistry
 from alos.audit import InMemoryAuditRepository
+from alos.authorization import AuthorizationPolicy
 from alos.backlog.service import BacklogCandidateRequest, BacklogCandidateService
 from alos.contracts import CanonicalContractCatalog
+from alos.identity import Principal
 from alos.persistence.base import Base
-from alos.persistence.models import AgentRunRecord, AgentRunStepRecord
+from alos.persistence.models import AgentRunRecord
+from alos.registry import DecisionAuthority
 from alos.research.models import (
     BacklogCandidateState,
     ResearchDomain,
     ResearchFinding,
     ResearchRecommendation,
 )
-from alos.registry import DecisionAuthority
-from alos.tools.adapters.diagnostic import DiagnosticEchoAdapter
 from alos.tools.executor.service import InMemoryToolAuditSink, ToolExecutor
 from alos.tools.external_research import ExternalResearchToolAdapter
-from alos.tools.registry import IdempotencyPolicy, ToolRegistration, ToolRegistry
-from alos.identity import Principal
-from alos.authorization import AuthorizationPolicy
+from alos.tools.registry import ToolRegistration, ToolRegistry
 
 CONTRACTS_ROOT = Path(__file__).resolve().parents[3] / "alos-contracts"
 
@@ -381,7 +380,7 @@ async def test_external_research_tool_is_authoritative_and_filters_injected_cont
         principal=principal,
     )
     assert malicious.result["status"] == "SUCCESS"
-    assert "scope=admin" not in str(malicious.result["output"]) 
+    assert "scope=admin" not in str(malicious.result["output"])
     assert "permission" not in str(malicious.result["output"]).lower()
 
 
@@ -418,7 +417,7 @@ async def test_budget_enforcement_and_usage_accounting_are_server_side_and_non_f
         correlation_id="corr_step_2",
     )
 
-    with pytest.raises(RunAuthorityError, match="budget|exceeded|BUDGET"):
+    with pytest.raises(RunAuthorityError, match=r"budget|exceeded|BUDGET"):
         await authority.complete(
             {
                 "run_id": run.run_id,
@@ -466,8 +465,12 @@ async def test_cancellation_is_authoritative_and_idempotent_across_run_and_steps
         correlation_id="corr_cancel_step",
     )
 
-    first = await authority.request_cancel(run.run_id, actor_id="operator_1", reason="cancel requested")
-    second = await authority.request_cancel(run.run_id, actor_id="operator_2", reason="repeat cancel")
+    first = await authority.request_cancel(
+        run.run_id, actor_id="operator_1", reason="cancel requested"
+    )
+    second = await authority.request_cancel(
+        run.run_id, actor_id="operator_2", reason="repeat cancel"
+    )
     assert first.status is AuthoritativeRunStatus.CANCEL_REQUESTED
     assert second.status is AuthoritativeRunStatus.CANCEL_REQUESTED
     assert second.cancellation_state == "REQUESTED"
@@ -550,7 +553,7 @@ async def test_backlog_candidates_persist_as_draft_only_and_reject_self_promotio
     assert candidate.owner_suggestion == "platform-team"
     assert candidate.evidence_refs == ("evidence-1",)
 
-    with pytest.raises(ValueError, match="duplicate|Duplicate"):
+    with pytest.raises(ValueError, match=r"duplicate|Duplicate"):
         service.create(
             BacklogCandidateRequest(
                 recommendation=recommendation,
@@ -561,7 +564,7 @@ async def test_backlog_candidates_persist_as_draft_only_and_reject_self_promotio
             )
         )
 
-    with pytest.raises(ValueError, match="self|promotion|agent"):
+    with pytest.raises(ValueError, match=r"self|promotion|agent"):
         service.create(
             BacklogCandidateRequest(
                 recommendation=recommendation,

@@ -6,6 +6,7 @@ from typing import Annotated
 from fastapi import Depends, Request
 
 from alos.agents.registry import AgentRegistry
+from alos.agents.runtime import AuthoritativeRuntimeOrchestrator
 from alos.audit import InMemoryAuditRepository
 from alos.authorization import AuthorizationEnforcer, AuthorizationPolicy
 from alos.capabilities.registry import CapabilityRegistry
@@ -36,6 +37,7 @@ async def get_genesis_client(request: Request) -> AsyncIterator[GenesisClient]:
     client = GenesisClient(
         base_url=settings.GENESIS_BASE_URL,
         internal_token=settings.GENESIS_INTERNAL_TOKEN,
+        client=getattr(request.app.state, "genesis_http_client", None),
     )
     try:
         yield client
@@ -166,6 +168,21 @@ def get_research_service(
 
 
 ResearchServiceDependency = Annotated[ResearchService, Depends(get_research_service)]
+
+
+def get_runtime_orchestrator(
+    request: Request,
+    genesis_client: GenesisClientDependency,
+) -> AuthoritativeRuntimeOrchestrator:
+    return AuthoritativeRuntimeOrchestrator(
+        authority=request.app.state.agent_run_authority,
+        genesis=genesis_client,
+    )
+
+
+RuntimeOrchestratorDependency = Annotated[
+    AuthoritativeRuntimeOrchestrator, Depends(get_runtime_orchestrator)
+]
 
 
 async def get_factory_orchestrator(

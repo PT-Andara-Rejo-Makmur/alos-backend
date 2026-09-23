@@ -7,9 +7,7 @@ import inspect
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from alos.audit import AuditEvent, AuditSink
@@ -91,14 +89,24 @@ class SqlBacklogCandidateStore:
 class BacklogCandidateService:
     """Create draft backlog candidates only. No auto-execution or production mutation."""
 
-    def __init__(self, *, audit: AuditSink | None = None, session_factory: sessionmaker[Session] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        audit: AuditSink | None = None,
+        session_factory: sessionmaker[Session] | None = None,
+    ) -> None:
         self._audit = audit
         self._seen: set[str] = set()
         self._candidate_cache: dict[str, BacklogCandidate] = {}
-        self._store = SqlBacklogCandidateStore(session_factory) if session_factory is not None else None
+        self._store = (
+            SqlBacklogCandidateStore(session_factory) if session_factory is not None else None
+        )
 
     def can_execute(self, candidate: BacklogCandidate) -> bool:
-        return candidate.approval_state is BacklogCandidateState.PROMOTED or candidate.approval_state is BacklogCandidateState.APPROVED
+        return (
+            candidate.approval_state is BacklogCandidateState.PROMOTED
+            or candidate.approval_state is BacklogCandidateState.APPROVED
+        )
 
     def promote_to_review(self, candidate_id: str, *, actor_id: str) -> BacklogCandidate:
         if not candidate_id:
@@ -107,7 +115,12 @@ class BacklogCandidateService:
         if candidate.approval_state is not BacklogCandidateState.DRAFT:
             raise ValueError("candidate is not in DRAFT state and cannot be reviewed")
         candidate = BacklogCandidate(
-            **{**candidate.model_dump(), "approval_state": BacklogCandidateState.REVIEW, "reviewed_by": actor_id, "reason": "Review recommended by backend authority."}
+            **{
+                **candidate.model_dump(),
+                "approval_state": BacklogCandidateState.REVIEW,
+                "reviewed_by": actor_id,
+                "reason": "Review recommended by backend authority.",
+            }
         )
         if self._store is not None:
             with self._store._session_factory() as session:
@@ -122,31 +135,59 @@ class BacklogCandidateService:
         self._audit_transition(candidate, actor_id, "backlog.candidate.reviewed", "REVIEW")
         return candidate
 
-    def approve(self, candidate_id: str, *, actor_id: str, reason: str | None = None) -> BacklogCandidate:
+    def approve(
+        self, candidate_id: str, *, actor_id: str, reason: str | None = None
+    ) -> BacklogCandidate:
         candidate = self.get(candidate_id)
         if candidate.approval_state is not BacklogCandidateState.REVIEW:
             raise ValueError("candidate is not in REVIEW state and cannot be approved")
-        if candidate.actor_id == actor_id or (candidate.actor_id or "").startswith("agent_") or actor_id == "agent":
+        if (
+            candidate.actor_id == actor_id
+            or (candidate.actor_id or "").startswith("agent_")
+            or actor_id == "agent"
+        ):
             raise ValueError("agent cannot self-approve backlog candidates")
         candidate = BacklogCandidate(
-            **{**candidate.model_dump(), "approval_state": BacklogCandidateState.APPROVED, "approved_by": actor_id, "reason": reason or "Approved by backend governance."}
+            **{
+                **candidate.model_dump(),
+                "approval_state": BacklogCandidateState.APPROVED,
+                "approved_by": actor_id,
+                "reason": reason or "Approved by backend governance.",
+            }
         )
         self._candidate_cache[candidate_id] = candidate
         self._audit_transition(candidate, actor_id, "backlog.candidate.approved", "APPROVED")
         return candidate
 
-    def reject(self, candidate_id: str, *, actor_id: str, reason: str | None = None) -> BacklogCandidate:
+    def reject(
+        self, candidate_id: str, *, actor_id: str, reason: str | None = None
+    ) -> BacklogCandidate:
         candidate = self.get(candidate_id)
-        if candidate.approval_state not in {BacklogCandidateState.DRAFT, BacklogCandidateState.REVIEW}:
+        if candidate.approval_state not in {
+            BacklogCandidateState.DRAFT,
+            BacklogCandidateState.REVIEW,
+        }:
             raise ValueError("candidate cannot be rejected from its current state")
         candidate = BacklogCandidate(
-            **{**candidate.model_dump(), "approval_state": BacklogCandidateState.REJECTED, "rejected_by": actor_id, "reason": reason or "Rejected by backend governance."}
+            **{
+                **candidate.model_dump(),
+                "approval_state": BacklogCandidateState.REJECTED,
+                "rejected_by": actor_id,
+                "reason": reason or "Rejected by backend governance.",
+            }
         )
         self._candidate_cache[candidate_id] = candidate
         self._audit_transition(candidate, actor_id, "backlog.candidate.rejected", "REJECTED")
         return candidate
 
-    def promote_to_production(self, candidate_id: str, *, actor_id: str, scope_ref: str | None = None, reason: str | None = None) -> BacklogCandidate:
+    def promote_to_production(
+        self,
+        candidate_id: str,
+        *,
+        actor_id: str,
+        scope_ref: str | None = None,
+        reason: str | None = None,
+    ) -> BacklogCandidate:
         candidate = self.get(candidate_id)
         if candidate.approval_state is not BacklogCandidateState.APPROVED:
             raise ValueError("candidate must be approved before production promotion")
@@ -159,7 +200,11 @@ class BacklogCandidateService:
         if candidate.scope_ref not in {None, scope_ref}:
             raise ValueError("cross-scope candidate promotion is rejected")
         candidate = BacklogCandidate(
-            **{**candidate.model_dump(), "approval_state": BacklogCandidateState.PROMOTED, "reason": reason or "Promoted to production backlog by backend governance."}
+            **{
+                **candidate.model_dump(),
+                "approval_state": BacklogCandidateState.PROMOTED,
+                "reason": reason or "Promoted to production backlog by backend governance.",
+            }
         )
         self._candidate_cache[candidate_id] = candidate
         self._audit_transition(candidate, actor_id, "backlog.candidate.promoted", "PROMOTED")
@@ -193,7 +238,8 @@ class BacklogCandidateService:
             title=request.finding.title or request.recommendation.recommendation[:80],
             summary=request.finding.summary or request.finding.statement,
             impact=request.recommendation.impact,
-            priority_suggestion=request.priority_suggestion or request.recommendation.priority_suggestion,
+            priority_suggestion=request.priority_suggestion
+            or request.recommendation.priority_suggestion,
             owner_suggestion=request.owner_suggestion or request.recommendation.owner_suggestion,
             evidence_refs=tuple(request.evidence_refs or request.recommendation.evidence_refs),
             approval_state=BacklogCandidateState.DRAFT,
@@ -209,7 +255,9 @@ class BacklogCandidateService:
         self._audit_transition(candidate, request.actor_id, "backlog.candidate.created", "DRAFT")
         return candidate
 
-    def _audit_transition(self, candidate: BacklogCandidate, actor_id: str, event_type: str, outcome: str) -> None:
+    def _audit_transition(
+        self, candidate: BacklogCandidate, actor_id: str, event_type: str, outcome: str
+    ) -> None:
         if self._audit is None:
             return
         event = AuditEvent(
@@ -239,4 +287,5 @@ class BacklogCandidateService:
             except RuntimeError:
                 asyncio.run(result)
             else:
-                asyncio.create_task(result)
+                task = asyncio.create_task(result)
+                task.add_done_callback(lambda completed: completed.exception())

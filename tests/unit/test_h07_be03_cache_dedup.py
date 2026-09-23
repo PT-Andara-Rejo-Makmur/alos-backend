@@ -129,17 +129,19 @@ def test_cache_miss() -> None:
     )
 
     assert result.status == "MISS"
-    assert result.cache_key == service.source_identity({
-        "source_id": "src_miss_001",
-        "source_ref": "https://example.com/research/miss",
-        "source_version": "v1",
-        "uri": "https://example.com/research/miss",
-        "content_hash": "sha256:miss",
-        "tenant_id": "tenant_cache_001",
-        "workspace_id": "workspace_cache_001",
-        "scope_refs": ["research.technology"],
-        "classification": "INTERNAL",
-    })
+    assert result.cache_key == service.source_identity(
+        {
+            "source_id": "src_miss_001",
+            "source_ref": "https://example.com/research/miss",
+            "source_version": "v1",
+            "uri": "https://example.com/research/miss",
+            "content_hash": "sha256:miss",
+            "tenant_id": "tenant_cache_001",
+            "workspace_id": "workspace_cache_001",
+            "scope_refs": ["research.technology"],
+            "classification": "INTERNAL",
+        }
+    )
 
 
 def test_stale_snapshot() -> None:
@@ -158,7 +160,9 @@ def test_stale_snapshot() -> None:
         "expires_at": (datetime.now(UTC) - timedelta(days=1)).isoformat(),
     }
     service.store_snapshot(source, principal=principal(), correlation_id="corr_stale_store")
-    result = service.resolve_snapshot(source, principal=principal(), correlation_id="corr_stale_lookup")
+    result = service.resolve_snapshot(
+        source, principal=principal(), correlation_id="corr_stale_lookup"
+    )
 
     assert result.status == "STALE"
     assert result.freshness == "STALE"
@@ -227,7 +231,9 @@ def test_cross_scope_cache_reuse_is_rejected() -> None:
 
     other = service.resolve_snapshot(
         source,
-        principal=principal(workspace_id="workspace_other_001", scopes=frozenset({"research.technology"})),
+        principal=principal(
+            workspace_id="workspace_other_001", scopes=frozenset({"research.technology"})
+        ),
         correlation_id="corr_cross_reuse",
     )
     assert other.status == "DENIED"
@@ -249,7 +255,9 @@ def test_cache_metadata_preserves_freshness() -> None:
         "expires_at": (datetime.now(UTC) + timedelta(minutes=30)).isoformat(),
         "correlation_id": "corr_fresh",
     }
-    stored = service.store_snapshot(source, principal=principal(), correlation_id="corr_fresh_store")
+    stored = service.store_snapshot(
+        source, principal=principal(), correlation_id="corr_fresh_store"
+    )
 
     assert stored.freshness == "CURRENT"
     assert stored.metadata["source_id"] == "src_fresh_001"
@@ -271,7 +279,9 @@ def test_cache_preserves_provenance() -> None:
         "retrieval_metadata": {"retrieval_id": "retrieval_200", "provenance": "approved-tool"},
         "correlation_id": "corr_provenance",
     }
-    stored = service.store_snapshot(source, principal=principal(), correlation_id="corr_provenance_store")
+    stored = service.store_snapshot(
+        source, principal=principal(), correlation_id="corr_provenance_store"
+    )
 
     assert stored.metadata["provenance"] == "approved-tool"
     assert stored.metadata["source_ref"] == "https://example.com/research/provenance"
@@ -300,5 +310,7 @@ def test_cached_external_content_cannot_expand_authority() -> None:
     )
 
     assert result.status == "HIT"
-    assert result.effective_scope_refs == frozenset({"scope.sources.external_read", "research.technology"})
+    assert result.effective_scope_refs == frozenset(
+        {"scope.sources.external_read", "research.technology"}
+    )
     assert "admin" not in " ".join(result.effective_scope_refs)

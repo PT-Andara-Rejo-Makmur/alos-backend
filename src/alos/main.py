@@ -6,15 +6,18 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from alos.agents.lifecycle import AgentRunAuthority, SqlAgentRunStore
+from alos.agents.lifecycle.repository import SqlAgentRunStepStore
 from alos.agents.registry import AgentRegistry
 from alos.api.internal.routes import router as internal_router
 from alos.api.models import HealthResponse, ReadinessResponse
 from alos.api.public.routes import router as public_router
-from alos.audit import InMemoryAuditRepository, SqlAuditRepository
+from alos.audit import InMemoryAuditRepository, SqlAuditRepository, SqlToolAuditSink
 from alos.authentication.service import AuthService
 from alos.capabilities.registry import CapabilityRegistry
 from alos.config import Settings, get_settings
 from alos.contracts import CanonicalContractCatalog
+from alos.evidence import EvidenceRegistry, SqlEvidenceRegistry
 from alos.integrations import ExternalRetrievalPolicy, ExternalRetrievalService
 from alos.observability.correlation import CorrelationIdMiddleware
 from alos.persistence.database import Database
@@ -25,6 +28,7 @@ from alos.skills.registry import SkillRegistry
 from alos.tools.executor.service import (
     InMemoryToolAuditSink,
     InMemoryToolIdempotencyStore,
+    SqlToolIdempotencyStore,
 )
 
 
@@ -78,6 +82,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         else None
     )
     app.state.factory_contracts = contracts
+    app.state.evidence_registry = (
+        (
+            EvidenceRegistry(contracts)
+            if resolved.APP_ENV == "test"
+            else SqlEvidenceRegistry(contracts, app.state.database.session_factory)
+        )
+        if contracts is not None
+        else None
+    )
     app.state.factory_capability_registry = (
         CapabilityRegistry(contracts, registry_audit) if contracts is not None else None
     )
@@ -85,6 +98,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.factory_registry_audit = registry_audit
     app.state.skill_registry = (
         SkillRegistry(contracts, registry_audit, store=app.state.registry_store)
+        if contracts is not None
+        else None
+    )
+    app.state.agent_run_authority = (
+        AgentRunAuthority(
+            contracts=contracts,
+            audit=registry_audit,
+            skills=app.state.skill_registry,
+            allow_test_drafts=resolved.APP_ENV == "test",
+            store=(
+                None
+                if resolved.APP_ENV == "test"
+                else SqlAgentRunStore(app.state.database.session_factory)
+            ),
+            step_store=(
+                None
+                if resolved.APP_ENV == "test"
+                else SqlAgentRunStepStore(app.state.database.session_factory)
+            ),
+        )
         if contracts is not None
         else None
     )
@@ -105,8 +138,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ),
         audit=app.state.external_retrieval_audit,
     )
-    app.state.tool_audit_sink = InMemoryToolAuditSink()
-    app.state.tool_idempotency_store = InMemoryToolIdempotencyStore()
+    app.state.tool_audit_sink = (
+        InMemoryToolAuditSink()
+        if resolved.APP_ENV == "test"
+        else SqlToolAuditSink(SqlAuditRepository(app.state.database.session_factory))
+    )
+    app.state.tool_idempotency_store = (
+        InMemoryToolIdempotencyStore()
+        if resolved.APP_ENV == "test"
+        else SqlToolIdempotencyStore(app.state.database.session_factory)
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=resolved.cors_allowed_origins,

@@ -42,17 +42,18 @@ class ExternalResearchResult(BaseModel):
 class ExternalResearchToolAdapter:
     """Typed external research adapter that stays inside the backend ToolExecutor boundary."""
 
-    allowed_domains = frozenset({
-        "technology",
-        "property_business",
-        "management",
-        "property_market",
-    })
+    allowed_domains = frozenset(
+        {
+            "technology",
+            "property_business",
+            "management",
+            "property_market",
+        }
+    )
 
     @staticmethod
     def _sanitize_research_text(value: str) -> str:
         sanitized = value.strip().replace("\r", " ").replace("\n", " ")
-        lowered = sanitized.lower()
         blocked = (
             "ignore all permissions",
             "ignore previous instructions",
@@ -92,7 +93,10 @@ class ExternalResearchToolAdapter:
         missing = sorted(required.difference(str(key) for key in arguments))
         if missing:
             raise ToolInputError(f"missing required external research fields: {', '.join(missing)}")
-        if not isinstance(arguments["research_request"], str) or not arguments["research_request"].strip():
+        if (
+            not isinstance(arguments["research_request"], str)
+            or not arguments["research_request"].strip()
+        ):
             raise ToolInputError("research_request must be a non-empty string")
         self._sanitize_research_text(str(arguments["research_request"]))
         domain = str(arguments["domain"]).lower()
@@ -100,12 +104,20 @@ class ExternalResearchToolAdapter:
             raise ToolInputError("domain is not eligible for external research")
         if not isinstance(arguments["actor"], str) or not arguments["actor"].strip():
             raise ToolInputError("actor must be a non-empty string")
-        if not isinstance(arguments["scope"], str) or arguments["scope"] != "scope.sources.external_read":
+        if (
+            not isinstance(arguments["scope"], str)
+            or arguments["scope"] != "scope.sources.external_read"
+        ):
             raise ToolInputError("scope must permit external research")
-        if not isinstance(arguments["correlation_id"], str) or not arguments["correlation_id"].strip():
+        if (
+            not isinstance(arguments["correlation_id"], str)
+            or not arguments["correlation_id"].strip()
+        ):
             raise ToolInputError("correlation_id must be a non-empty string")
         budget_limit = arguments.get("budget_limit")
-        if budget_limit is not None and (not isinstance(budget_limit, (int, float)) or budget_limit <= 0):
+        if budget_limit is not None and (
+            not isinstance(budget_limit, (int, float)) or budget_limit <= 0
+        ):
             raise ToolInputError("budget_limit must be a positive number when provided")
 
     async def execute(
@@ -119,8 +131,7 @@ class ExternalResearchToolAdapter:
         domain = str(arguments["domain"]).lower()
         request = self._sanitize_research_text(str(arguments["research_request"]))
         evidence = tuple(
-            str(value)
-            for value in arguments.get("evidence", ("approved.public-source",))
+            str(value) for value in arguments.get("evidence", ("approved.public-source",))
         )
         if not any("approved" in str(item).lower() for item in evidence):
             evidence = ("approved.public-source",)

@@ -354,9 +354,9 @@ async def test_public_skill_endpoints_omit_absent_optional_values() -> None:
             "scopes": ["scope.x", "scope.y"],
         }
     )
-    token = app.state.auth_service.login(
-        "skill-delta@andara.local", "StrongPass!123"
-    )["access_token"]
+    token = app.state.auth_service.login("skill-delta@andara.local", "StrongPass!123")[
+        "access_token"
+    ]
     await activate(app.state.skill_registry, skill_payload())
     headers = {
         "Authorization": f"Bearer {token}",

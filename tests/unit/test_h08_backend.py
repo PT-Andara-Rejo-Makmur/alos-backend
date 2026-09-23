@@ -15,10 +15,12 @@ from alos.governance.gates import (
     TestCategory,
 )
 from alos.governance.materiality import Materiality
+from alos.registry import VersionedContractRegistry
 from alos.releases import InMemoryReleaseAuthority, ReleaseConflictError, ReleaseState
-from alos.registry import RegistryConflictError, VersionedContractRegistry
 from alos.reviews.decisions import AuthoritativeDecision, AuthorityLevel, DecisionOutcome
 from alos.reviews.packages import ReviewPackageReference
+
+CONTRACTS_ROOT = Path(__file__).resolve().parents[3] / "alos-contracts"
 
 
 def _passing_assurance() -> AutomatedAssuranceReport:
@@ -79,7 +81,7 @@ async def test_h08_registry_tracks_exact_capability_version() -> None:
         schema_id="https://schemas.alos.dev/v1/capability/capability-definition.schema.json",
         id_field="capability_id",
         version_field="version",
-        contracts=CanonicalContractCatalog(Path("C:/Alos/alos-contracts")),
+        contracts=CanonicalContractCatalog(CONTRACTS_ROOT),
         audit=InMemoryAuditRepository(),
     )
 
@@ -132,8 +134,24 @@ async def test_h08_registry_tracks_exact_capability_version() -> None:
 
     assert v1.version == "1.0.0"
     assert v2.version == "2.0.0"
-    assert registry.get(tenant_id="tenant_001", workspace_id="workspace_001", subject_id="capability_example", version="1.0.0").version == "1.0.0"
-    assert registry.get(tenant_id="tenant_001", workspace_id="workspace_001", subject_id="capability_example", version="2.0.0").version == "2.0.0"
+    assert (
+        registry.get(
+            tenant_id="tenant_001",
+            workspace_id="workspace_001",
+            subject_id="capability_example",
+            version="1.0.0",
+        ).version
+        == "1.0.0"
+    )
+    assert (
+        registry.get(
+            tenant_id="tenant_001",
+            workspace_id="workspace_001",
+            subject_id="capability_example",
+            version="2.0.0",
+        ).version
+        == "2.0.0"
+    )
 
 
 @pytest.mark.asyncio
@@ -252,7 +270,7 @@ async def test_h08_maker_self_approval_is_rejected() -> None:
         correlation_id=correlation,
     )
 
-    with pytest.raises(ReleaseConflictError, match="self-approve|maker|approval"):
+    with pytest.raises(ReleaseConflictError, match=r"self-approve|maker|approval"):
         await authority.record_it_decision(
             "release_h08_self_001",
             _decision(
@@ -330,19 +348,64 @@ async def test_h08_release_rollback_keeps_authoritative_version() -> None:
             actor_id="actor_maker_001",
             correlation_id=corr_1 if version == "1.0.0" else corr_2,
         )
-        await authority.mark_implemented(release_id, actor_id="actor_maker_001", correlation_id=corr_1 if version == "1.0.0" else corr_2)
-        await authority.record_automated_assurance(release_id, _passing_assurance(), actor_id="actor_checker_001", correlation_id=corr_1 if version == "1.0.0" else corr_2)
-        await authority.record_ai_review_package(release_id, _package(release_id, review_id, version), actor_id="genesis_ai_review", correlation_id=corr_1 if version == "1.0.0" else corr_2)
-        await authority.submit_for_it(release_id, actor_id="actor_checker_001", correlation_id=corr_1 if version == "1.0.0" else corr_2)
-        await authority.record_it_decision(release_id, _decision(decision_id=f"decision_it_{version.replace('.', '_')}", review_id=review_id, authority=AuthorityLevel.IT, actor_id="actor_it_001"), correlation_id=corr_1 if version == "1.0.0" else corr_2)
-        await authority.release(release_id, actor_id="actor_release_001", correlation_id=corr_1 if version == "1.0.0" else corr_2)
-        await authority.activate(release_id, actor_id="actor_release_001", correlation_id=corr_1 if version == "1.0.0" else corr_2)
+        await authority.mark_implemented(
+            release_id,
+            actor_id="actor_maker_001",
+            correlation_id=corr_1 if version == "1.0.0" else corr_2,
+        )
+        await authority.record_automated_assurance(
+            release_id,
+            _passing_assurance(),
+            actor_id="actor_checker_001",
+            correlation_id=corr_1 if version == "1.0.0" else corr_2,
+        )
+        await authority.record_ai_review_package(
+            release_id,
+            _package(release_id, review_id, version),
+            actor_id="genesis_ai_review",
+            correlation_id=corr_1 if version == "1.0.0" else corr_2,
+        )
+        await authority.submit_for_it(
+            release_id,
+            actor_id="actor_checker_001",
+            correlation_id=corr_1 if version == "1.0.0" else corr_2,
+        )
+        await authority.record_it_decision(
+            release_id,
+            _decision(
+                decision_id=f"decision_it_{version.replace('.', '_')}",
+                review_id=review_id,
+                authority=AuthorityLevel.IT,
+                actor_id="actor_it_001",
+            ),
+            correlation_id=corr_1 if version == "1.0.0" else corr_2,
+        )
+        await authority.release(
+            release_id,
+            actor_id="actor_release_001",
+            correlation_id=corr_1 if version == "1.0.0" else corr_2,
+        )
+        await authority.activate(
+            release_id,
+            actor_id="actor_release_001",
+            correlation_id=corr_1 if version == "1.0.0" else corr_2,
+        )
 
     await set_up("release_v1", "review_v1", "1.0.0")
     await set_up("release_v2", "review_v2", "2.0.0")
-    await authority.activate_kill_switch("release_v2", actor_id="actor_it_001", reason="containment", correlation_id="corr_kill")
-    await authority.clear_kill_switch("release_v2", actor_id="actor_it_001", reason="recovery", correlation_id="corr_clear")
-    await authority.rollback("release_v2", target_release_id="release_v1", actor_id="actor_it_001", reason="restore stable version", correlation_id="corr_rollback")
+    await authority.activate_kill_switch(
+        "release_v2", actor_id="actor_it_001", reason="containment", correlation_id="corr_kill"
+    )
+    await authority.clear_kill_switch(
+        "release_v2", actor_id="actor_it_001", reason="recovery", correlation_id="corr_clear"
+    )
+    await authority.rollback(
+        "release_v2",
+        target_release_id="release_v1",
+        actor_id="actor_it_001",
+        reason="restore stable version",
+        correlation_id="corr_rollback",
+    )
 
     assert authority.get("release_v1").state is ReleaseState.ACTIVE
     assert authority.get("release_v2").state is ReleaseState.ROLLED_BACK
@@ -351,7 +414,7 @@ async def test_h08_release_rollback_keeps_authoritative_version() -> None:
 @pytest.mark.asyncio
 async def test_h08_production_backlog_promotion_remains_authoritative() -> None:
     from alos.backlog.service import BacklogCandidateRequest, BacklogCandidateService
-    from alos.research.models import ResearchFinding, ResearchRecommendation, ResearchDomain
+    from alos.research.models import ResearchDomain, ResearchFinding, ResearchRecommendation
 
     service = BacklogCandidateService()
     finding = ResearchFinding(
@@ -385,7 +448,9 @@ async def test_h08_production_backlog_promotion_remains_authoritative() -> None:
     )
     service.promote_to_review(candidate.candidate_id, actor_id="reviewer_001")
     service.approve(candidate.candidate_id, actor_id="reviewer_002")
-    service.promote_to_production(candidate.candidate_id, actor_id="release_owner", scope_ref="research.technology")
+    service.promote_to_production(
+        candidate.candidate_id, actor_id="release_owner", scope_ref="research.technology"
+    )
 
     assert candidate.approval_state.value == "DRAFT"
     assert service.get(candidate.candidate_id).approval_state.value == "PROMOTED"
@@ -432,7 +497,7 @@ async def test_h08_role_and_permission_injection_is_rejected() -> None:
         correlation_id=correlation,
     )
 
-    with pytest.raises(ReleaseConflictError, match="maker|self-approve|approval"):
+    with pytest.raises(ReleaseConflictError, match=r"maker|self-approve|approval"):
         await authority.record_it_decision(
             "release_h08_role_injection",
             _decision(

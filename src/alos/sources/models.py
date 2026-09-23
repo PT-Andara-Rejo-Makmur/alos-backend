@@ -21,9 +21,7 @@ class KnowledgeAccessContext(BaseModel):
     actor_id: str = Field(min_length=3, max_length=128)
     correlation_id: str = Field(min_length=3, max_length=128)
     scope_refs: frozenset[str] = Field(min_length=1)
-    data_classification: Literal[
-        "PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"
-    ] = "INTERNAL"
+    data_classification: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"] = "INTERNAL"
 
 
 class SourceRegistration(BaseModel):
@@ -32,9 +30,7 @@ class SourceRegistration(BaseModel):
     source_version: str = Field(min_length=1, max_length=100)
     title: str = Field(min_length=1, max_length=500)
     source_type: Literal["DOCX", "PDF", "TEXT", "URL"] = "TEXT"
-    data_classification: Literal[
-        "PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"
-    ] = "INTERNAL"
+    data_classification: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"] = "INTERNAL"
     storage_uri: str = Field(min_length=3, max_length=2_000)
     content: str = Field(min_length=1, max_length=200_000)
     document_id: str | None = Field(default=None, min_length=3, max_length=128)

@@ -50,7 +50,12 @@ def run_request() -> dict[str, object]:
             "scope_refs": ["scope.diagnostic"],
             "data_classification": "INTERNAL",
             "correlation_id": "corr_runtime_lifecycle_001",
-            "execution_budget": {"max_tokens": 200, "max_steps": 2, "max_tool_calls": 1, "timeout_seconds": 5},
+            "execution_budget": {
+                "max_tokens": 200,
+                "max_steps": 2,
+                "max_tool_calls": 1,
+                "timeout_seconds": 5,
+            },
         },
         "input": {"message": "lifecycle test"},
         "requested_tool_ids": ["diagnostic.echo"],

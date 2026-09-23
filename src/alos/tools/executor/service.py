@@ -11,8 +11,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 from alos.authorization import AuthorizationPolicy
 from alos.identity import Principal
+from alos.persistence.models import ToolIdempotencyRecord
 from alos.tools.adapters.base import ToolInputError
 from alos.tools.contracts import ToolContractValidator
 from alos.tools.registry import (
@@ -87,6 +91,63 @@ class InMemoryToolIdempotencyStore:
             self._records[key] = copy.deepcopy(record)
 
 
+class ToolIdempotencyStore(Protocol):
+    async def get(self, key: tuple[str, str, str]) -> IdempotencyRecord | None: ...
+
+    async def put(self, key: tuple[str, str, str], record: IdempotencyRecord) -> None: ...
+
+
+class SqlToolIdempotencyStore:
+    """Persistent Backend-owned idempotency boundary for business tool execution."""
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def get(self, key: tuple[str, str, str]) -> IdempotencyRecord | None:
+        tenant_id, tool_id, idempotency_key = key
+        async with self._session_factory() as session:
+            row = (
+                await session.execute(
+                    select(ToolIdempotencyRecord).where(
+                        ToolIdempotencyRecord.tenant_id == tenant_id,
+                        ToolIdempotencyRecord.tool_id == tool_id,
+                        ToolIdempotencyRecord.idempotency_key == idempotency_key,
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            return IdempotencyRecord(request_digest=row.request_digest, output=row.output)
+
+    async def put(self, key: tuple[str, str, str], record: IdempotencyRecord) -> None:
+        tenant_id, tool_id, idempotency_key = key
+        async with self._session_factory() as session:
+            row = (
+                await session.execute(
+                    select(ToolIdempotencyRecord).where(
+                        ToolIdempotencyRecord.tenant_id == tenant_id,
+                        ToolIdempotencyRecord.tool_id == tool_id,
+                        ToolIdempotencyRecord.idempotency_key == idempotency_key,
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is not None:
+                if row.request_digest != record.request_digest:
+                    raise ValueError("idempotency key already belongs to another request")
+                return
+            session.add(
+                ToolIdempotencyRecord(
+                    tenant_id=tenant_id,
+                    tool_id=tool_id,
+                    idempotency_key=idempotency_key,
+                    request_digest=record.request_digest,
+                    output=record.output,
+                    created_at=datetime.now(UTC),
+                )
+            )
+            await session.commit()
+
+
 class ToolExecutor:
     """Deny-by-default execution boundary owned exclusively by ALOS Backend."""
 
@@ -97,7 +158,7 @@ class ToolExecutor:
         authorization: AuthorizationPolicy,
         registry: ToolRegistry,
         audit_sink: ToolAuditSink,
-        idempotency_store: InMemoryToolIdempotencyStore | None = None,
+        idempotency_store: ToolIdempotencyStore | None = None,
         production: bool,
     ) -> None:
         self._contract_validator = contract_validator

@@ -51,8 +51,8 @@ class AuthService:
         tenant_id = str(payload.get("tenant_id") or "tenant_default")
         organization_id = str(payload.get("organization_id") or "org_default")
         workspace_id = str(payload.get("workspace_id") or "workspace_default")
-        division_id = (payload.get("division_id") or None)
-        project_id = (payload.get("project_id") or None)
+        division_id = payload.get("division_id") or None
+        project_id = payload.get("project_id") or None
         display_name = str(payload.get("display_name") or email.split("@", 1)[0])
         roles = frozenset(str(item) for item in payload.get("roles", []))
         permissions = frozenset(str(item) for item in payload.get("permissions", []))

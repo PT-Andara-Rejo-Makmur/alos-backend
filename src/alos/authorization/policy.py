@@ -41,4 +41,3 @@ class AuthorizationPolicy:
         if required_permission not in principal.permissions:
             return False
         return set(required_scopes).issubset(principal.scopes)
-

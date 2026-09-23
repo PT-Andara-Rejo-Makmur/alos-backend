@@ -97,8 +97,7 @@ def install_error_handlers(app: FastAPI) -> None:
         problem = ProblemDetail(
             code="INTERNAL_PROCESSING_FAILURE",
             message=(
-                "The request could not be completed safely. "
-                "No internal details are disclosed."
+                "The request could not be completed safely. No internal details are disclosed."
             ),
             correlation_id=_safe_correlation_id(request),
             retryable=False,

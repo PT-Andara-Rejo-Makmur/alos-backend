@@ -11,9 +11,7 @@ from alos.registry_contracts import RegistryAuthorityView, RegistryAuthorization
 CAPABILITY_DEFINITION_SCHEMA_ID = (
     "https://schemas.alos.dev/v1/capability/capability-definition.schema.json"
 )
-CAPABILITY_DETAIL_SCHEMA_ID = (
-    "https://schemas.alos.dev/v1/capability/capability-detail.schema.json"
-)
+CAPABILITY_DETAIL_SCHEMA_ID = "https://schemas.alos.dev/v1/capability/capability-detail.schema.json"
 
 
 class CapabilityRegistry(VersionedContractRegistry):
@@ -41,9 +39,7 @@ class CapabilityRegistry(VersionedContractRegistry):
                 "capability_type": payload["capability_type"],
                 "risk_level": payload.get("risk_level", "MEDIUM"),
                 "availability": payload.get("availability", "AVAILABLE"),
-                "configuration_status": payload.get(
-                    "configuration_status", "CONFIGURED"
-                ),
+                "configuration_status": payload.get("configuration_status", "CONFIGURED"),
                 "backing_tool_ids": payload.get("backing_tool_ids", []),
                 "permission_refs": payload.get("permission_refs", []),
                 "scope_refs": payload.get("scope_refs", []),
@@ -67,12 +63,14 @@ class CapabilityRegistry(VersionedContractRegistry):
 
         if principal is None:
             raise RegistryAuthorizationError("principal is required")
-        matching = list(self.list_entries(
-            tenant_id=tenant_id,
-            organization_id=principal.organization_id,
-            workspace_id=workspace_id,
-            subject_id=capability_id,
-        ))
+        matching = list(
+            self.list_entries(
+                tenant_id=tenant_id,
+                organization_id=principal.organization_id,
+                workspace_id=workspace_id,
+                subject_id=capability_id,
+            )
+        )
         if version is not None:
             matching = [entry for entry in matching if entry.version == version]
         if not matching:
@@ -120,8 +118,7 @@ class CapabilityRegistry(VersionedContractRegistry):
             "risk_level": payload.get("risk_level", "MEDIUM"),
             "availability": payload.get("availability")
             or ("UNAVAILABLE" if is_draft else "AVAILABLE"),
-            "configuration_status": payload.get("configuration_status")
-            or "NEEDS_CONFIGURATION",
+            "configuration_status": payload.get("configuration_status") or "NEEDS_CONFIGURATION",
             "scope_refs": list(payload.get("scope_refs") or []),
             "permission_refs": list(payload.get("permission_refs") or []),
             "backing_tool_ids": list(tools),

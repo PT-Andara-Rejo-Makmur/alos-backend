@@ -21,6 +21,8 @@ from alos.tools.executor.service import InMemoryToolAuditSink, ToolExecutor
 from alos.tools.external_research import ExternalResearchToolAdapter
 from alos.tools.registry import ToolLifecycleState, ToolRegistration, ToolRegistry
 
+CONTRACTS_ROOT = Path(__file__).resolve().parents[3] / "alos-contracts"
+
 
 class _AcceptingToolContractValidator:
     def validate_request(self, payload):
@@ -32,7 +34,7 @@ class _AcceptingToolContractValidator:
 
 @pytest.fixture
 def contracts() -> CanonicalContractCatalog:
-    return CanonicalContractCatalog(Path("C:/Alos/alos-contracts"))
+    return CanonicalContractCatalog(CONTRACTS_ROOT)
 
 
 def _principal(**changes) -> Principal:
@@ -226,7 +228,7 @@ def test_promotion_requires_authorization() -> None:
     )
     service.promote_to_review(candidate.candidate_id, actor_id="reviewer_001")
 
-    with pytest.raises(ValueError, match="self-approve|approve"):
+    with pytest.raises(ValueError, match=r"self-approve|approve"):
         service.approve(candidate.candidate_id, actor_id="platform_owner")
 
 
@@ -252,7 +254,7 @@ def test_agent_cannot_self_approve() -> None:
         correlation_id="corr_agent",
     )
 
-    with pytest.raises(ValueError, match="agent|self"):
+    with pytest.raises(ValueError, match=r"agent|self"):
         service.create(
             BacklogCandidateRequest(
                 recommendation=recommendation,
@@ -297,8 +299,10 @@ def test_cross_scope_candidate_promotion_is_rejected() -> None:
     service.promote_to_review(candidate.candidate_id, actor_id="reviewer_001")
     service.approve(candidate.candidate_id, actor_id="reviewer_002")
 
-    with pytest.raises(ValueError, match="cross-scope|scope"):
-        service.promote_to_production(candidate.candidate_id, actor_id="reviewer_003", scope_ref="project.alpha")
+    with pytest.raises(ValueError, match=r"cross-scope|scope"):
+        service.promote_to_production(
+            candidate.candidate_id, actor_id="reviewer_003", scope_ref="project.alpha"
+        )
 
 
 def test_rejected_candidate_cannot_promote() -> None:
@@ -333,8 +337,10 @@ def test_rejected_candidate_cannot_promote() -> None:
     )
     service.reject(candidate.candidate_id, actor_id="reviewer_001", reason="Not approved")
 
-    with pytest.raises(ValueError, match="approved|promotion|state"):
-        service.promote_to_production(candidate.candidate_id, actor_id="reviewer_003", scope_ref="research.technology")
+    with pytest.raises(ValueError, match=r"approved|promotion|state"):
+        service.promote_to_production(
+            candidate.candidate_id, actor_id="reviewer_003", scope_ref="research.technology"
+        )
 
 
 def test_backlog_promotion_is_audited() -> None:
@@ -370,9 +376,14 @@ def test_backlog_promotion_is_audited() -> None:
     )
     service.promote_to_review(candidate.candidate_id, actor_id="reviewer_001")
     service.approve(candidate.candidate_id, actor_id="reviewer_002")
-    service.promote_to_production(candidate.candidate_id, actor_id="release_owner", scope_ref="research.technology")
+    service.promote_to_production(
+        candidate.candidate_id, actor_id="release_owner", scope_ref="research.technology"
+    )
 
-    assert any(event.event_type == "backlog.candidate.promoted" for event in audit.list_events(tenant_id="unknown"))
+    assert any(
+        event.event_type == "backlog.candidate.promoted"
+        for event in audit.list_events(tenant_id="unknown")
+    )
 
 
 @pytest.mark.asyncio
@@ -414,7 +425,12 @@ async def test_research_uses_approved_tool_executor(contracts: CanonicalContract
         audit_sink=InMemoryToolAuditSink(),
         production=True,
     )
-    service = ResearchService(contracts=contracts, genesis=StubGenesis(), audit=InMemoryAuditRepository(), tool_executor=tool)
+    service = ResearchService(
+        contracts=contracts,
+        genesis=StubGenesis(),
+        audit=InMemoryAuditRepository(),
+        tool_executor=tool,
+    )
 
     receipt = await service.request(
         ResearchCommand(
@@ -431,7 +447,7 @@ async def test_research_uses_approved_tool_executor(contracts: CanonicalContract
 
 
 def test_failed_retrieval_cannot_create_verified_evidence() -> None:
-    registry = EvidenceRegistry(contracts=CanonicalContractCatalog(Path("C:/Alos/alos-contracts")))
+    registry = EvidenceRegistry(contracts=CanonicalContractCatalog(CONTRACTS_ROOT))
 
     assert registry.verify_claim(claim_id="claim_001", evidence_ids=()) is False
     registry.register_claim_lineage(

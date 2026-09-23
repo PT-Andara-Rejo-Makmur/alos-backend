@@ -14,15 +14,9 @@ from alos.registry import RegistryConflictError, RegistryEntry
 from alos.security.errors import PlatformError
 
 PUBLIC_REQUEST_SCHEMA = "https://schemas.alos.dev/v1/factory/factory-analyze-request.schema.json"
-INTERNAL_REQUEST_SCHEMA = (
-    "https://schemas.alos.dev/v1/factory/factory-analysis-request.schema.json"
-)
-INTERNAL_RESULT_SCHEMA = (
-    "https://schemas.alos.dev/v1/factory/factory-analysis-result.schema.json"
-)
-PUBLIC_RESPONSE_SCHEMA = (
-    "https://schemas.alos.dev/v1/factory/factory-analyze-response.schema.json"
-)
+INTERNAL_REQUEST_SCHEMA = "https://schemas.alos.dev/v1/factory/factory-analysis-request.schema.json"
+INTERNAL_RESULT_SCHEMA = "https://schemas.alos.dev/v1/factory/factory-analysis-result.schema.json"
+PUBLIC_RESPONSE_SCHEMA = "https://schemas.alos.dev/v1/factory/factory-analyze-response.schema.json"
 
 
 class FactoryGenesisClient(Protocol):
@@ -76,9 +70,7 @@ class FactoryOrchestrator:
                 "requirement_id": f"req_{correlation_id}",
                 "statement": public_request["requirement"],
             },
-            "capability_catalog": list(
-                self._capabilities.catalog_snapshot(principal=principal)
-            ),
+            "capability_catalog": list(self._capabilities.catalog_snapshot(principal=principal)),
         }
         preferred = public_request.get("preferred_capability_type")
         if preferred is not None:
@@ -264,9 +256,7 @@ class FactoryOrchestrator:
         }
 
     @staticmethod
-    def _require_requirement_linkage(
-        resolution: Mapping[str, Any], correlation_id: str
-    ) -> None:
+    def _require_requirement_linkage(resolution: Mapping[str, Any], correlation_id: str) -> None:
         """Backend-owned requirement_id must be echoed unchanged by GENESIS."""
 
         expected = f"req_{correlation_id}"
@@ -281,9 +271,7 @@ class FactoryOrchestrator:
             )
 
     @staticmethod
-    def _fail_closed_on_ambiguity(
-        resolution: Mapping[str, Any], correlation_id: str
-    ) -> None:
+    def _fail_closed_on_ambiguity(resolution: Mapping[str, Any], correlation_id: str) -> None:
         """An ambiguous requirement is a needs-info state; no authority or state is created."""
 
         understanding = resolution.get("understanding")

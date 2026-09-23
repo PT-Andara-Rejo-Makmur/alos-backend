@@ -49,8 +49,7 @@ class TracingAudit:
 
     def event_types(self) -> tuple[str, ...]:
         return tuple(
-            event.event_type
-            for event in self._delegate.list_events(tenant_id="tenant_atomicity")
+            event.event_type for event in self._delegate.list_events(tenant_id="tenant_atomicity")
         )
 
 

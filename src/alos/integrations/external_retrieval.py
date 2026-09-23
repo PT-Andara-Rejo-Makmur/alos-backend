@@ -56,8 +56,7 @@ class ExternalRetrievalPolicy:
 
     def _domain_allowed(self, hostname: str) -> bool:
         return any(
-            hostname == domain or hostname.endswith(f".{domain}")
-            for domain in self.allowed_domains
+            hostname == domain or hostname.endswith(f".{domain}") for domain in self.allowed_domains
         )
 
     @staticmethod
@@ -79,7 +78,7 @@ class ExternalRetrievalPolicy:
             or address.is_reserved
             or address.is_multicast
             or address.is_unspecified
-        for address in addresses
+            for address in addresses
         ):
             raise ExternalRetrievalError(
                 "EGRESS_PRIVATE_NETWORK_BLOCKED",
@@ -229,13 +228,25 @@ class ExternalRetrievalService:
             raise
         except httpx.TimeoutException as exc:
             await self._audit_event(
-                entity_id, tenant_id, organization_id, workspace_id, actor_id, correlation_id,
-                "external.retrieval.failed", "TIMEOUT", {"url": safe_url, "code": "EGRESS_TIMEOUT"},
+                entity_id,
+                tenant_id,
+                organization_id,
+                workspace_id,
+                actor_id,
+                correlation_id,
+                "external.retrieval.failed",
+                "TIMEOUT",
+                {"url": safe_url, "code": "EGRESS_TIMEOUT"},
             )
             raise ExternalRetrievalError("EGRESS_TIMEOUT", "External retrieval timed out.") from exc
         except httpx.RequestError as exc:
             await self._audit_event(
-                entity_id, tenant_id, organization_id, workspace_id, actor_id, correlation_id,
+                entity_id,
+                tenant_id,
+                organization_id,
+                workspace_id,
+                actor_id,
+                correlation_id,
                 "external.retrieval.failed",
                 "FAILED",
                 {"url": safe_url, "code": "EGRESS_UNAVAILABLE"},
@@ -254,8 +265,12 @@ class ExternalRetrievalService:
                     "EGRESS_DNS_FAILED", "Resolved address is invalid."
                 ) from exc
             if (
-                address.is_private or address.is_loopback or address.is_link_local
-                or address.is_reserved or address.is_multicast or address.is_unspecified
+                address.is_private
+                or address.is_loopback
+                or address.is_link_local
+                or address.is_reserved
+                or address.is_multicast
+                or address.is_unspecified
             ):
                 raise ExternalRetrievalError(
                     "EGRESS_PRIVATE_NETWORK_BLOCKED",
@@ -263,8 +278,15 @@ class ExternalRetrievalService:
                 )
 
     async def _audit_event(
-        self, entity_id: str, tenant_id: str, organization_id: str, workspace_id: str,
-        actor_id: str, correlation_id: str, event_type: str, outcome: str,
+        self,
+        entity_id: str,
+        tenant_id: str,
+        organization_id: str,
+        workspace_id: str,
+        actor_id: str,
+        correlation_id: str,
+        event_type: str,
+        outcome: str,
         metadata: dict[str, Any],
     ) -> None:
         await self._audit.append(

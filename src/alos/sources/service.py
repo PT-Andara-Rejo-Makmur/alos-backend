@@ -282,8 +282,7 @@ def _chunk_content(
     current_size = 0
     for line_number, line in enumerate(lines, 1):
         parts = [
-            line[index : index + max_characters]
-            for index in range(0, len(line), max_characters)
+            line[index : index + max_characters] for index in range(0, len(line), max_characters)
         ]
         for part in parts:
             next_size = current_size + len(part) + (1 if current else 0)

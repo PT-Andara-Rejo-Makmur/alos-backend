@@ -8,10 +8,10 @@ import inspect
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from enum import StrEnum
 from threading import RLock
-from typing import Any
+from typing import Any, ClassVar
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
@@ -99,7 +99,7 @@ class ResearchSourceSnapshotResult:
 
 
 class ResearchSourceCacheService:
-    _CLASSIFICATION_RANK: dict[str, int] = {
+    _CLASSIFICATION_RANK: ClassVar[dict[str, int]] = {
         "PUBLIC": 0,
         "INTERNAL": 1,
         "CONFIDENTIAL": 2,
@@ -121,9 +121,7 @@ class ResearchSourceCacheService:
             "content_hash": str(source.get("content_hash") or ""),
             "tenant_id": str(source.get("tenant_id") or ""),
             "workspace_id": str(source.get("workspace_id") or ""),
-            "scope_refs": tuple(
-                sorted(str(item) for item in (source.get("scope_refs") or ()))
-            ),
+            "scope_refs": tuple(sorted(str(item) for item in (source.get("scope_refs") or ()))),
             "classification": str(source.get("classification") or ""),
         }
         serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -147,12 +145,17 @@ class ResearchSourceCacheService:
                 workspace_id=principal.workspace_id,
                 correlation_id=correlation_id,
                 outcome="DENIED",
-                reason="Principal lacked the required backend authorization or scope for cached research content.",
+                reason=(
+                    "Principal lacked the required backend authorization or scope "
+                    "for cached research content."
+                ),
                 metadata={
                     "cache_key": cache_key,
                     "source_id": str(source.get("source_id") or "unknown"),
                     "required_permissions": ["research.external.read"],
-                    "required_scopes": sorted({"research.technology", "scope.sources.external_read"}),
+                    "required_scopes": sorted(
+                        {"research.technology", "scope.sources.external_read"}
+                    ),
                     "principal_permissions": sorted(principal.permissions),
                     "principal_scopes": sorted(principal.scopes),
                 },
@@ -514,7 +517,8 @@ class ResearchSourceCacheService:
             except RuntimeError:
                 asyncio.run(result)
             else:
-                asyncio.create_task(result)
+                task = asyncio.create_task(result)
+                task.add_done_callback(lambda completed: completed.exception())
 
 
 def _parse_datetime(value: Any) -> datetime | None:
@@ -535,7 +539,9 @@ class SqlResearchFindingStore:
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self._session_factory = session_factory
 
-    def create(self, finding: ResearchFinding, *, actor_id: str, correlation_id: str | None = None) -> ResearchFinding:
+    def create(
+        self, finding: ResearchFinding, *, actor_id: str, correlation_id: str | None = None
+    ) -> ResearchFinding:
         with self._session_factory() as session:
             row = session.get(ResearchFindingRecord, finding.finding_id)
             if row is not None:
@@ -591,7 +597,9 @@ class SqlResearchFindingStore:
 
 class ResearchFindingService:
     def __init__(self, *, session_factory: sessionmaker[Session] | None = None) -> None:
-        self._store = SqlResearchFindingStore(session_factory) if session_factory is not None else None
+        self._store = (
+            SqlResearchFindingStore(session_factory) if session_factory is not None else None
+        )
 
     def create(
         self,
@@ -745,9 +753,7 @@ class ResearchService:
             },
         }
         try:
-            validated_request = self._contracts.validate(
-                RESEARCH_ANALYSIS_REQUEST_SCHEMA, payload
-            )
+            validated_request = self._contracts.validate(RESEARCH_ANALYSIS_REQUEST_SCHEMA, payload)
             decision = await self._genesis.research(
                 validated_request,
                 correlation_id=correlation_id,

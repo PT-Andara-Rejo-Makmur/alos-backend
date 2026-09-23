@@ -106,12 +106,7 @@ def test_knowledge_authority_migration_is_append_only() -> None:
 
 
 def test_auth_account_migration_is_append_only() -> None:
-    path = (
-        Path(__file__).resolve().parents[2]
-        / "migrations"
-        / "versions"
-        / "0006_auth_accounts.py"
-    )
+    path = Path(__file__).resolve().parents[2] / "migrations" / "versions" / "0006_auth_accounts.py"
     spec = importlib.util.spec_from_file_location("alos_auth_account_migration", path)
     assert spec is not None and spec.loader is not None
     migration = importlib.util.module_from_spec(spec)

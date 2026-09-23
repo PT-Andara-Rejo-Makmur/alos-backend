@@ -31,9 +31,7 @@ async def test_genesis_context_request_runs_only_through_backend_tool_executor()
         workspace_id="workspace_knowledge_001",
         actor_id="actor_knowledge_001",
         correlation_id="corr_knowledge_tool_001",
-        scope_refs=frozenset(
-            {"scope.sources.write", "scope.sources.verify", "scope.sources.read"}
-        ),
+        scope_refs=frozenset({"scope.sources.write", "scope.sources.verify", "scope.sources.read"}),
         data_classification="INTERNAL",
     )
     source = SourceRegistration(

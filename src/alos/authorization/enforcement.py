@@ -207,9 +207,7 @@ class AuthorizationEnforcer:
                 )
         return None
 
-    async def _audit_decision(
-        self, decision: AuthorizationDecision, command: str
-    ) -> None:
+    async def _audit_decision(self, decision: AuthorizationDecision, command: str) -> None:
         metadata: dict[str, Any] = {"command": command}
         if decision.denied_field:
             metadata["denied_field"] = decision.denied_field
@@ -222,9 +220,7 @@ class AuthorizationEnforcer:
                 organization_id=(
                     decision.principal.organization_id if decision.principal else "unknown"
                 ),
-                workspace_id=(
-                    decision.principal.workspace_id if decision.principal else "unknown"
-                ),
+                workspace_id=(decision.principal.workspace_id if decision.principal else "unknown"),
                 actor_id=decision.principal.actor_id if decision.principal else "unknown",
                 correlation_id=decision.correlation_id,
                 outcome=decision.outcome.value,

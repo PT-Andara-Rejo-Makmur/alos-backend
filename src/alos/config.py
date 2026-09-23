@@ -34,9 +34,7 @@ class Settings(BaseSettings):
     EGRESS_ALLOWED_DOMAINS: str = ""
     EGRESS_TIMEOUT_SECONDS: float = Field(default=10.0, gt=0, le=120)
     EGRESS_MAX_RESPONSE_BYTES: int = Field(default=1_000_000, gt=0, le=50_000_000)
-    EGRESS_ALLOWED_CONTENT_TYPES: str = (
-        "application/json,text/plain,text/html,application/xml"
-    )
+    EGRESS_ALLOWED_CONTENT_TYPES: str = "application/json,text/plain,text/html,application/xml"
     EGRESS_BLOCK_PRIVATE_NETWORKS: bool = True
 
     @field_validator("DATABASE_URL")

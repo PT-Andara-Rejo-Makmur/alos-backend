@@ -1,14 +1,14 @@
 """SQLAlchemy persistence adapter for authoritative Agent run lifecycle."""
 
 import inspect
+from collections.abc import Callable
 from typing import Any, cast
-
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from alos.agents.lifecycle.runs import (
     AuthoritativeRunRecord,
     AuthoritativeRunStatus,
     AuthoritativeStepRecord,
+    AuthoritativeStepStatus,
     RunAuthorityError,
 )
 from alos.persistence.models import AgentRunRecord, AgentRunStepRecord
@@ -18,26 +18,23 @@ def _uses_async_context(session: Any) -> bool:
     return hasattr(session, "__aenter__") and callable(getattr(session, "__aenter__", None))
 
 
-def _call_get(session: Any, key: Any, value: Any) -> Any:
-    getter = getattr(session, "get", None)
-    if inspect.iscoroutinefunction(getter):
-        return getter(key, value)
-    return getter(key, value)
+async def _resolve(value: Any) -> Any:
+    return await value if inspect.isawaitable(value) else value
 
 
 class SqlAgentRunStepStore:
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(self, session_factory: Callable[[], Any]) -> None:
         self._session_factory = session_factory
 
     async def create(self, record: AuthoritativeStepRecord) -> None:
         session = self._session_factory()
         if _uses_async_context(session):
             async with session as s:
-                existing = s.get(AgentRunStepRecord, record.step_id)
+                existing = await _resolve(s.get(AgentRunStepRecord, record.step_id))
                 if existing is not None:
                     raise RunAuthorityError("step_id already exists")
                 s.add(self._to_row(record))
-                s.commit()
+                await _resolve(s.commit())
             return
         with session as s:
             if s.get(AgentRunStepRecord, record.step_id) is not None:
@@ -49,7 +46,7 @@ class SqlAgentRunStepStore:
         session = self._session_factory()
         if _uses_async_context(session):
             async with session as s:
-                row = s.get(AgentRunStepRecord, record.step_id)
+                row = await _resolve(s.get(AgentRunStepRecord, record.step_id))
                 if row is None:
                     raise RunAuthorityError("authoritative step was not found")
                 row.status = record.status.value
@@ -58,8 +55,11 @@ class SqlAgentRunStepStore:
                 row.error_code = record.error_code
                 row.error_message = record.error_message
                 row.evidence_refs = list(record.evidence_refs)
+                row.input_tokens = record.input_tokens
+                row.output_tokens = record.output_tokens
+                row.total_tokens = record.total_tokens
                 row.tool_cost = record.tool_cost
-                s.commit()
+                await _resolve(s.commit())
             return
         with session as s:
             row = s.get(AgentRunStepRecord, record.step_id)
@@ -71,6 +71,9 @@ class SqlAgentRunStepStore:
             row.error_code = record.error_code
             row.error_message = record.error_message
             row.evidence_refs = list(record.evidence_refs)
+            row.input_tokens = record.input_tokens
+            row.output_tokens = record.output_tokens
+            row.total_tokens = record.total_tokens
             row.tool_cost = record.tool_cost
             s.commit()
 
@@ -78,7 +81,7 @@ class SqlAgentRunStepStore:
         session = self._session_factory()
         if _uses_async_context(session):
             async with session as s:
-                row = s.get(AgentRunStepRecord, step_id)
+                row = await _resolve(s.get(AgentRunStepRecord, step_id))
                 if row is None:
                     raise RunAuthorityError("authoritative step was not found")
                 return self._from_row(row)
@@ -92,10 +95,25 @@ class SqlAgentRunStepStore:
         session = self._session_factory()
         if _uses_async_context(session):
             async with session as s:
-                rows = s.execute(__import__("sqlalchemy").select(AgentRunStepRecord).where(AgentRunStepRecord.run_id == run_id)).scalars().all()
+                result = await _resolve(
+                    s.execute(
+                        __import__("sqlalchemy")
+                        .select(AgentRunStepRecord)
+                        .where(AgentRunStepRecord.run_id == run_id)
+                    )
+                )
+                rows = result.scalars().all()
                 return [self._from_row(row) for row in rows]
         with session as s:
-            rows = s.execute(__import__("sqlalchemy").select(AgentRunStepRecord).where(AgentRunStepRecord.run_id == run_id)).scalars().all()
+            rows = (
+                s.execute(
+                    __import__("sqlalchemy")
+                    .select(AgentRunStepRecord)
+                    .where(AgentRunStepRecord.run_id == run_id)
+                )
+                .scalars()
+                .all()
+            )
             return [self._from_row(row) for row in rows]
 
     @staticmethod
@@ -128,7 +146,7 @@ class SqlAgentRunStepStore:
             run_id=row.run_id,
             sequence=row.sequence,
             step_type=row.step_type,
-            status=AuthoritativeRunStatus.__members__.get(row.status, "") if False else __import__("alos.agents.lifecycle.runs", fromlist=["AuthoritativeStepStatus"]).AuthoritativeStepStatus(row.status),
+            status=AuthoritativeStepStatus(row.status),
             correlation_id=row.correlation_id,
             started_at=row.started_at,
             finished_at=row.finished_at,
@@ -146,18 +164,18 @@ class SqlAgentRunStepStore:
 
 
 class SqlAgentRunStore:
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(self, session_factory: Callable[[], Any]) -> None:
         self._session_factory = session_factory
 
     async def create(self, record: AuthoritativeRunRecord) -> None:
         session = self._session_factory()
         if _uses_async_context(session):
             async with session as s:
-                existing = s.get(AgentRunRecord, record.run_id)
+                existing = await _resolve(s.get(AgentRunRecord, record.run_id))
                 if existing is not None:
                     raise RunAuthorityError("run_id already exists")
                 s.add(self._to_row(record))
-                s.commit()
+                await _resolve(s.commit())
             return
         with session as s:
             if s.get(AgentRunRecord, record.run_id) is not None:
@@ -169,7 +187,7 @@ class SqlAgentRunStore:
         session = self._session_factory()
         if _uses_async_context(session):
             async with session as s:
-                row = s.get(AgentRunRecord, record.run_id)
+                row = await _resolve(s.get(AgentRunRecord, record.run_id))
                 if row is None:
                     raise RunAuthorityError("authoritative run was not found")
                 row.status = record.status.value
@@ -192,7 +210,7 @@ class SqlAgentRunStore:
                 row.total_cost = record.total_cost
                 row.budget_limit = record.budget_limit
                 row.remaining_budget = record.remaining_budget
-                s.commit()
+                await _resolve(s.commit())
             return
         with session as s:
             row = s.get(AgentRunRecord, record.run_id)
@@ -224,7 +242,7 @@ class SqlAgentRunStore:
         session = self._session_factory()
         if _uses_async_context(session):
             async with session as s:
-                row = s.get(AgentRunRecord, run_id)
+                row = await _resolve(s.get(AgentRunRecord, run_id))
                 if row is None:
                     raise RunAuthorityError("authoritative run was not found")
                 return self._from_row(row)
@@ -238,7 +256,8 @@ class SqlAgentRunStore:
         session = self._session_factory()
         if _uses_async_context(session):
             async with session as s:
-                rows = s.execute(__import__("sqlalchemy").select(AgentRunRecord)).scalars().all()
+                result = await _resolve(s.execute(__import__("sqlalchemy").select(AgentRunRecord)))
+                rows = result.scalars().all()
                 return [self._from_row(row) for row in rows]
         with session as s:
             rows = s.execute(__import__("sqlalchemy").select(AgentRunRecord)).scalars().all()

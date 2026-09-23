@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import copy
+import inspect
+from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from alos.contracts import CanonicalContractCatalog
+from alos.persistence.models import EvidenceAuthorityRecord
 
 EVIDENCE_REF_SCHEMA = "https://schemas.alos.dev/v1/evidence/evidence-ref.schema.json"
 EVIDENCE_BUNDLE_SCHEMA = "https://schemas.alos.dev/v1/evidence/evidence-bundle.schema.json"
@@ -62,7 +68,9 @@ class EvidenceRegistry:
     def get_claim_lineage(self, claim_id: str) -> list[dict[str, Any]]:
         return copy.deepcopy(self._claim_lineage.get(claim_id, []))
 
-    def verify_claim(self, *, claim_id: str, evidence_ids: list[str] | tuple[str, ...], minimum: int = 1) -> bool:
+    def verify_claim(
+        self, *, claim_id: str, evidence_ids: list[str] | tuple[str, ...], minimum: int = 1
+    ) -> bool:
         lineage = self._claim_lineage.get(claim_id, [])
         if len(lineage) < minimum:
             return False
@@ -92,3 +100,74 @@ class EvidenceRegistry:
             return copy.deepcopy(self._evidence[evidence_id])
         except KeyError as exc:
             raise LookupError("evidence was not found") from exc
+
+
+class SqlEvidenceRegistry:
+    """Persistent canonical evidence authority for multi-worker environments."""
+
+    def __init__(
+        self,
+        contracts: CanonicalContractCatalog,
+        session_factory: Callable[[], AsyncSession],
+    ) -> None:
+        self._contracts = contracts
+        self._session_factory = session_factory
+
+    async def register(self, payload: dict[str, Any]) -> dict[str, Any]:
+        validated = self._contracts.validate(EVIDENCE_REF_SCHEMA, payload)
+        evidence_id = str(validated["evidence_id"])
+        async with self._session_factory() as session:
+            existing = await session.get(EvidenceAuthorityRecord, evidence_id)
+            if existing is not None:
+                canonical = self._canonical_from_row(existing)
+                if canonical != validated:
+                    raise EvidenceConflictError(
+                        "immutable evidence_id already has different content"
+                    )
+                return canonical
+            session.add(
+                EvidenceAuthorityRecord(
+                    evidence_id=evidence_id,
+                    tenant_id=str(validated["tenant_id"]),
+                    organization_id=str(validated["organization_id"]),
+                    workspace_id=str(validated["workspace_id"]),
+                    source_id=str(validated["source_id"]),
+                    source_version=_optional_string(validated.get("source_version")),
+                    uri=str(validated["uri"]),
+                    content_hash=str(validated["content_hash"]),
+                    anchor=_optional_string(validated.get("anchor")),
+                    excerpt=_optional_string(validated.get("excerpt")),
+                    data_classification=str(validated.get("data_classification", "INTERNAL")),
+                    validation_status=str(validated.get("validation_status", "PENDING")),
+                    metadata_payload={"canonical_ref": copy.deepcopy(validated)},
+                    captured_at=datetime.fromisoformat(
+                        str(validated["captured_at"]).replace("Z", "+00:00")
+                    ),
+                )
+            )
+            await session.commit()
+        return copy.deepcopy(validated)
+
+    async def get(self, evidence_id: str) -> dict[str, Any]:
+        async with self._session_factory() as session:
+            row = await session.get(EvidenceAuthorityRecord, evidence_id)
+            if row is None:
+                raise LookupError("evidence was not found")
+            return self._canonical_from_row(row)
+
+    @staticmethod
+    def _canonical_from_row(row: EvidenceAuthorityRecord) -> dict[str, Any]:
+        canonical = row.metadata_payload.get("canonical_ref")
+        if not isinstance(canonical, dict):
+            raise LookupError("evidence has no canonical persisted reference")
+        return copy.deepcopy(canonical)
+
+
+async def resolve_registry_result(value: Any) -> Any:
+    """Await SQL-backed evidence operations while preserving the in-memory API."""
+
+    return await value if inspect.isawaitable(value) else value
+
+
+def _optional_string(value: Any) -> str | None:
+    return str(value) if value is not None else None

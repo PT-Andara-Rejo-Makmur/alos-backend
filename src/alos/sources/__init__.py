@@ -1,4 +1,5 @@
 """Canonical source reference boundary used by evidence."""
+
 from alos.sources.models import (
     KnowledgeAccessContext,
     SourceRegistration,

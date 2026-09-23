@@ -7,7 +7,7 @@ import copy
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from alos.audit import AuditEvent, AuditSink
 from alos.contracts import CanonicalContractCatalog
@@ -254,35 +254,58 @@ class AgentRunAuthority:
         if parent_run_id is not None:
             parent_record = await self._store.get(str(parent_run_id))
             if parent_record is None:
-                raise RunAuthorityError("child run parent does not exist", code="PARENT_RUN_NOT_FOUND")
+                raise RunAuthorityError(
+                    "child run parent does not exist", code="PARENT_RUN_NOT_FOUND"
+                )
             if request.get("root_run_id") not in (None, parent_record.root_run_id):
-                raise RunAuthorityError("child run root_run_id does not match parent lineage", code="ROOT_RUN_MISMATCH")
-            if parent_record.status.is_terminal or parent_record.status is AuthoritativeRunStatus.CANCEL_REQUESTED:
-                raise RunAuthorityError("cannot create child under a terminal or cancelling parent", code="PARENT_RUN_UNAVAILABLE")
+                raise RunAuthorityError(
+                    "child run root_run_id does not match parent lineage", code="ROOT_RUN_MISMATCH"
+                )
+            if (
+                parent_record.status.is_terminal
+                or parent_record.status is AuthoritativeRunStatus.CANCEL_REQUESTED
+            ):
+                raise RunAuthorityError(
+                    "cannot create child under a terminal or cancelling parent",
+                    code="PARENT_RUN_UNAVAILABLE",
+                )
             if not self._delegation_policy_available(parent_record):
-                raise RunAuthorityError("delegation policy unavailable for child run", code="DELEGATION_POLICY_UNAVAILABLE")
+                raise RunAuthorityError(
+                    "delegation policy unavailable for child run",
+                    code="DELEGATION_POLICY_UNAVAILABLE",
+                )
             request["root_run_id"] = str(parent_record.root_run_id)
             request["parent_run_id"] = parent_record.run_id
             self._enforce_child_inheritance(parent_record, request, context)
             depth = parent_record.depth + 1
             max_depth = self._resolve_delegation_policy(parent_record, "max_depth")
             if max_depth is not None and depth > max_depth:
-                raise RunAuthorityError("delegation depth exceeds parent policy", code="DEPTH_LIMIT_EXCEEDED")
+                raise RunAuthorityError(
+                    "delegation depth exceeds parent policy", code="DEPTH_LIMIT_EXCEEDED"
+                )
             async with self._delegation_lock:
                 active_children = await self._count_active_children(parent_record.run_id)
                 max_children = self._resolve_delegation_policy(parent_record, "max_children")
                 if max_children is not None and active_children >= max_children:
-                    raise RunAuthorityError("delegation child limit reached", code="MAX_CHILDREN_EXCEEDED")
+                    raise RunAuthorityError(
+                        "delegation child limit reached", code="MAX_CHILDREN_EXCEEDED"
+                    )
                 max_concurrency = self._resolve_delegation_policy(parent_record, "max_concurrency")
                 if max_concurrency is not None and active_children >= max_concurrency:
-                    raise RunAuthorityError("delegation concurrency limit reached", code="CONCURRENCY_LIMIT_EXCEEDED")
+                    raise RunAuthorityError(
+                        "delegation concurrency limit reached", code="CONCURRENCY_LIMIT_EXCEEDED"
+                    )
                 self._delegation_counts[parent_record.run_id] = active_children + 1
         else:
             request["parent_run_id"] = None
             request["root_run_id"] = str(request.get("root_run_id") or run_id)
             depth = 0
 
-        execution_budget = context.get("execution_budget") if isinstance(context.get("execution_budget"), dict) else {}
+        execution_budget = (
+            context.get("execution_budget")
+            if isinstance(context.get("execution_budget"), dict)
+            else {}
+        )
         budget_limit = None
         if isinstance(execution_budget, dict):
             raw_limit = execution_budget.get("max_cost")
@@ -314,7 +337,9 @@ class AgentRunAuthority:
             request=copy.deepcopy(request),
             created_at=datetime.now(UTC),
             depth=depth,
-            delegation_id=str(request.get("delegation_id") or request.get("parent_run_id") or run_id),
+            delegation_id=str(
+                request.get("delegation_id") or request.get("parent_run_id") or run_id
+            ),
             retry_count=int(request.get("retry_count") or 0),
             started_at=datetime.now(UTC),
             cancellation_state="NONE",
@@ -361,17 +386,38 @@ class AgentRunAuthority:
             completed_at=datetime.now(UTC),
             finished_at=datetime.now(UTC),
             result=copy.deepcopy(result),
-            error_code=result.get("error", {}).get("code") if isinstance(result.get("error"), dict) else None,
-            error_message=result.get("error", {}).get("message") if isinstance(result.get("error"), dict) else None,
+            error_code=result.get("error", {}).get("code")
+            if isinstance(result.get("error"), dict)
+            else None,
+            error_message=result.get("error", {}).get("message")
+            if isinstance(result.get("error"), dict)
+            else None,
             structured_result_ref=result.get("structured_result_ref"),
-            evidence_refs=tuple(str(item) for item in result.get("evidence_refs", [])),
-            cancellation_state="NONE" if target is not AuthoritativeRunStatus.CANCELLED else "CANCELLED",
+            evidence_refs=tuple(
+                str(item.get("evidence_id")) if isinstance(item, dict) else str(item)
+                for item in result.get("evidence_refs", [])
+            ),
+            usage_ref=f"urn:alos:usage:{run_id}" if isinstance(usage, dict) else None,
+            cost_ref=(
+                f"urn:alos:cost:{run_id}"
+                if current.model_cost is not None or current.tool_cost is not None
+                else None
+            ),
+            cancellation_state="NONE"
+            if target is not AuthoritativeRunStatus.CANCELLED
+            else "CANCELLED",
         )
         updated = self._apply_budget(updated)
-        if updated.status is AuthoritativeRunStatus.FAILED and updated.error_code == "BUDGET_EXCEEDED":
+        if (
+            updated.status is AuthoritativeRunStatus.FAILED
+            and updated.error_code == "BUDGET_EXCEEDED"
+        ):
             await self._store.update(updated)
             await self._record_event(updated, "run.budget_exceeded")
-            raise RunAuthorityError("BUDGET_EXCEEDED: authoritative run exceeded its execution budget", code="BUDGET_EXCEEDED")
+            raise RunAuthorityError(
+                "BUDGET_EXCEEDED: authoritative run exceeded its execution budget",
+                code="BUDGET_EXCEEDED",
+            )
         await self._store.update(updated)
         await self._release_delegation_slot(current.parent_run_id)
         event_type = "run.completed" if target is AuthoritativeRunStatus.COMPLETED else "run.failed"
@@ -398,10 +444,12 @@ class AgentRunAuthority:
             error_code="RUN_CANCELLED",
             error_message=reason if reason and "\n" not in reason else reason.splitlines()[0],
             result={
-                **(copy.deepcopy(current.result) or {}),
+                **copy.deepcopy(current.result or {}),
                 "status": AuthoritativeRunStatus.CANCELLED.value,
                 "cancelled_by": actor_id or current.actor_id,
-                "cancel_reason": reason if reason and "\n" not in reason else reason.splitlines()[0],
+                "cancel_reason": reason
+                if reason and "\n" not in reason
+                else reason.splitlines()[0],
                 "correlation_id": correlation_id or current.correlation_id,
             },
         )
@@ -425,8 +473,14 @@ class AgentRunAuthority:
         if current.status is AuthoritativeRunStatus.CANCEL_REQUESTED:
             return self._copy(current)
         if current.status.is_terminal:
-            if current.status is AuthoritativeRunStatus.FAILED and current.error_code == "BUDGET_EXCEEDED":
-                raise RunAuthorityError("BUDGET_EXCEEDED: authoritative run exceeded its execution budget", code="BUDGET_EXCEEDED")
+            if (
+                current.status is AuthoritativeRunStatus.FAILED
+                and current.error_code == "BUDGET_EXCEEDED"
+            ):
+                raise RunAuthorityError(
+                    "BUDGET_EXCEEDED: authoritative run exceeded its execution budget",
+                    code="BUDGET_EXCEEDED",
+                )
             return self._copy(current)
         updated = replace(
             current,
@@ -435,10 +489,12 @@ class AgentRunAuthority:
             error_code="RUN_CANCEL_REQUESTED",
             error_message=reason if reason and "\n" not in reason else reason.splitlines()[0],
             result={
-                **(copy.deepcopy(current.result) or {}),
+                **copy.deepcopy(current.result or {}),
                 "status": AuthoritativeRunStatus.CANCEL_REQUESTED.value,
                 "cancelled_by": actor_id or current.actor_id,
-                "cancel_reason": reason if reason and "\n" not in reason else reason.splitlines()[0],
+                "cancel_reason": reason
+                if reason and "\n" not in reason
+                else reason.splitlines()[0],
                 "correlation_id": correlation_id or current.correlation_id,
             },
         )
@@ -501,7 +557,9 @@ class AgentRunAuthority:
             finished_at=datetime.now(UTC),
             output_metadata=copy.deepcopy(output_metadata or step.output_metadata),
             error_code=error_code,
-            error_message=error_message if error_message is None or "\n" not in error_message else error_message.splitlines()[0],
+            error_message=error_message
+            if error_message is None or "\n" not in error_message
+            else error_message.splitlines()[0],
             input_tokens=self._coerce_int(input_tokens, default=step.input_tokens),
             output_tokens=self._coerce_int(output_tokens, default=step.output_tokens),
             total_tokens=self._coerce_int(total_tokens, default=step.total_tokens),
@@ -522,9 +580,14 @@ class AgentRunAuthority:
             tool_cost=step_tool_cost,
         )
         if run_updated.budget_limit is not None and run_updated.total_cost is not None:
-            run_updated = replace(run_updated, remaining_budget=run_updated.budget_limit - run_updated.total_cost)
+            run_updated = replace(
+                run_updated, remaining_budget=run_updated.budget_limit - run_updated.total_cost
+            )
         elif run_updated.budget_limit is not None and run_updated.tool_cost is not None:
-            run_updated = replace(run_updated, remaining_budget=run_updated.budget_limit - (run_updated.tool_cost or 0.0))
+            run_updated = replace(
+                run_updated,
+                remaining_budget=run_updated.budget_limit - (run_updated.tool_cost or 0.0),
+            )
         await self._store.update(run_updated)
         return updated
 
@@ -551,17 +614,28 @@ class AgentRunAuthority:
         if record.status.is_terminal:
             raise RunAuthorityError("cannot retry a terminal run", code="RETRY_NOT_ALLOWED")
         if not retryable:
-            raise RunAuthorityError("non-retryable error cannot be retried", code="RETRY_NOT_ALLOWED")
+            raise RunAuthorityError(
+                "non-retryable error cannot be retried", code="RETRY_NOT_ALLOWED"
+            )
         max_retries = self._resolve_delegation_policy(record, "max_retries")
         if max_retries is None:
-            raise RunAuthorityError("retry policy unavailable for this run", code="RETRY_POLICY_UNAVAILABLE")
+            raise RunAuthorityError(
+                "retry policy unavailable for this run", code="RETRY_POLICY_UNAVAILABLE"
+            )
         if (record.retry_count or 0) >= max_retries:
-            raise RunAuthorityError("retry limit exceeded for this run", code="RETRY_LIMIT_EXCEEDED")
-        parent_context = None
+            raise RunAuthorityError(
+                "retry limit exceeded for this run", code="RETRY_LIMIT_EXCEEDED"
+            )
         if record.parent_run_id is not None:
             parent = await self._store.get(record.parent_run_id)
-            parent_context = parent.request.get("execution_context") if isinstance(parent.request.get("execution_context"), dict) else {}
-            self._enforce_child_inheritance(parent, record.request, record.request.get("execution_context", {}))
+            (
+                parent.request.get("execution_context")
+                if isinstance(parent.request.get("execution_context"), dict)
+                else {}
+            )
+            self._enforce_child_inheritance(
+                parent, record.request, record.request.get("execution_context", {})
+            )
         updated = replace(
             record,
             retry_count=(record.retry_count or 0) + 1,
@@ -569,7 +643,12 @@ class AgentRunAuthority:
             cancellation_state="NONE",
             error_code=None,
             error_message=None,
-            result={**(copy.deepcopy(record.result) or {}), "retry_reason": reason, "retry_count": (record.retry_count or 0) + 1, "correlation_id": correlation_id or record.correlation_id},
+            result={
+                **copy.deepcopy(record.result or {}),
+                "retry_reason": reason,
+                "retry_count": (record.retry_count or 0) + 1,
+                "correlation_id": correlation_id or record.correlation_id,
+            },
         )
         await self._store.update(updated)
         await self._record_event(updated, "run.retry")
@@ -578,17 +657,16 @@ class AgentRunAuthority:
     async def get(self, run_id: str) -> AuthoritativeRunRecord:
         return await self._store.get(run_id)
 
+    async def list_runs(self) -> list[AuthoritativeRunRecord]:
+        """Return authoritative records for scoped control-plane inspection."""
+        return [self._copy(record) for record in await self._store.list()]
+
     async def get_run_tree(self, root_run_id: str) -> dict[str, Any]:
-        records = []
-        if hasattr(self._store, "list"):
-            records = await self._store.list()  # type: ignore[attr-defined]
-        else:
-            if hasattr(self._store, "_runs"):
-                records = list(getattr(self._store, "_runs").values())
+        records = await self._store.list()
         by_id = {record.run_id: record for record in records}
         if not by_id:
-            root = await self._store.get(root_run_id)
-            by_id = {root.run_id: root}
+            loaded_root = await self._store.get(root_run_id)
+            by_id = {loaded_root.run_id: loaded_root}
         root = by_id.get(root_run_id)
         if root is None:
             raise RunAuthorityError("root run was not found", code="ROOT_RUN_NOT_FOUND")
@@ -626,7 +704,9 @@ class AgentRunAuthority:
             normalized["output_state"] = (
                 "AI_INFERRED"
                 if status == "COMPLETED"
-                else "BLOCKED" if status in {"FAILED", "CANCELLED", "TIMED_OUT"} else "DRAFT"
+                else "BLOCKED"
+                if status in {"FAILED", "CANCELLED", "TIMED_OUT"}
+                else "DRAFT"
             )
         now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         if "started_at" not in normalized:
@@ -636,22 +716,38 @@ class AgentRunAuthority:
 
         usage = normalized.get("usage")
         if isinstance(usage, dict):
-            allowed_usage_keys = {"provider", "model", "input_tokens", "output_tokens", "latency_milliseconds", "estimated_cost"}
+            allowed_usage_keys = {
+                "provider",
+                "model",
+                "input_tokens",
+                "output_tokens",
+                "latency_milliseconds",
+                "estimated_cost",
+            }
             normalized["usage"] = {
-                key: value for key, value in usage.items() if key in allowed_usage_keys and value is not None
+                key: value
+                for key, value in usage.items()
+                if key in allowed_usage_keys and value is not None
             }
 
         evidence_refs = normalized.get("evidence_refs", [])
         if isinstance(evidence_refs, list):
             normalized["evidence_refs"] = [
-                AgentRunAuthority._normalize_evidence_ref(item, completed_at=normalized.get("completed_at") or now)
+                AgentRunAuthority._normalize_evidence_ref(
+                    item, completed_at=normalized.get("completed_at") or now
+                )
                 for item in evidence_refs
             ]
 
         tool_results = normalized.get("tool_results", [])
         if isinstance(tool_results, list):
             normalized["tool_results"] = [
-                AgentRunAuthority._normalize_tool_result(item, run_id=normalized.get("run_id"), correlation_id=normalized.get("correlation_id"), completed_at=normalized.get("completed_at") or now)
+                AgentRunAuthority._normalize_tool_result(
+                    item,
+                    run_id=normalized.get("run_id"),
+                    correlation_id=normalized.get("correlation_id"),
+                    completed_at=normalized.get("completed_at") or now,
+                )
                 for item in tool_results
             ]
         return normalized
@@ -664,7 +760,7 @@ class AgentRunAuthority:
             normalized = {
                 "evidence_id": str(item),
                 "source_id": "legacy-evidence",
-                "uri": f"https://example.invalid/evidence/{str(item)}",
+                "uri": f"https://example.invalid/evidence/{item!s}",
                 "captured_at": completed_at,
                 "content_hash": "sha256:" + ("0" * 64),
             }
@@ -681,7 +777,9 @@ class AgentRunAuthority:
         return normalized
 
     @staticmethod
-    def _normalize_tool_result(item: Any, *, run_id: Any, correlation_id: Any, completed_at: str) -> dict[str, Any]:
+    def _normalize_tool_result(
+        item: Any, *, run_id: Any, correlation_id: Any, completed_at: str
+    ) -> dict[str, Any]:
         if not isinstance(item, dict):
             item = {"tool_id": "legacy.tool", "status": "SUCCESS", "output": {"legacy": str(item)}}
         normalized = dict(item)
@@ -692,22 +790,39 @@ class AgentRunAuthority:
         if "run_id" not in normalized:
             normalized["run_id"] = str(run_id) if run_id is not None else "legacy_run"
         if "correlation_id" not in normalized:
-            normalized["correlation_id"] = str(correlation_id) if correlation_id is not None else "legacy_corr"
+            normalized["correlation_id"] = (
+                str(correlation_id) if correlation_id is not None else "legacy_corr"
+            )
         if "status" not in normalized:
             normalized["status"] = "SUCCESS"
         if "completed_at" not in normalized:
             normalized["completed_at"] = completed_at
         if raw_cost is not None or raw_tool_cost is not None:
             value = raw_cost if raw_cost is not None else raw_tool_cost
-            normalized["output"] = {"cost": float(value), **(dict(normalized.get("output")) if isinstance(normalized.get("output"), dict) else {})}
+            normalized["output"] = {
+                "cost": float(value),
+                **(
+                    dict(cast(dict[str, Any], normalized.get("output")))
+                    if isinstance(normalized.get("output"), dict)
+                    else {}
+                ),
+            }
         if normalized.get("status") in {"SUCCESS", "COMPLETED"} and "output" not in normalized:
             normalized["output"] = {"legacy": "tool result normalized by backend authority"}
-        if normalized.get("status") in {"FAILED", "TIMEOUT", "DENIED", "REJECTED"} and "error" not in normalized:
-            normalized["error"] = {"code": "LEGACY_TOOL_RESULT", "message": "Tool result normalized by backend authority."}
+        if (
+            normalized.get("status") in {"FAILED", "TIMEOUT", "DENIED", "REJECTED"}
+            and "error" not in normalized
+        ):
+            normalized["error"] = {
+                "code": "LEGACY_TOOL_RESULT",
+                "message": "Tool result normalized by backend authority.",
+            }
         return normalized
 
     @staticmethod
-    def _compute_total_cost(record: AuthoritativeRunRecord, usage: dict[str, Any] | None) -> float | None:
+    def _compute_total_cost(
+        record: AuthoritativeRunRecord, usage: dict[str, Any] | None
+    ) -> float | None:
         model_cost = record.model_cost
         tool_cost = record.tool_cost
         if usage is not None:
@@ -764,7 +879,9 @@ class AgentRunAuthority:
         return sum(costs)
 
     @classmethod
-    def _apply_usage_metrics(cls, record: AuthoritativeRunRecord, usage: dict[str, Any]) -> AuthoritativeRunRecord:
+    def _apply_usage_metrics(
+        cls, record: AuthoritativeRunRecord, usage: dict[str, Any]
+    ) -> AuthoritativeRunRecord:
         input_tokens = cls._coerce_int(usage.get("input_tokens"), default=record.input_tokens)
         output_tokens = cls._coerce_int(usage.get("output_tokens"), default=record.output_tokens)
         total_tokens = cls._coerce_int(usage.get("total_tokens"), default=record.total_tokens)
@@ -969,17 +1086,21 @@ class AgentRunAuthority:
             return {str(item) for item in value}
         return {str(value)}
 
+    @staticmethod
+    def _as_dict(value: Any) -> dict[str, Any]:
+        return cast(dict[str, Any], value) if isinstance(value, dict) else {}
+
     def _delegation_policy_available(self, parent: AuthoritativeRunRecord) -> bool:
         policy = parent.request.get("delegation_policy")
         if isinstance(policy, dict):
             return True
-        context = parent.request.get("execution_context") if isinstance(parent.request.get("execution_context"), dict) else {}
+        context = self._as_dict(parent.request.get("execution_context"))
         return isinstance(context.get("delegation_policy"), dict)
 
     def _resolve_delegation_policy(self, parent: AuthoritativeRunRecord, key: str) -> int | None:
         policy = parent.request.get("delegation_policy")
         if not isinstance(policy, dict):
-            context = parent.request.get("execution_context") if isinstance(parent.request.get("execution_context"), dict) else {}
+            context = self._as_dict(parent.request.get("execution_context"))
             policy = context.get("delegation_policy")
         if not isinstance(policy, dict):
             return None
@@ -992,10 +1113,7 @@ class AgentRunAuthority:
             return None
 
     async def _count_active_children(self, parent_run_id: str) -> int:
-        if hasattr(self._store, "list"):
-            children = await self._store.list()  # type: ignore[attr-defined]
-        else:
-            children = []
+        children = await self._store.list()
         active = 0
         for child in children:
             if child.parent_run_id != parent_run_id:
@@ -1014,24 +1132,29 @@ class AgentRunAuthority:
             return
         self._delegation_counts[parent_run_id] = current - 1
 
-    async def _propagate_child_cancellation(self, record: AuthoritativeRunRecord, *, finalize: bool = False) -> None:
-        if hasattr(self._store, "list"):
-            children = await self._store.list()  # type: ignore[attr-defined]
-        else:
-            children = []
+    async def _propagate_child_cancellation(
+        self, record: AuthoritativeRunRecord, *, finalize: bool = False
+    ) -> None:
+        children = await self._store.list()
         for child in children:
             if child.parent_run_id != record.run_id:
                 continue
             if child.status.is_terminal:
                 continue
-            target_status = AuthoritativeRunStatus.CANCELLED if finalize else AuthoritativeRunStatus.CANCEL_REQUESTED
+            target_status = (
+                AuthoritativeRunStatus.CANCELLED
+                if finalize
+                else AuthoritativeRunStatus.CANCEL_REQUESTED
+            )
             updated = replace(
                 child,
                 status=target_status,
                 cancellation_state="CANCELLED" if finalize else "REQUESTED",
                 error_code="RUN_CANCELLED" if finalize else "RUN_CANCEL_REQUESTED",
-                error_message="Parent cancellation propagated to child run." if finalize else "Parent cancellation requested for child run.",
-                result={**(copy.deepcopy(child.result) or {}), "status": target_status.value},
+                error_message="Parent cancellation propagated to child run."
+                if finalize
+                else "Parent cancellation requested for child run.",
+                result={**copy.deepcopy(child.result or {}), "status": target_status.value},
             )
             await self._store.update(updated)
             await self._propagate_child_cancellation(updated, finalize=finalize)
@@ -1042,54 +1165,136 @@ class AgentRunAuthority:
         request: dict[str, Any],
         context: dict[str, Any],
     ) -> None:
-        parent_context = parent.request.get("execution_context") if isinstance(parent.request.get("execution_context"), dict) else {}
-        parent_scope = self._as_set(parent_context.get("scope_refs") or parent.request.get("scope_refs") or parent_context.get("scope"))
-        child_scope = self._as_set(context.get("scope_refs") or request.get("scope_refs") or request.get("scope"))
+        parent_context = self._as_dict(parent.request.get("execution_context"))
+        parent_scope = self._as_set(
+            parent_context.get("scope_refs")
+            or parent.request.get("scope_refs")
+            or parent_context.get("scope")
+        )
+        child_scope = self._as_set(
+            context.get("scope_refs") or request.get("scope_refs") or request.get("scope")
+        )
         if not child_scope.issubset(parent_scope):
-            raise RunAuthorityError("child scope exceeds parent scope", code="SCOPE_INHERITANCE_DENIED")
+            raise RunAuthorityError(
+                "child scope exceeds parent scope", code="SCOPE_INHERITANCE_DENIED"
+            )
 
-        parent_permissions = self._as_set(parent_context.get("permission_refs") or parent.request.get("permission_refs"))
-        child_permissions = self._as_set(context.get("permission_refs") or request.get("permissions"))
+        parent_permissions = self._as_set(
+            parent_context.get("permission_refs") or parent.request.get("permission_refs")
+        )
+        child_permissions = self._as_set(
+            context.get("permission_refs") or request.get("permissions")
+        )
         if not child_permissions.issubset(parent_permissions):
-            raise RunAuthorityError("child permissions exceed parent permissions", code="AUTHORITY_INHERITANCE_DENIED")
+            raise RunAuthorityError(
+                "child permissions exceed parent permissions", code="AUTHORITY_INHERITANCE_DENIED"
+            )
 
         parent_tools = self._as_set(parent.authorized_tool_ids)
-        child_tools = self._as_set(request.get("requested_tool_ids") or context.get("allowed_tool_ids"))
+        child_tools = self._as_set(
+            request.get("requested_tool_ids") or context.get("allowed_tool_ids")
+        )
         if not child_tools.issubset(parent_tools):
-            raise RunAuthorityError("child tool access exceeds parent allowance", code="TOOL_PERMISSION_INHERITANCE_DENIED")
+            raise RunAuthorityError(
+                "child tool access exceeds parent allowance",
+                code="TOOL_PERMISSION_INHERITANCE_DENIED",
+            )
 
-        parent_data_access = self._as_set(parent_context.get("data_access") or parent.request.get("data_access") or parent_context.get("approved_data_access"))
-        child_data_access = self._as_set(context.get("data_access") or request.get("data_access") or context.get("approved_data_access"))
+        parent_data_access = self._as_set(
+            parent_context.get("data_access")
+            or parent.request.get("data_access")
+            or parent_context.get("approved_data_access")
+        )
+        child_data_access = self._as_set(
+            context.get("data_access")
+            or request.get("data_access")
+            or context.get("approved_data_access")
+        )
         if not child_data_access.issubset(parent_data_access):
-            raise RunAuthorityError("child data access exceeds parent data access", code="DATA_ACCESS_INHERITANCE_DENIED")
+            raise RunAuthorityError(
+                "child data access exceeds parent data access",
+                code="DATA_ACCESS_INHERITANCE_DENIED",
+            )
 
-        parent_budget = parent.remaining_budget if parent.remaining_budget is not None else parent.budget_limit
-        child_budget = context.get("execution_budget") if isinstance(context.get("execution_budget"), dict) else {}
+        parent_budget = (
+            parent.remaining_budget if parent.remaining_budget is not None else parent.budget_limit
+        )
+        child_budget = (
+            context.get("execution_budget")
+            if isinstance(context.get("execution_budget"), dict)
+            else {}
+        )
         child_max_cost = child_budget.get("max_cost") if isinstance(child_budget, dict) else None
-        if parent_budget is not None and child_max_cost is not None and float(child_max_cost) > float(parent_budget):
-            raise RunAuthorityError("child budget exceeds parent remaining budget", code="BUDGET_INHERITANCE_DENIED")
+        if (
+            parent_budget is not None
+            and child_max_cost is not None
+            and float(child_max_cost) > float(parent_budget)
+        ):
+            raise RunAuthorityError(
+                "child budget exceeds parent remaining budget", code="BUDGET_INHERITANCE_DENIED"
+            )
 
-        parent_egress = self._as_set(parent_context.get("egress_policy") or parent_context.get("egress") or parent.request.get("egress_policy") or parent_context.get("allowed_egress"))
-        child_egress = self._as_set(context.get("egress_policy") or context.get("egress") or request.get("egress_policy") or context.get("allowed_egress"))
+        parent_egress = self._as_set(
+            parent_context.get("egress_policy")
+            or parent_context.get("egress")
+            or parent.request.get("egress_policy")
+            or parent_context.get("allowed_egress")
+        )
+        child_egress = self._as_set(
+            context.get("egress_policy")
+            or context.get("egress")
+            or request.get("egress_policy")
+            or context.get("allowed_egress")
+        )
         if not child_egress.issubset(parent_egress):
-            raise RunAuthorityError("child egress exceeds parent policy", code="EGRESS_INHERITANCE_DENIED")
+            raise RunAuthorityError(
+                "child egress exceeds parent policy", code="EGRESS_INHERITANCE_DENIED"
+            )
 
-        if parent_context.get("authority_context") and isinstance(parent_context.get("authority_context"), dict):
+        if parent_context.get("authority_context") and isinstance(
+            parent_context.get("authority_context"), dict
+        ):
             parent_role = parent_context["authority_context"].get("role")
-            child_role = context.get("authority_context", {}).get("role") if isinstance(context.get("authority_context"), dict) else None
-            if child_role is not None and parent_role is not None and str(child_role) != str(parent_role):
-                raise RunAuthorityError("child role does not inherit parent authority", code="AUTHORITY_INHERITANCE_DENIED")
+            child_role = (
+                context.get("authority_context", {}).get("role")
+                if isinstance(context.get("authority_context"), dict)
+                else None
+            )
+            if (
+                child_role is not None
+                and parent_role is not None
+                and str(child_role) != str(parent_role)
+            ):
+                raise RunAuthorityError(
+                    "child role does not inherit parent authority",
+                    code="AUTHORITY_INHERITANCE_DENIED",
+                )
 
-        if parent.request.get("execution_context", {}).get("workspace_id") and context.get("workspace_id") and context.get("workspace_id") != parent.request.get("execution_context", {}).get("workspace_id"):
-            raise RunAuthorityError("child workspace scope exceeds parent workspace", code="SCOPE_INHERITANCE_DENIED")
+        if (
+            parent.request.get("execution_context", {}).get("workspace_id")
+            and context.get("workspace_id")
+            and context.get("workspace_id")
+            != parent.request.get("execution_context", {}).get("workspace_id")
+        ):
+            raise RunAuthorityError(
+                "child workspace scope exceeds parent workspace", code="SCOPE_INHERITANCE_DENIED"
+            )
 
         if context.get("disallow_direct_http") is True:
-            raise RunAuthorityError("child execution cannot bypass ToolExecutor", code="TOOLEXECUTOR_INHERITANCE_DENIED")
+            raise RunAuthorityError(
+                "child execution cannot bypass ToolExecutor", code="TOOLEXECUTOR_INHERITANCE_DENIED"
+            )
 
-        child_allowed_hosts = self._as_set(context.get("allowed_http_hosts") or request.get("allowed_http_hosts"))
-        parent_allowed_hosts = self._as_set(parent_context.get("allowed_http_hosts") or parent.request.get("allowed_http_hosts"))
+        child_allowed_hosts = self._as_set(
+            context.get("allowed_http_hosts") or request.get("allowed_http_hosts")
+        )
+        parent_allowed_hosts = self._as_set(
+            parent_context.get("allowed_http_hosts") or parent.request.get("allowed_http_hosts")
+        )
         if not child_allowed_hosts.issubset(parent_allowed_hosts):
-            raise RunAuthorityError("child HTTP egress exceeds parent allowance", code="EGRESS_INHERITANCE_DENIED")
+            raise RunAuthorityError(
+                "child HTTP egress exceeds parent allowance", code="EGRESS_INHERITANCE_DENIED"
+            )
 
     async def _record_event(self, record: AuthoritativeRunRecord, event_type: str) -> None:
         await self._audit.append(

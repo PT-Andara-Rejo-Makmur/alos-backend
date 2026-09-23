@@ -125,8 +125,7 @@ async def test_external_retrieval_blocks_unauthorized_scope_before_network() -> 
     assert not called
     assert raised.value.code == "EGRESS_SCOPE_DENIED"
     assert (
-        audit.list_events(tenant_id="tenant_external")[0].metadata["code"]
-        == "EGRESS_SCOPE_DENIED"
+        audit.list_events(tenant_id="tenant_external")[0].metadata["code"] == "EGRESS_SCOPE_DENIED"
     )
 
 
@@ -149,9 +148,7 @@ async def test_external_retrieval_enforces_content_type_and_size(
     async with httpx.AsyncClient(transport=transport) as client:
         service = ExternalRetrievalService(policy=policy(), audit=audit, client=client)
         with pytest.raises(ExternalRetrievalError) as raised:
-            await service.retrieve(
-                "https://example.com/data.json", **context(), scope_refs=SCOPE
-            )
+            await service.retrieve("https://example.com/data.json", **context(), scope_refs=SCOPE)
 
     assert raised.value.code in {"EGRESS_CONTENT_TYPE_BLOCKED", "EGRESS_RESPONSE_TOO_LARGE"}
     assert audit.list_events(tenant_id="tenant_external")[0].outcome == "BLOCKED"
@@ -171,9 +168,7 @@ async def test_external_retrieval_rejects_private_dns_resolution() -> None:
             policy=policy(), audit=audit, client=client, resolver=resolver
         )
         with pytest.raises(ExternalRetrievalError) as raised:
-            await service.retrieve(
-                "https://example.com/data.json", **context(), scope_refs=SCOPE
-            )
+            await service.retrieve("https://example.com/data.json", **context(), scope_refs=SCOPE)
 
     assert raised.value.code == "EGRESS_PRIVATE_NETWORK_BLOCKED"
     assert audit.list_events(tenant_id="tenant_external")[0].outcome == "BLOCKED"

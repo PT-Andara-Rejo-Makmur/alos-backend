@@ -108,16 +108,13 @@ class ContextBundleBuilder:
             )
 
         scope_refs = tuple(sorted(principal.scopes))
-        allowed_capabilities = tuple(
-            sorted({*request.capability_ids, *principal.permissions})
-        )
+        allowed_capabilities = tuple(sorted({*request.capability_ids, *principal.permissions}))
         allowed_tools = tuple(sorted(set(request.tool_ids)))
         budget = max(0, request.budget_hint or 0)
         token_limit = max(0, request.token_hint or 0)
 
         context_id = (
-            f"context_"
-            f"{abs(hash((principal.actor_id, tuple(scope_refs), correlation_id))):x}"
+            f"context_{abs(hash((principal.actor_id, tuple(scope_refs), correlation_id))):x}"
         )
         return ContextBundle(
             status="ACTIVE",

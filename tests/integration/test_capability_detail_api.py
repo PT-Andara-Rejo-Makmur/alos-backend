@@ -130,9 +130,7 @@ async def build_workspace() -> tuple[httpx.AsyncClient, DetailGenesisStub, str, 
     app = create_app(settings)
     genesis = DetailGenesisStub()
     app.dependency_overrides[get_genesis_client] = lambda: genesis
-    client = httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    )
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
     owner_token = await register_and_login(
         client, "owner@detail.local", permissions=DRAFT_PERMISSIONS
     )

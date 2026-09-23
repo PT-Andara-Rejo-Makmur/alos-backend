@@ -129,9 +129,7 @@ async def test_public_factory_api_derives_authority_and_returns_registered_draft
     try:
         response = await client.post(
             "/api/v1/genesis/factory/analyze",
-            json={
-                "requirement": "Create a weekly operational report with traceable evidence."
-            },
+            json={"requirement": "Create a weekly operational report with traceable evidence."},
             headers={
                 "Authorization": f"Bearer {token}",
                 "X-Correlation-ID": "corr_public_factory_001",

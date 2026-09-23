@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from alos.agents.lifecycle import AgentRunAuthority, AuthoritativeRunStatus
+from alos.agents.lifecycle import AgentRunAuthority, AuthoritativeRunStatus, RunAuthorityError
 from alos.agents.registry import AgentRegistry
 from alos.audit import InMemoryAuditRepository
 from alos.contracts import CanonicalContractCatalog
@@ -52,7 +52,12 @@ def parent_run_request() -> dict[str, object]:
             "scope_refs": ["scope.diagnostic"],
             "data_classification": "INTERNAL",
             "correlation_id": "corr_h06_root",
-            "execution_budget": {"max_cost": 25, "max_tokens": 500, "max_steps": 4, "max_tool_calls": 5},
+            "execution_budget": {
+                "max_cost": 25,
+                "max_tokens": 500,
+                "max_steps": 4,
+                "max_tool_calls": 5,
+            },
         },
         "input": {"message": "root"},
         "requested_tool_ids": ["diagnostic.echo"],
@@ -115,7 +120,12 @@ async def test_child_run_lineage_and_tree_are_server_calculated() -> None:
             "scope_refs": ["scope.diagnostic"],
             "data_classification": "INTERNAL",
             "correlation_id": "corr_h06_child",
-            "execution_budget": {"max_cost": 10, "max_tokens": 200, "max_steps": 2, "max_tool_calls": 2},
+            "execution_budget": {
+                "max_cost": 10,
+                "max_tokens": 200,
+                "max_steps": 2,
+                "max_tool_calls": 2,
+            },
         },
         "input": {"message": "child"},
         "requested_tool_ids": ["diagnostic.echo"],
@@ -160,7 +170,7 @@ async def test_child_scope_and_budget_inheritance_are_restricted() -> None:
         "input": {"message": "bad"},
         "requested_tool_ids": ["diagnostic.echo", "admin.tool"],
     }
-    with pytest.raises(Exception):
+    with pytest.raises(RunAuthorityError):
         await authority.begin(bad, agent=agent)
 
 
@@ -171,7 +181,12 @@ async def test_child_requires_parent_delegation_policy_and_enforces_max_children
     authority = AgentRunAuthority(contracts=contracts, audit=audit)
     agent = await active_agent(contracts, audit)
 
-    agent.payload["delegation_policy"] = {"max_depth": 2, "max_children": 1, "max_concurrency": 1, "max_retries": 1}
+    agent.payload["delegation_policy"] = {
+        "max_depth": 2,
+        "max_children": 1,
+        "max_concurrency": 1,
+        "max_retries": 1,
+    }
     root = await authority.begin(parent_run_request(), agent=agent)
 
     child_one = await authority.begin(
@@ -201,7 +216,7 @@ async def test_child_requires_parent_delegation_policy_and_enforces_max_children
     )
     assert child_one.parent_run_id == root.run_id
 
-    with pytest.raises(Exception):
+    with pytest.raises(RunAuthorityError):
         await authority.begin(
             {
                 "run_id": "run_h06_child_2",
@@ -234,7 +249,7 @@ async def test_child_requires_parent_delegation_policy_and_enforces_max_children
     root_without_policy["root_run_id"] = "run_h06_root_no_policy"
     root_without_policy_run = await authority.begin(root_without_policy, agent=agent)
 
-    with pytest.raises(Exception):
+    with pytest.raises(RunAuthorityError):
         await authority.begin(
             {
                 "run_id": "run_h06_orphan_child",
@@ -269,7 +284,12 @@ async def test_retry_limit_and_final_cancellation_propagate_to_nested_children()
     authority = AgentRunAuthority(contracts=contracts, audit=audit)
     agent = await active_agent(contracts, audit)
 
-    agent.payload["delegation_policy"] = {"max_depth": 3, "max_children": 3, "max_concurrency": 3, "max_retries": 1}
+    agent.payload["delegation_policy"] = {
+        "max_depth": 3,
+        "max_children": 3,
+        "max_concurrency": 3,
+        "max_retries": 1,
+    }
     root = await authority.begin(parent_run_request(), agent=agent)
     child = await authority.begin(
         {
@@ -324,7 +344,7 @@ async def test_retry_limit_and_final_cancellation_propagate_to_nested_children()
 
     first_retry = await authority.retry_child_run(child.run_id, reason="retry once", retryable=True)
     assert first_retry.retry_count == 1
-    with pytest.raises(Exception):
+    with pytest.raises(RunAuthorityError):
         await authority.retry_child_run(child.run_id, reason="retry again", retryable=True)
 
     cancelled = await authority.cancel(root.run_id, actor_id="actor_h06_owner", reason="cancel all")

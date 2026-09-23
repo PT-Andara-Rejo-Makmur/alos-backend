@@ -25,9 +25,7 @@ class ExplodingGenesisStub:
     async def analyze_factory(
         self, payload: Mapping[str, Any], *, correlation_id: str
     ) -> dict[str, Any]:
-        raise RuntimeError(
-            "SELECT * FROM capability_registry; password=hunter2 stack frame leaked"
-        )
+        raise RuntimeError("SELECT * FROM capability_registry; password=hunter2 stack frame leaked")
 
 
 async def authenticated_token(client: httpx.AsyncClient) -> str:
