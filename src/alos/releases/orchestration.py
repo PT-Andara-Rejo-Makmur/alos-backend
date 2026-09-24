@@ -82,6 +82,10 @@ class GovernedAgentLifecycle:
                             release_id=previous.release_id,
                         )
                         changed.append(previous_registry)
+                if changed:
+                    # Release partial unique indexes before activating the successor.
+                    # The flush remains inside this transaction, so rollback is atomic.
+                    await session.flush()
                 release.ever_released = True
                 self._transition_release(
                     session,
@@ -276,6 +280,10 @@ class GovernedAgentLifecycle:
                     event_type="registry.version.suspended",
                     release_id=current.release_id,
                 )
+                # PostgreSQL may batch UPDATEs by primary key instead of assignment
+                # order. Flush the deactivation first so partial ACTIVE indexes remain
+                # satisfied while retaining one transaction for both sides.
+                await session.flush()
                 target_release.kill_switch_active = False
                 self._transition_release(
                     session,
