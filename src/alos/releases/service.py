@@ -61,7 +61,10 @@ class GovernedRelease:
     correlation_id: str
     created_at: datetime
     it_decision_id: str | None = None
+    assurance_actor_id: str | None = None
+    it_actor_id: str | None = None
     director_decision_id: str | None = None
+    director_actor_id: str | None = None
     kill_switch_active: bool = False
     rollback_target_release_id: str | None = None
     ever_released: bool = False
@@ -74,6 +77,7 @@ class InMemoryReleaseAuthority:
         self._audit = audit
         self._releases: dict[str, GovernedRelease] = {}
         self._active_by_subject: dict[tuple[str, str, str], str] = {}
+        self._used_decision_ids: set[str] = set()
         self._lock = asyncio.Lock()
 
     async def create(
@@ -132,12 +136,16 @@ class InMemoryReleaseAuthority:
     ) -> GovernedRelease:
         if not report.passed:
             raise ReleaseConflictError("automated assurance did not pass expected behavior")
+        current = self.get(release_id)
+        if actor_id == current.created_by:
+            raise ReleaseConflictError("maker cannot perform automated assurance")
         return await self._transition(
             release_id,
             expected={ReleaseState.IMPLEMENTED},
             target=ReleaseState.AUTOMATED_ASSURANCE,
             actor_id=actor_id,
             correlation_id=correlation_id,
+            assurance_actor_id=actor_id,
         )
 
     async def record_ai_review_package(
@@ -191,6 +199,8 @@ class InMemoryReleaseAuthority:
         release = self.get(release_id)
         if decision.actor_id == release.created_by:
             raise ReleaseConflictError("maker cannot self-approve a release decision")
+        if decision.actor_id == release.assurance_actor_id:
+            raise ReleaseConflictError("checker cannot approve its own assurance")
         target = self._decision_target(decision.outcome, ReleaseState.IT_APPROVED)
         return await self._transition(
             release_id,
@@ -199,6 +209,8 @@ class InMemoryReleaseAuthority:
             actor_id=decision.actor_id,
             correlation_id=correlation_id,
             it_decision_id=decision.decision_id,
+            it_actor_id=decision.actor_id,
+            authoritative_decision_id=decision.decision_id,
         )
 
     async def submit_for_director(
@@ -228,6 +240,8 @@ class InMemoryReleaseAuthority:
         release = self.get(release_id)
         if decision.actor_id == release.created_by:
             raise ReleaseConflictError("maker cannot self-approve a release decision")
+        if decision.actor_id in {release.assurance_actor_id, release.it_actor_id}:
+            raise ReleaseConflictError("director must be independent from checker and IT approver")
         target = self._decision_target(decision.outcome, ReleaseState.DIRECTOR_APPROVED)
         return await self._transition(
             release_id,
@@ -236,6 +250,8 @@ class InMemoryReleaseAuthority:
             actor_id=decision.actor_id,
             correlation_id=correlation_id,
             director_decision_id=decision.decision_id,
+            director_actor_id=decision.actor_id,
+            authoritative_decision_id=decision.decision_id,
         )
 
     async def release(
@@ -409,10 +425,14 @@ class InMemoryReleaseAuthority:
         event_type: str = "release.transitioned",
         reason: str = "Authoritative release lifecycle transition",
         it_decision_id: str | None = None,
+        assurance_actor_id: str | None = None,
+        it_actor_id: str | None = None,
         director_decision_id: str | None = None,
+        director_actor_id: str | None = None,
         kill_switch_active: bool | None = None,
         rollback_target_release_id: str | None = None,
         ever_released: bool | None = None,
+        authoritative_decision_id: str | None = None,
     ) -> GovernedRelease:
         async with self._lock:
             current = self._require(release_id)
@@ -421,12 +441,20 @@ class InMemoryReleaseAuthority:
                 raise ReleaseConflictError(
                     f"release state {current.state.value} is not one of: {allowed}"
                 )
+            if (
+                authoritative_decision_id is not None
+                and authoritative_decision_id in self._used_decision_ids
+            ):
+                raise ReleaseConflictError("decision_id has already been used")
             updated = replace(
                 current,
                 state=target,
                 correlation_id=correlation_id,
                 it_decision_id=it_decision_id or current.it_decision_id,
+                assurance_actor_id=assurance_actor_id or current.assurance_actor_id,
+                it_actor_id=it_actor_id or current.it_actor_id,
                 director_decision_id=(director_decision_id or current.director_decision_id),
+                director_actor_id=director_actor_id or current.director_actor_id,
                 kill_switch_active=(
                     current.kill_switch_active if kill_switch_active is None else kill_switch_active
                 ),
@@ -436,6 +464,8 @@ class InMemoryReleaseAuthority:
                 ever_released=(current.ever_released if ever_released is None else ever_released),
             )
             self._releases[release_id] = updated
+            if authoritative_decision_id is not None:
+                self._used_decision_ids.add(authoritative_decision_id)
         await self._record(
             updated,
             actor_id,

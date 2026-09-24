@@ -134,6 +134,46 @@ async def prepare_release(
     await authority.release(release_id, actor_id="actor_release_001", correlation_id=correlation_id)
 
 
+async def prepare_for_it(
+    authority: InMemoryReleaseAuthority,
+    *,
+    release_id: str,
+    review_id: str,
+    version: str,
+) -> None:
+    correlation_id = f"corr_{release_id}"
+    await authority.create(
+        release_id=release_id,
+        review_id=review_id,
+        tenant_id="tenant_001",
+        organization_id="org_001",
+        workspace_id="workspace_001",
+        subject_id="agent_governed",
+        subject_version=version,
+        materiality=Materiality.NON_MATERIAL,
+        actor_id="actor_maker_001",
+        correlation_id=correlation_id,
+    )
+    await authority.mark_implemented(
+        release_id, actor_id="actor_maker_001", correlation_id=correlation_id
+    )
+    await authority.record_automated_assurance(
+        release_id,
+        passing_assurance(),
+        actor_id="actor_checker_001",
+        correlation_id=correlation_id,
+    )
+    await authority.record_ai_review_package(
+        release_id,
+        package(release_id, review_id, version),
+        actor_id="genesis_ai_review",
+        correlation_id=correlation_id,
+    )
+    await authority.submit_for_it(
+        release_id, actor_id="actor_checker_001", correlation_id=correlation_id
+    )
+
+
 def test_negative_test_is_evaluated_against_expected_behavior() -> None:
     check = AssuranceEvaluator().evaluate(
         test_id="negative_permission",
@@ -204,6 +244,228 @@ async def test_failed_negative_assurance_cannot_advance_release() -> None:
             report,
             actor_id="actor_checker_001",
             correlation_id="corr_failed_assurance",
+        )
+
+
+@pytest.mark.asyncio
+async def test_maker_checker_approver_separation_is_fail_closed() -> None:
+    audit = InMemoryAuditRepository()
+    authority = InMemoryReleaseAuthority(audit)
+    await authority.create(
+        release_id="release_separation",
+        review_id="review_separation",
+        tenant_id="tenant_001",
+        organization_id="org_001",
+        workspace_id="workspace_001",
+        subject_id="agent_governed",
+        subject_version="1.0.0",
+        materiality=Materiality.NON_MATERIAL,
+        actor_id="actor_maker_001",
+        correlation_id="corr_separation",
+    )
+    await authority.mark_implemented(
+        "release_separation",
+        actor_id="actor_maker_001",
+        correlation_id="corr_separation",
+    )
+    with pytest.raises(ReleaseConflictError, match="maker cannot perform"):
+        await authority.record_automated_assurance(
+            "release_separation",
+            passing_assurance(),
+            actor_id="actor_maker_001",
+            correlation_id="corr_separation",
+        )
+    await authority.record_automated_assurance(
+        "release_separation",
+        passing_assurance(),
+        actor_id="actor_checker_001",
+        correlation_id="corr_separation",
+    )
+    await authority.record_ai_review_package(
+        "release_separation",
+        package("release_separation", "review_separation", "1.0.0"),
+        actor_id="genesis_ai_review",
+        correlation_id="corr_separation",
+    )
+    await authority.submit_for_it(
+        "release_separation",
+        actor_id="actor_checker_001",
+        correlation_id="corr_separation",
+    )
+    with pytest.raises(ReleaseConflictError, match="checker cannot approve"):
+        await authority.record_it_decision(
+            "release_separation",
+            AuthoritativeDecision(
+                decision_id="decision_checker_replay",
+                review_id="review_separation",
+                authority=AuthorityLevel.IT,
+                outcome=DecisionOutcome.APPROVED,
+                actor_id="actor_checker_001",
+                rationale="A checker cannot approve its own assurance.",
+                decided_at=datetime.now(UTC),
+            ),
+            correlation_id="corr_separation",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", (DecisionOutcome.RETURNED, DecisionOutcome.REJECTED))
+async def test_non_approval_decision_cannot_release(outcome: DecisionOutcome) -> None:
+    audit = InMemoryAuditRepository()
+    authority = InMemoryReleaseAuthority(audit)
+    release_id = f"release_{outcome.value.lower()}"
+    review_id = f"review_{outcome.value.lower()}"
+    await authority.create(
+        release_id=release_id,
+        review_id=review_id,
+        tenant_id="tenant_001",
+        organization_id="org_001",
+        workspace_id="workspace_001",
+        subject_id="agent_governed",
+        subject_version="1.0.0",
+        materiality=Materiality.NON_MATERIAL,
+        actor_id="actor_maker_001",
+        correlation_id=f"corr_{outcome.value.lower()}",
+    )
+    await authority.mark_implemented(
+        release_id, actor_id="actor_maker_001", correlation_id="corr_negative_decision"
+    )
+    await authority.record_automated_assurance(
+        release_id,
+        passing_assurance(),
+        actor_id="actor_checker_001",
+        correlation_id="corr_negative_decision",
+    )
+    await authority.record_ai_review_package(
+        release_id,
+        package(release_id, review_id, "1.0.0"),
+        actor_id="genesis_ai_review",
+        correlation_id="corr_negative_decision",
+    )
+    assert authority.get(release_id).state is ReleaseState.AI_REVIEWED
+    await authority.submit_for_it(
+        release_id, actor_id="actor_checker_001", correlation_id="corr_negative_decision"
+    )
+    decided = await authority.record_it_decision(
+        release_id,
+        AuthoritativeDecision(
+            decision_id=f"decision_{outcome.value.lower()}",
+            review_id=review_id,
+            authority=AuthorityLevel.IT,
+            outcome=outcome,
+            actor_id="actor_it_001",
+            rationale="Do not release this revision.",
+            decided_at=datetime.now(UTC),
+        ),
+        correlation_id="corr_negative_decision",
+    )
+    assert decided.state is ReleaseState(outcome.value)
+    with pytest.raises(ReleaseConflictError):
+        await authority.release(
+            release_id,
+            actor_id="actor_release_001",
+            correlation_id="corr_negative_decision",
+        )
+
+
+@pytest.mark.asyncio
+async def test_authoritative_decision_cannot_be_replayed_across_releases() -> None:
+    authority = InMemoryReleaseAuthority(InMemoryAuditRepository())
+    await prepare_for_it(
+        authority,
+        release_id="release_replay_1",
+        review_id="review_replay",
+        version="1.0.0",
+    )
+    await prepare_for_it(
+        authority,
+        release_id="release_replay_2",
+        review_id="review_replay",
+        version="2.0.0",
+    )
+    reused = AuthoritativeDecision(
+        decision_id="decision_replay_forbidden",
+        review_id="review_replay",
+        authority=AuthorityLevel.IT,
+        outcome=DecisionOutcome.APPROVED,
+        actor_id="actor_it_001",
+        rationale="Approve the exact reviewed release only.",
+        decided_at=datetime.now(UTC),
+    )
+    await authority.record_it_decision(
+        "release_replay_1", reused, correlation_id="corr_release_replay_1"
+    )
+
+    with pytest.raises(ReleaseConflictError, match="already been used"):
+        await authority.record_it_decision(
+            "release_replay_2", reused, correlation_id="corr_release_replay_2"
+        )
+
+    assert authority.get("release_replay_2").state is ReleaseState.READY_FOR_IT
+
+
+@pytest.mark.asyncio
+async def test_material_director_must_be_independent_from_it_approver() -> None:
+    authority = InMemoryReleaseAuthority(InMemoryAuditRepository())
+    release_id = "release_director_separation"
+    review_id = "review_director_separation"
+    await authority.create(
+        release_id=release_id,
+        review_id=review_id,
+        tenant_id="tenant_001",
+        organization_id="org_001",
+        workspace_id="workspace_001",
+        subject_id="agent_governed",
+        subject_version="1.0.0",
+        materiality=Materiality.MATERIAL,
+        actor_id="actor_maker_001",
+        correlation_id="corr_director_separation",
+    )
+    await authority.mark_implemented(
+        release_id,
+        actor_id="actor_maker_001",
+        correlation_id="corr_director_separation",
+    )
+    await authority.record_automated_assurance(
+        release_id,
+        passing_assurance(),
+        actor_id="actor_checker_001",
+        correlation_id="corr_director_separation",
+    )
+    await authority.record_ai_review_package(
+        release_id,
+        package(release_id, review_id, "1.0.0"),
+        actor_id="genesis_ai_review",
+        correlation_id="corr_director_separation",
+    )
+    await authority.submit_for_it(
+        release_id,
+        actor_id="actor_checker_001",
+        correlation_id="corr_director_separation",
+    )
+    await authority.record_it_decision(
+        release_id,
+        decision("decision_it_separation", review_id, AuthorityLevel.IT),
+        correlation_id="corr_director_separation",
+    )
+    await authority.submit_for_director(
+        release_id,
+        actor_id="actor_it_001",
+        correlation_id="corr_director_separation",
+    )
+    with pytest.raises(ReleaseConflictError, match="director must be independent"):
+        await authority.record_director_decision(
+            release_id,
+            AuthoritativeDecision(
+                decision_id="decision_director_not_independent",
+                review_id=review_id,
+                authority=AuthorityLevel.DIRECTOR,
+                outcome=DecisionOutcome.APPROVED,
+                actor_id="actor_it_001",
+                rationale="The IT approver cannot also be the Director approver.",
+                decided_at=datetime.now(UTC),
+            ),
+            correlation_id="corr_director_separation",
         )
 
 
