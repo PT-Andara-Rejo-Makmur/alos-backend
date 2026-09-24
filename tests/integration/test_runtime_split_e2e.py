@@ -8,8 +8,12 @@ from alos.agents.registry import AgentRegistry
 from alos.audit import InMemoryAuditRepository
 from alos.config import Settings
 from alos.contracts import CanonicalContractCatalog
+from alos.dependencies import get_tool_registry
 from alos.main import create_app
 from alos.registry import DecisionAuthority
+from alos.tools.adapters.diagnostic import DiagnosticEchoAdapter
+from alos.tools.executor.service import InMemoryToolAuditSink, InMemoryToolIdempotencyStore
+from alos.tools.registry import ToolRegistration, ToolRegistry
 
 CONTRACTS_ROOT = Path(__file__).resolve().parents[3] / "alos-contracts"
 
@@ -25,6 +29,7 @@ def execution_context() -> dict[str, object]:
             "authority_level": "SYSTEM",
         },
         "permission_refs": ["tools.diagnostic.execute"],
+        "allowed_tool_ids": ["diagnostic.echo"],
         "scope_refs": ["scope.diagnostic"],
         "data_classification": "INTERNAL",
         "correlation_id": "corr_runtime_e2e_001",
@@ -54,6 +59,12 @@ def agent_definition() -> dict[str, object]:
         "model_policy_ref": "policy.runtime-test",
         "tool_ids": ["diagnostic.echo"],
         "permission_refs": ["tools.diagnostic.execute"],
+        "execution_budget": {
+            "max_tokens": 200,
+            "max_steps": 2,
+            "max_tool_calls": 1,
+            "timeout_seconds": 5,
+        },
         "delegation_policy": {"enabled": False, "max_depth": 0},
     }
 
@@ -118,6 +129,7 @@ async def test_genesis_tool_request_returns_through_authoritative_runtime_bounda
             ENABLE_TEST_TOOLS=True,
         )
     )
+    app.state.agent_run_authority = run_authority
     tool_request = {
         "tool_call_id": "toolcall_runtime_e2e_001",
         "run_id": started.run_id,
@@ -171,3 +183,97 @@ async def test_genesis_tool_request_returns_through_authoritative_runtime_bounda
     ]
     assert "run.started" in run_events
     assert "run.completed" in run_events
+
+
+@pytest.mark.asyncio
+async def test_tool_request_cannot_expand_authoritative_run_tool_allowlist() -> None:
+    contracts = CanonicalContractCatalog(CONTRACTS_ROOT)
+    audit = InMemoryAuditRepository()
+    registry = AgentRegistry(contracts, audit)
+    agent = await registry.register(
+        agent_definition(),
+        tenant_id="tenant_diagnostic_001",
+        organization_id="org_diagnostic_001",
+        workspace_id="workspace_diagnostic_001",
+        actor_id="actor_diagnostic_001",
+        correlation_id="corr_registry_e2e_001",
+    )
+    agent = await registry.approve(
+        tenant_id=agent.tenant_id,
+        workspace_id=agent.workspace_id,
+        subject_id=agent.subject_id,
+        version=agent.version,
+        actor_id="actor_it_001",
+        decision_id="decision_runtime_e2e_unauthorized_tool",
+        authority=DecisionAuthority.IT,
+        correlation_id="corr_registry_e2e_002",
+    )
+    agent = await registry.activate(
+        tenant_id=agent.tenant_id,
+        workspace_id=agent.workspace_id,
+        subject_id=agent.subject_id,
+        version=agent.version,
+        actor_id="actor_release_001",
+        release_id="release_runtime_e2e_unauthorized_tool",
+        correlation_id="corr_registry_e2e_003",
+    )
+    run_authority = AgentRunAuthority(contracts=contracts, audit=audit)
+    started = await run_authority.begin(agent_run_request(), agent=agent)
+    app = create_app(
+        Settings(
+            _env_file=None,
+            APP_ENV="development",
+            DATABASE_URL="postgresql+asyncpg://alos:alos@localhost:5432/alos_test",
+            GENESIS_BASE_URL="http://genesis.test",
+            GENESIS_INTERNAL_TOKEN="test-only-token",  # noqa: S106
+            ALOS_CONTRACTS_PATH=CONTRACTS_ROOT,
+            ENABLE_TEST_TOOLS=True,
+        )
+    )
+    app.state.agent_run_authority = run_authority
+    app.state.tool_audit_sink = InMemoryToolAuditSink()
+    app.state.tool_idempotency_store = InMemoryToolIdempotencyStore()
+    tool_registry = ToolRegistry()
+    for tool_id in ("diagnostic.echo", "diagnostic.unrequested"):
+        tool_registry.register(
+            ToolRegistration(
+                tool_id=tool_id,
+                required_permission="tools.diagnostic.execute",
+                required_scopes=frozenset({"scope.diagnostic"}),
+                adapter=DiagnosticEchoAdapter(),
+                production_enabled=False,
+            )
+        )
+    app.dependency_overrides[get_tool_registry] = lambda: tool_registry
+    payload = {
+        "tool_call_id": "toolcall_runtime_e2e_unrequested",
+        "run_id": started.run_id,
+        "tool_id": "diagnostic.unrequested",
+        "execution_context": {
+            **execution_context(),
+            "allowed_tool_ids": ["diagnostic.echo", "diagnostic.unrequested"],
+        },
+        "arguments": {"message": "must be denied"},
+        "requested_at": "2026-09-17T10:00:00Z",
+    }
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://backend.test",
+    ) as client:
+        response = await client.post(
+            "/internal/v1/tool-requests",
+            headers={
+                "Authorization": "Bearer test-only-token",
+                "X-Correlation-ID": "corr_runtime_e2e_001",
+            },
+            json=payload,
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "DENIED"
+    assert response.json()["error"]["code"] == "TOOL_NOT_AUTHORIZED_FOR_RUN"
+    assert [record.outcome for record in app.state.tool_audit_sink.records] == [
+        "REQUESTED",
+        "DENIED",
+    ]

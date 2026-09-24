@@ -3,7 +3,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from alos.agents.lifecycle import RunAuthorityError
+from alos.agents.lifecycle import AuthoritativeRunStatus, RunAuthorityError
 from alos.authentication.internal import verify_internal_token
 from alos.dependencies import DiagnosticPrincipalResolverDependency, ToolExecutorDependency
 from alos.identity import Principal
@@ -62,12 +62,14 @@ async def execute_tool_request(
 
     context = payload.get("execution_context")
     principal = None
+    authorized_tool_ids: frozenset[str] | None = frozenset()
     if isinstance(context, Mapping):
         try:
             run = await _request.app.state.agent_run_authority.get(str(payload.get("run_id", "")))
         except RunAuthorityError:
             run = None
-        if run is not None and all(
+        run_context = run.request.get("execution_context", {}) if run is not None else {}
+        identity_matches = run is not None and all(
             context.get(key) == expected
             for key, expected in {
                 "tenant_id": run.tenant_id,
@@ -76,7 +78,34 @@ async def execute_tool_request(
                 "actor_id": run.actor_id,
                 "correlation_id": run.correlation_id,
             }.items()
+        )
+        authority_matches = isinstance(run_context, dict) and all(
+            context.get(key) == run_context.get(key)
+            for key in ("authority_context", "data_classification", "execution_budget")
+            if key in context or key in run_context
+        )
+        permission_refs = frozenset(str(item) for item in context.get("permission_refs", []))
+        scope_refs = frozenset(str(item) for item in context.get("scope_refs", []))
+        run_permissions = frozenset(
+            str(item) for item in run_context.get("permission_refs", [])
+        ) if isinstance(run_context, dict) else frozenset()
+        run_scopes = frozenset(
+            str(item) for item in run_context.get("scope_refs", [])
+        ) if isinstance(run_context, dict) else frozenset()
+        declared_tool_ids = frozenset(
+            str(item) for item in context.get("allowed_tool_ids", [])
+        )
+        run_tool_ids = frozenset(run.authorized_tool_ids) if run is not None else frozenset()
+        if (
+            run is not None
+            and run.status is AuthoritativeRunStatus.RUNNING
+            and identity_matches
+            and authority_matches
+            and permission_refs.issubset(run_permissions)
+            and scope_refs.issubset(run_scopes)
+            and declared_tool_ids.issubset(run_tool_ids)
         ):
+            authorized_tool_ids = run_tool_ids
             run_context = run.request.get("execution_context", {})
             if isinstance(run_context, dict):
                 principal = Principal(
@@ -92,9 +121,11 @@ async def execute_tool_request(
                 )
     if principal is None and _request.app.state.settings.APP_ENV == "test":
         principal = principal_resolver.resolve(context) if isinstance(context, Mapping) else None
+        authorized_tool_ids = None
     outcome = await executor.execute(
         payload,
         principal=principal,
         transport_correlation_id=current_correlation_id(),
+        authorized_tool_ids=authorized_tool_ids,
     )
     return outcome.result

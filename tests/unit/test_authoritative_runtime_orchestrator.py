@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -6,11 +7,13 @@ import pytest
 from alos.agents.lifecycle import AgentRunAuthority, AuthoritativeRunStatus
 from alos.agents.registry import AgentRegistry
 from alos.agents.runtime import AuthoritativeRuntimeOrchestrator
+from alos.api.public.routes import execute_agent_run
 from alos.audit import InMemoryAuditRepository
 from alos.contracts import CanonicalContractCatalog
 from alos.identity import Principal
 from alos.observability.correlation import correlation_id_context
 from alos.registry import DecisionAuthority
+from alos.security.errors import PlatformError
 
 CONTRACTS_ROOT = Path(__file__).resolve().parents[3] / "alos-contracts"
 
@@ -74,6 +77,11 @@ async def active_agent(contracts: CanonicalContractCatalog, audit: InMemoryAudit
         "tool_ids": ["diagnostic.echo"],
         "permission_refs": ["tools.diagnostic.execute"],
         "scope_refs": ["scope.diagnostic"],
+        "execution_budget": {
+            "max_tokens": 100,
+            "max_steps": 3,
+            "max_tool_calls": 1,
+        },
         "delegation_policy": {"enabled": False, "max_depth": 0},
     }
     entry = await registry.register(
@@ -133,10 +141,11 @@ async def test_orchestrator_derives_authority_and_persists_tool_step() -> None:
                 "requested_tool_ids": ["diagnostic.echo"],
                 "scope_refs": ["scope.diagnostic"],
                 "execution_budget": {
-                    "max_tokens": 100,
-                    "max_steps": 3,
-                    "max_tool_calls": 1,
+                    "max_tokens": 1_000_000,
+                    "max_steps": 1_000,
+                    "max_tool_calls": 1_000,
                 },
+                "data_classification": "PUBLIC",
                 "execution_mode": "TEST",
             },
             principal=principal,
@@ -152,7 +161,51 @@ async def test_orchestrator_derives_authority_and_persists_tool_step() -> None:
     assert genesis.invocation["runtime_authorization"]["allowed_tool_ids"] == [
         "diagnostic.echo"
     ]
+    assert genesis.invocation["run_request"]["execution_context"]["execution_budget"] == {
+        "max_tokens": 100,
+        "max_steps": 3,
+        "max_tool_calls": 1,
+    }
+    assert (
+        genesis.invocation["run_request"]["execution_context"]["data_classification"]
+        == "INTERNAL"
+    )
     steps = await authority.list_steps(completed.run_id)
     assert len(steps) == 1
     assert steps[0].tool_id == "diagnostic.echo"
     assert steps[0].output_metadata["status"] == "SUCCESS"
+
+
+@pytest.mark.asyncio
+async def test_public_run_route_rejects_client_selected_authority_fields() -> None:
+    contracts = CanonicalContractCatalog(CONTRACTS_ROOT)
+    principal = Principal(
+        actor_id="actor_runtime_orchestration",
+        tenant_id="tenant_runtime_orchestration",
+        organization_id="org_runtime_orchestration",
+        workspace_id="workspace_runtime_orchestration",
+        permissions=frozenset({"tools.diagnostic.execute"}),
+        scopes=frozenset({"scope.diagnostic"}),
+    )
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(agent_registry=object()))
+    )
+    payload = {
+        "agent_id": "agent.runtime.orchestration",
+        "agent_version": "1.0.0",
+        "capability_id": "capability.runtime.orchestration",
+        "input": {"message": "hello"},
+        "execution_budget": {"max_tokens": 1_000_000},
+    }
+
+    with pytest.raises(PlatformError) as raised:
+        await execute_agent_run(
+            payload,
+            request,
+            principal,
+            object(),
+            contracts,
+        )
+
+    assert raised.value.code == "AGENT_RUN_REQUEST_INVALID"
+    assert raised.value.status_code == 422

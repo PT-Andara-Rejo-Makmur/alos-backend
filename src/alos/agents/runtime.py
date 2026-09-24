@@ -46,6 +46,9 @@ class AuthoritativeRuntimeOrchestrator:
         )
         if not requested_scopes.issubset(principal.scopes):
             raise ValueError("Requested scope expands caller authority")
+        execution_budget = agent.payload.get("execution_budget")
+        if not isinstance(execution_budget, dict) or not execution_budget:
+            raise ValueError("Runnable Agent definition requires an execution budget")
         correlation_id = current_correlation_id()
         run_id = f"run_{uuid4().hex}"
         run_request: dict[str, Any] = {
@@ -69,9 +72,9 @@ class AuthoritativeRuntimeOrchestrator:
                     set(requested_tools).intersection(agent.payload.get("tool_ids", []))
                 ),
                 "scope_refs": sorted(requested_scopes),
-                "data_classification": str(payload.get("data_classification", "INTERNAL")),
+                "data_classification": "INTERNAL",
                 "correlation_id": correlation_id,
-                "execution_budget": dict(payload.get("execution_budget", {})),
+                "execution_budget": dict(execution_budget),
             },
             "input": dict(payload.get("input", {})),
             "requested_tool_ids": list(requested_tools),

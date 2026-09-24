@@ -6,12 +6,13 @@ import asyncio
 import copy
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping, Set
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from alos.authorization import AuthorizationPolicy
@@ -73,6 +74,14 @@ class InMemoryToolIdempotencyStore:
     def __init__(self) -> None:
         self._records: dict[tuple[str, str, str], IdempotencyRecord] = {}
         self._lock = asyncio.Lock()
+        self._key_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
+
+    @asynccontextmanager
+    async def serialize(self, key: tuple[str, str, str]) -> AsyncIterator[None]:
+        async with self._lock:
+            lock = self._key_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            yield
 
     async def get(self, key: tuple[str, str, str]) -> IdempotencyRecord | None:
         async with self._lock:
@@ -92,6 +101,10 @@ class InMemoryToolIdempotencyStore:
 
 
 class ToolIdempotencyStore(Protocol):
+    def serialize(
+        self, key: tuple[str, str, str]
+    ) -> AbstractAsyncContextManager[None]: ...
+
     async def get(self, key: tuple[str, str, str]) -> IdempotencyRecord | None: ...
 
     async def put(self, key: tuple[str, str, str], record: IdempotencyRecord) -> None: ...
@@ -102,6 +115,17 @@ class SqlToolIdempotencyStore:
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
+
+    @asynccontextmanager
+    async def serialize(self, key: tuple[str, str, str]) -> AsyncIterator[None]:
+        lock_seed = "\x1f".join(key).encode("utf-8")
+        lock_id = int.from_bytes(hashlib.sha256(lock_seed).digest()[:8], "big", signed=True)
+        async with self._session_factory.begin() as session:
+            await session.execute(
+                text("SELECT pg_advisory_xact_lock(:lock_id)"),
+                {"lock_id": lock_id},
+            )
+            yield
 
     async def get(self, key: tuple[str, str, str]) -> IdempotencyRecord | None:
         tenant_id, tool_id, idempotency_key = key
@@ -174,6 +198,7 @@ class ToolExecutor:
         *,
         principal: Principal | None,
         transport_correlation_id: str | None = None,
+        authorized_tool_ids: Set[str] | None = None,
     ) -> ToolExecutionOutcome:
         self._contract_validator.validate_request(request)
         context = request["execution_context"]
@@ -190,7 +215,17 @@ class ToolExecutor:
                 message="Transport and ToolRequest correlation identifiers must match.",
             )
 
-        registration = self._registry.get(str(request["tool_id"]))
+        tool_id = str(request["tool_id"])
+        if authorized_tool_ids is not None and tool_id not in authorized_tool_ids:
+            return await self._finish_error(
+                request,
+                correlation_id,
+                status="DENIED",
+                code="TOOL_NOT_AUTHORIZED_FOR_RUN",
+                message="The authoritative run authorization does not allow this tool.",
+            )
+
+        registration = self._registry.get(tool_id)
         if registration is None:
             return await self._finish_error(
                 request,
@@ -302,35 +337,39 @@ class ToolExecutor:
                 idempotency_key,
             )
             request_digest = self._request_digest(request)
-            existing = await self._idempotency_store.get(cache_key)
-            if existing is not None:
-                if existing.request_digest != request_digest:
-                    return await self._finish_error(
-                        request,
-                        correlation_id,
-                        status="REJECTED",
-                        code="IDEMPOTENCY_CONFLICT",
-                        message="The idempotency key belongs to a different immutable request.",
+            async with self._idempotency_store.serialize(cache_key):
+                existing = await self._idempotency_store.get(cache_key)
+                if existing is not None:
+                    if existing.request_digest != request_digest:
+                        return await self._finish_error(
+                            request,
+                            correlation_id,
+                            status="REJECTED",
+                            code="IDEMPOTENCY_CONFLICT",
+                            message=(
+                                "The idempotency key belongs to a different immutable request."
+                            ),
+                        )
+                    replay = self._base_result(request, correlation_id, status="SUCCESS")
+                    replay["output"] = existing.output
+                    outcome = await self._finish(request, correlation_id, replay)
+                    await self._audit(request, correlation_id, "IDEMPOTENT_REPLAY")
+                    return outcome
+
+                outcome = await self._execute_adapter(
+                    request, correlation_id, registration, arguments
+                )
+                if outcome.result["status"] == "SUCCESS":
+                    await self._idempotency_store.put(
+                        cache_key,
+                        IdempotencyRecord(
+                            request_digest=request_digest,
+                            output=outcome.result["output"],
+                        ),
                     )
-                replay = self._base_result(request, correlation_id, status="SUCCESS")
-                replay["output"] = existing.output
-                outcome = await self._finish(request, correlation_id, replay)
-                await self._audit(request, correlation_id, "IDEMPOTENT_REPLAY")
                 return outcome
 
         outcome = await self._execute_adapter(request, correlation_id, registration, arguments)
-        if (
-            outcome.result["status"] == "SUCCESS"
-            and cache_key is not None
-            and request_digest is not None
-        ):
-            await self._idempotency_store.put(
-                cache_key,
-                IdempotencyRecord(
-                    request_digest=request_digest,
-                    output=outcome.result["output"],
-                ),
-            )
         return outcome
 
     async def _execute_adapter(

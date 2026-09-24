@@ -63,6 +63,9 @@ REVIEW_PACKAGE_SCHEMA = "https://schemas.alos.dev/v1/review/review-package.schem
 REVIEW_INVOCATION_SCHEMA = "https://schemas.alos.dev/v1/review/review-invocation.schema.json"
 RESEARCH_REQUEST_SCHEMA = "https://schemas.alos.dev/v1/research/research-request.schema.json"
 RESEARCH_RESULT_SCHEMA = "https://schemas.alos.dev/v1/research/research-result.schema.json"
+AGENT_RUN_CREATE_REQUEST_SCHEMA = (
+    "https://schemas.alos.dev/v1/agent/agent-run-create-request.schema.json"
+)
 
 
 @router.post("/integration/bootstrap", tags=["integration"], include_in_schema=False)
@@ -325,12 +328,22 @@ async def execute_agent_run(
     request: Request,
     principal: CurrentPrincipalDependency,
     runtime: RuntimeOrchestratorDependency,
+    contracts: ContractCatalogDependency,
 ) -> dict[str, Any]:
     registry = request.app.state.agent_registry
     if registry is None:
         raise PlatformError(
             "AGENT_REGISTRY_UNAVAILABLE", "Agent registry is unavailable.", status_code=503
         )
+    try:
+        run_intent = contracts.validate(AGENT_RUN_CREATE_REQUEST_SCHEMA, payload)
+    except ContractValidationError as exc:
+        raise PlatformError(
+            "AGENT_RUN_REQUEST_INVALID",
+            "Agent run request does not satisfy the canonical public contract.",
+            status_code=422,
+            details={"path": exc.path, "reason": exc.reason},
+        ) from exc
     try:
         test_mode_allowed = (
             request.app.state.settings.ENABLE_TEST_TOOLS
@@ -340,19 +353,19 @@ async def execute_agent_run(
             agent = registry.get(
                 tenant_id=principal.tenant_id,
                 workspace_id=principal.workspace_id,
-                subject_id=str(payload.get("agent_id", "")),
-                version=str(payload.get("agent_version", "")),
+                subject_id=str(run_intent["agent_id"]),
+                version=str(run_intent["agent_version"]),
             )
         else:
             agent = await request.app.state.agent_lifecycle.runtime_entry(
                 tenant_id=principal.tenant_id,
                 organization_id=principal.organization_id,
                 workspace_id=principal.workspace_id,
-                subject_id=str(payload.get("agent_id", "")),
-                version=str(payload.get("agent_version", "")),
+                subject_id=str(run_intent["agent_id"]),
+                version=str(run_intent["agent_version"]),
             )
         record = await runtime.execute(
-            payload,
+            run_intent,
             principal=principal,
             agent=agent,
             test_mode_allowed=test_mode_allowed,

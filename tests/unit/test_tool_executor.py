@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Mapping
 from typing import Any
 
@@ -170,6 +171,34 @@ async def test_required_idempotency_replays_and_rejects_payload_substitution() -
     conflict = await service.execute(conflict_request, principal=principal())
     assert conflict.result["status"] == "REJECTED"
     assert conflict.result["error"]["code"] == "IDEMPOTENCY_CONFLICT"
+    assert adapter.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_idempotent_requests_execute_side_effect_once() -> None:
+    adapter = CountingAdapter()
+    registry = ToolRegistry()
+    registry.register(
+        ToolRegistration(
+            tool_id="diagnostic.echo",
+            required_permission="tools.diagnostic.execute",
+            required_scopes=frozenset({"scope.diagnostic"}),
+            adapter=adapter,
+            idempotency_policy=IdempotencyPolicy.REQUIRED,
+        )
+    )
+    service = executor(registry, InMemoryToolAuditSink())
+    request = tool_request()
+    request["idempotency_key"] = "idempotency-concurrent-001"
+
+    first, second = await asyncio.gather(
+        service.execute(request, principal=principal()),
+        service.execute(request, principal=principal()),
+    )
+
+    assert first.result["status"] == "SUCCESS"
+    assert second.result["status"] == "SUCCESS"
+    assert first.result["output"] == second.result["output"]
     assert adapter.calls == 1
 
 
