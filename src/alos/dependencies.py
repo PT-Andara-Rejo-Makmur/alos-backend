@@ -1,7 +1,7 @@
 """FastAPI dependency providers."""
 
 from collections.abc import AsyncIterator
-from typing import Annotated
+from typing import Annotated, cast
 
 from fastapi import Depends, Request
 
@@ -18,6 +18,7 @@ from alos.identity import DataScope, Principal
 from alos.integrations import ExternalRetrievalService
 from alos.integrations.genesis import GenesisClient, IntegrationContractValidator
 from alos.permissions import PermissionRegistry
+from alos.releases import PersistentReleaseAuthority
 from alos.research import ResearchService
 from alos.security.errors import PlatformError
 from alos.skills.registry import SkillRegistry
@@ -134,6 +135,15 @@ AuthorizationEnforcerDependency = Annotated[
 ]
 ContextBundleBuilderDependency = Annotated[
     ContextBundleBuilder, Depends(get_context_bundle_builder)
+]
+
+
+def get_release_authority(request: Request) -> PersistentReleaseAuthority:
+    return cast(PersistentReleaseAuthority, request.app.state.release_authority)
+
+
+ReleaseAuthorityDependency = Annotated[
+    PersistentReleaseAuthority, Depends(get_release_authority)
 ]
 
 

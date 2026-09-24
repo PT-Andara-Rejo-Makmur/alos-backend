@@ -11,6 +11,7 @@ from alos.agents.lifecycle.repository import SqlAgentRunStepStore
 from alos.agents.registry import AgentRegistry
 from alos.api.internal.routes import router as internal_router
 from alos.api.models import HealthResponse, ReadinessResponse
+from alos.api.public.release_routes import router as release_router
 from alos.api.public.routes import router as public_router
 from alos.audit import InMemoryAuditRepository, SqlAuditRepository, SqlToolAuditSink
 from alos.authentication.memory import InMemoryAuthRepository
@@ -25,6 +26,7 @@ from alos.observability.correlation import CorrelationIdMiddleware
 from alos.persistence.database import Database
 from alos.persistence.registry import SqlRegistryStore
 from alos.registry import InMemoryRegistryStore
+from alos.releases import PersistentReleaseAuthority
 from alos.security.errors import install_error_handlers
 from alos.skills.registry import SkillRegistry
 from alos.tools.executor.service import (
@@ -62,6 +64,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = resolved
     app.state.started = False
     app.state.database = Database(resolved.DATABASE_URL)
+    app.state.release_authority = PersistentReleaseAuthority(
+        app.state.database.session_factory
+    )
     auth_repository = (
         InMemoryAuthRepository()
         if resolved.APP_ENV == "test"
@@ -186,6 +191,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     app.include_router(public_router)
+    app.include_router(release_router)
     app.include_router(internal_router)
     return app
 
