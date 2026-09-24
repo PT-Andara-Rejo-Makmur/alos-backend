@@ -132,7 +132,10 @@ async def bootstrap_deterministic_integration(
             authority=DecisionAuthority.IT,
             correlation_id=correlation_id,
         )
-        entry = await registry.activate(
+        entry = await registry.activate_test_only(
+            test_mode_authorized=(
+                settings.ENABLE_TEST_TOOLS and settings.APP_ENV in {"development", "test"}
+            ),
             tenant_id=entry.tenant_id,
             workspace_id=entry.workspace_id,
             subject_id=entry.subject_id,
@@ -329,20 +332,30 @@ async def execute_agent_run(
             "AGENT_REGISTRY_UNAVAILABLE", "Agent registry is unavailable.", status_code=503
         )
     try:
-        agent = registry.get(
-            tenant_id=principal.tenant_id,
-            workspace_id=principal.workspace_id,
-            subject_id=str(payload.get("agent_id", "")),
-            version=str(payload.get("agent_version", "")),
+        test_mode_allowed = (
+            request.app.state.settings.ENABLE_TEST_TOOLS
+            and request.app.state.settings.APP_ENV in {"development", "test"}
         )
+        if test_mode_allowed:
+            agent = registry.get(
+                tenant_id=principal.tenant_id,
+                workspace_id=principal.workspace_id,
+                subject_id=str(payload.get("agent_id", "")),
+                version=str(payload.get("agent_version", "")),
+            )
+        else:
+            agent = await request.app.state.agent_lifecycle.runtime_entry(
+                tenant_id=principal.tenant_id,
+                organization_id=principal.organization_id,
+                workspace_id=principal.workspace_id,
+                subject_id=str(payload.get("agent_id", "")),
+                version=str(payload.get("agent_version", "")),
+            )
         record = await runtime.execute(
             payload,
             principal=principal,
             agent=agent,
-            test_mode_allowed=(
-                request.app.state.settings.ENABLE_TEST_TOOLS
-                and request.app.state.settings.APP_ENV in {"development", "test"}
-            ),
+            test_mode_allowed=test_mode_allowed,
         )
         return dict(record.result or {})
     except GenesisClientError as exc:

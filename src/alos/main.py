@@ -26,7 +26,7 @@ from alos.observability.correlation import CorrelationIdMiddleware
 from alos.persistence.database import Database
 from alos.persistence.registry import SqlRegistryStore
 from alos.registry import InMemoryRegistryStore
-from alos.releases import PersistentReleaseAuthority
+from alos.releases import GovernedAgentLifecycle, PersistentReleaseAuthority
 from alos.security.errors import install_error_handlers
 from alos.skills.registry import SkillRegistry
 from alos.tools.executor.service import (
@@ -65,7 +65,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.started = False
     app.state.database = Database(resolved.DATABASE_URL)
     app.state.release_authority = PersistentReleaseAuthority(
-        app.state.database.session_factory
+        app.state.database.session_factory,
+        registry_governed=True,
     )
     auth_repository = (
         InMemoryAuthRepository()
@@ -96,7 +97,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         else None
     )
     agent_registry = (
-        AgentRegistry(contracts, registry_audit, store=app.state.registry_store)
+        AgentRegistry(
+            contracts,
+            registry_audit,
+            store=app.state.registry_store,
+            release_governed=True,
+        )
         if contracts is not None
         else None
     )
@@ -114,6 +120,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         CapabilityRegistry(contracts, registry_audit) if contracts is not None else None
     )
     app.state.factory_agent_registry = agent_registry
+    app.state.agent_lifecycle = (
+        GovernedAgentLifecycle(app.state.database.session_factory, agent_registry)
+        if agent_registry is not None
+        else None
+    )
     app.state.factory_registry_audit = registry_audit
     app.state.skill_registry = (
         SkillRegistry(contracts, registry_audit, store=app.state.registry_store)

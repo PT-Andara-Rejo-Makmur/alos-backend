@@ -7,7 +7,11 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from alos.dependencies import CurrentPrincipalDependency, ReleaseAuthorityDependency
+from alos.dependencies import (
+    AgentLifecycleDependency,
+    CurrentPrincipalDependency,
+    ReleaseAuthorityDependency,
+)
 from alos.governance.materiality import Materiality
 from alos.identity import Principal
 from alos.observability.correlation import current_correlation_id
@@ -24,6 +28,7 @@ _ACTION_AUTHORITY = {
     "activate": ("release.manage", "IT_ADMIN"),
     "suspend": ("release.manage", "IT_ADMIN"),
     "kill": ("release.manage", "IT_ADMIN"),
+    "clear-kill": ("release.manage", "IT_ADMIN"),
     "rollback": ("release.manage", "IT_ADMIN"),
 }
 
@@ -109,6 +114,7 @@ async def release_action(
     payload: dict[str, Any],
     principal: CurrentPrincipalDependency,
     authority: ReleaseAuthorityDependency,
+    lifecycle: AgentLifecycleDependency,
 ) -> dict[str, Any]:
     required = _ACTION_AUTHORITY.get(action)
     if required is None:
@@ -123,6 +129,7 @@ async def release_action(
         correlation_id = current_correlation_id()
         release = await _execute_action(
             authority,
+            lifecycle,
             current,
             release_id,
             action,
@@ -139,6 +146,7 @@ async def release_action(
 
 async def _execute_action(
     authority: ReleaseAuthorityDependency,
+    lifecycle: AgentLifecycleDependency,
     current: Any,
     release_id: str,
     action: str,
@@ -181,24 +189,31 @@ async def _execute_action(
             release_id, actor_id=principal.actor_id, correlation_id=correlation_id
         )
     if action == "activate":
-        return await authority.activate(
+        return await lifecycle.activate(
             release_id, actor_id=principal.actor_id, correlation_id=correlation_id
         )
     if action == "suspend":
-        return await authority.suspend(
+        return await lifecycle.suspend(
             release_id,
             actor_id=principal.actor_id,
             reason=str(payload.get("reason", "")),
             correlation_id=correlation_id,
         )
     if action == "kill":
-        return await authority.activate_kill_switch(
+        return await lifecycle.activate_kill_switch(
             release_id,
             actor_id=principal.actor_id,
             reason=str(payload.get("reason", "")),
             correlation_id=correlation_id,
         )
-    return await authority.rollback(
+    if action == "clear-kill":
+        return await lifecycle.clear_kill_switch(
+            release_id,
+            actor_id=principal.actor_id,
+            reason=str(payload.get("reason", "")),
+            correlation_id=correlation_id,
+        )
+    return await lifecycle.rollback(
         release_id,
         target_release_id=str(payload["target_release_id"]),
         actor_id=principal.actor_id,

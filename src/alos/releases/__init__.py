@@ -1,6 +1,7 @@
 """Release decisions and lifecycle references owned by ALOS Backend."""
 
 from alos.releases.models import ReleaseAction, ReleaseDecision
+from alos.releases.orchestration import GovernedAgentLifecycle
 from alos.releases.persistent import PersistentReleaseAuthority
 from alos.releases.service import (
     GovernedRelease,
@@ -11,6 +12,7 @@ from alos.releases.service import (
 )
 
 __all__ = [
+    "GovernedAgentLifecycle",
     "GovernedRelease",
     "InMemoryReleaseAuthority",
     "PersistentReleaseAuthority",

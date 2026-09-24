@@ -18,7 +18,7 @@ from alos.identity import DataScope, Principal
 from alos.integrations import ExternalRetrievalService
 from alos.integrations.genesis import GenesisClient, IntegrationContractValidator
 from alos.permissions import PermissionRegistry
-from alos.releases import PersistentReleaseAuthority
+from alos.releases import GovernedAgentLifecycle, PersistentReleaseAuthority
 from alos.research import ResearchService
 from alos.security.errors import PlatformError
 from alos.skills.registry import SkillRegistry
@@ -144,6 +144,22 @@ def get_release_authority(request: Request) -> PersistentReleaseAuthority:
 
 ReleaseAuthorityDependency = Annotated[
     PersistentReleaseAuthority, Depends(get_release_authority)
+]
+
+
+def get_agent_lifecycle(request: Request) -> GovernedAgentLifecycle:
+    lifecycle = getattr(request.app.state, "agent_lifecycle", None)
+    if not isinstance(lifecycle, GovernedAgentLifecycle):
+        raise PlatformError(
+            "AGENT_LIFECYCLE_UNAVAILABLE",
+            "Governed agent lifecycle is unavailable.",
+            status_code=503,
+        )
+    return lifecycle
+
+
+AgentLifecycleDependency = Annotated[
+    GovernedAgentLifecycle, Depends(get_agent_lifecycle)
 ]
 
 

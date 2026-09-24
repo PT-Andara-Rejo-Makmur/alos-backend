@@ -30,8 +30,14 @@ from alos.reviews.packages import ReviewPackageReference
 class PersistentReleaseAuthority:
     """Persist release state and audit each transition in one database transaction."""
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        registry_governed: bool = False,
+    ) -> None:
         self._session_factory = session_factory
+        self._registry_governed = registry_governed
 
     async def create(
         self,
@@ -254,6 +260,7 @@ class PersistentReleaseAuthority:
     async def activate(
         self, release_id: str, *, actor_id: str, correlation_id: str
     ) -> GovernedRelease:
+        self._require_unified_lifecycle()
         try:
             async with self._session_factory.begin() as session:
                 row = await self._locked(session, release_id)
@@ -296,6 +303,7 @@ class PersistentReleaseAuthority:
         reason: str,
         correlation_id: str,
     ) -> GovernedRelease:
+        self._require_unified_lifecycle()
         if not reason.strip():
             raise ReleaseConflictError("suspension reason is required")
         return await self._transition(
@@ -315,6 +323,7 @@ class PersistentReleaseAuthority:
         reason: str,
         correlation_id: str,
     ) -> GovernedRelease:
+        self._require_unified_lifecycle()
         if not reason.strip():
             raise ReleaseConflictError("kill switch reason is required")
 
@@ -340,6 +349,7 @@ class PersistentReleaseAuthority:
         reason: str,
         correlation_id: str,
     ) -> GovernedRelease:
+        self._require_unified_lifecycle()
         if not reason.strip():
             raise ReleaseConflictError("kill switch clear reason is required")
 
@@ -368,6 +378,7 @@ class PersistentReleaseAuthority:
         reason: str,
         correlation_id: str,
     ) -> GovernedRelease:
+        self._require_unified_lifecycle()
         if not reason.strip():
             raise ReleaseConflictError("rollback reason is required")
         async with self._session_factory.begin() as session:
@@ -418,8 +429,15 @@ class PersistentReleaseAuthority:
         return self._from_row(current)
 
     async def execution_allowed(self, release_id: str) -> bool:
+        self._require_unified_lifecycle()
         release = await self.get(release_id)
         return release.state is ReleaseState.ACTIVE and not release.kill_switch_active
+
+    def _require_unified_lifecycle(self) -> None:
+        if self._registry_governed:
+            raise ReleaseConflictError(
+                "agent release lifecycle requires unified registry orchestration"
+            )
 
     async def _record_decision(
         self,

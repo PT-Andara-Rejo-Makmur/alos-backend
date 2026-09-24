@@ -63,22 +63,23 @@ class SqlRegistryStore:
                 .scalars()
                 .all()
             )
-        return tuple(
-            RegistryEntry(
-                subject_type=row.subject_type,
-                subject_id=row.subject_id,
-                version=row.version,
-                tenant_id=row.tenant_id,
-                organization_id=row.organization_id,
-                workspace_id=row.workspace_id,
-                payload=dict(row.contract_payload),
-                digest=row.digest,
-                state=RegistryState(row.lifecycle_state),
-                created_by=row.created_by,
-                correlation_id=row.correlation_id,
-                created_at=row.created_at,
-                decision_id=row.decision_id,
-                release_id=row.release_id,
-            )
-            for row in rows
+        return tuple(self.entry_from_record(row) for row in rows)
+
+    @staticmethod
+    def entry_from_record(row: RegistryDefinitionRecord) -> RegistryEntry:
+        return RegistryEntry(
+            subject_type=row.subject_type,
+            subject_id=row.subject_id,
+            version=row.version,
+            tenant_id=row.tenant_id,
+            organization_id=row.organization_id,
+            workspace_id=row.workspace_id,
+            payload=dict(row.contract_payload),
+            digest=row.digest,
+            state=RegistryState(row.lifecycle_state),
+            created_by=row.created_by,
+            correlation_id=row.correlation_id,
+            created_at=row.created_at,
+            decision_id=row.decision_id,
+            release_id=row.release_id,
         )
