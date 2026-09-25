@@ -112,7 +112,7 @@ async def bootstrap_deterministic_integration(
                 "input_schema": {"type": "object"},
                 "output_schema": {
                     "type": "object",
-                    "required": ["summary", "tool_status"],
+                    "required": ["summary"],
                     "additionalProperties": True,
                 },
                 "approval_required": False,
