@@ -69,6 +69,16 @@ async def test_public_review_rejects_forged_observations_before_genesis() -> Non
         bootstrap_response = await client.post("/api/v1/integration/bootstrap", headers=headers)
         assert bootstrap_response.status_code == 200
         bootstrap = bootstrap_response.json()
+        assert app.state.agent_registry.get(
+            tenant_id=registration["tenant_id"],
+            workspace_id=registration["workspace_id"],
+            subject_id=bootstrap["agent_id"],
+            version=bootstrap["agent_version"],
+        ).payload["execution_budget"] == {
+            "max_tokens": 100,
+            "max_steps": 3,
+            "max_tool_calls": 1,
+        }
 
         invocation = json.loads(
             (CONTRACTS_ROOT / "examples/review/review-invocation.json").read_text(encoding="utf-8")

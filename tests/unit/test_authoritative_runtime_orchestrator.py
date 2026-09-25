@@ -1,13 +1,14 @@
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 from alos.agents.lifecycle import AgentRunAuthority, AuthoritativeRunStatus
 from alos.agents.registry import AgentRegistry
 from alos.agents.runtime import AuthoritativeRuntimeOrchestrator
-from alos.api.public.routes import execute_agent_run
+from alos.api.public.routes import bootstrap_deterministic_integration, execute_agent_run
 from alos.audit import InMemoryAuditRepository
 from alos.contracts import CanonicalContractCatalog
 from alos.identity import Principal
@@ -209,3 +210,70 @@ async def test_public_run_route_rejects_client_selected_authority_fields() -> No
 
     assert raised.value.code == "AGENT_RUN_REQUEST_INVALID"
     assert raised.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_integration_bootstrap_agent_definition_has_tool_budget() -> None:
+    contracts = CanonicalContractCatalog(CONTRACTS_ROOT)
+    audit = InMemoryAuditRepository()
+    registry = AgentRegistry(contracts, audit)
+    evidence_registry = SimpleNamespace(
+        register=AsyncMock(return_value={"evidence_id": "evidence.test"})
+    )
+    principal = Principal(
+        actor_id="actor_runtime_orchestration",
+        tenant_id="tenant_runtime_orchestration",
+        organization_id="org_runtime_orchestration",
+        workspace_id="workspace_runtime_orchestration",
+        permissions=frozenset({"tools.diagnostic.execute"}),
+        scopes=frozenset({"scope.diagnostic"}),
+    )
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                agent_registry=registry,
+                evidence_registry=evidence_registry,
+                settings=SimpleNamespace(ENABLE_TEST_TOOLS=True, APP_ENV="test"),
+            )
+        )
+    )
+
+    bootstrap = await bootstrap_deterministic_integration(request, principal)  # type: ignore[arg-type]
+    assert bootstrap["agent_id"] == "agent.runtime.diagnostic"
+    assert bootstrap["agent_version"] == "1.0.0"
+
+    entry = registry.get(
+        tenant_id=principal.tenant_id,
+        workspace_id=principal.workspace_id,
+        subject_id=bootstrap["agent_id"],
+        version=bootstrap["agent_version"],
+    )
+    assert entry.payload["execution_budget"] == {
+        "max_tokens": 100,
+        "max_steps": 3,
+        "max_tool_calls": 1,
+    }
+    assert entry.payload["tool_ids"] == ["diagnostic.echo"]
+
+
+@pytest.mark.asyncio
+async def test_integration_bootstrap_denied_in_production() -> None:
+    principal = Principal(
+        actor_id="actor_prod",
+        tenant_id="tenant_prod",
+        organization_id="org_prod",
+        workspace_id="workspace_prod",
+    )
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                agent_registry=None,
+                settings=SimpleNamespace(ENABLE_TEST_TOOLS=False, APP_ENV="production"),
+            )
+        )
+    )
+    with pytest.raises(PlatformError) as raised:
+        await bootstrap_deterministic_integration(request, principal)  # type: ignore[arg-type]
+
+    assert raised.value.code == "INTEGRATION_BOOTSTRAP_DENIED"
+    assert raised.value.status_code == 403

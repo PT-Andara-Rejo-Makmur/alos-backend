@@ -116,7 +116,11 @@ async def bootstrap_deterministic_integration(
                     "additionalProperties": True,
                 },
                 "approval_required": False,
-                "execution_budget": {"max_tokens": 100, "max_steps": 3},
+                "execution_budget": {
+                    "max_tokens": 100,
+                    "max_steps": 3,
+                    "max_tool_calls": 1,
+                },
                 "delegation_policy": {"enabled": False, "max_depth": 0},
             },
             tenant_id=principal.tenant_id,
