@@ -1,6 +1,6 @@
 import hashlib
 from datetime import UTC, datetime
-from typing import Any, NoReturn
+from typing import Any, NoReturn, cast
 
 from fastapi import APIRouter, Request, Response
 
@@ -1112,9 +1112,10 @@ async def list_identity_accounts(
         raise PlatformError(
             "AUTHORIZATION_DENIED", "an active IT_ADMIN membership is required", status_code=403
         )
-    return await request.app.state.auth_service.list_accounts(
+    accounts = await request.app.state.auth_service.list_accounts(
         tenant_id=principal.tenant_id, organization_id=principal.organization_id
     )
+    return cast(list[dict[str, Any]], accounts)
 
 
 @router.get(
