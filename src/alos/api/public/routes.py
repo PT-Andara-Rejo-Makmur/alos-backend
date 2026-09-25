@@ -116,11 +116,7 @@ async def bootstrap_deterministic_integration(
                     "additionalProperties": True,
                 },
                 "approval_required": False,
-                "execution_budget": {
-                    "max_tokens": 100,
-                    "max_steps": 3,
-                    "max_tool_calls": 1,
-                },
+                "execution_budget": {"max_tokens": 100, "max_steps": 3},
                 "delegation_policy": {"enabled": False, "max_depth": 0},
             },
             tenant_id=principal.tenant_id,
@@ -557,10 +553,18 @@ def _require_authoritative_review_snapshot(
         "subject_type": "agent",
     }:
         _review_authority_error("business context was not issued by Backend authority")
-    if subject.get("execution_budget") != agent_payload.get("execution_budget"):
-        _review_authority_error(
-            "execution budget does not match the authoritative agent definition"
-        )
+    authoritative_budget = agent_payload.get("execution_budget")
+    subject_budget = subject.get("execution_budget")
+    if subject_budget != authoritative_budget:
+        if not (
+            isinstance(subject_budget, dict)
+            and isinstance(authoritative_budget, dict)
+            and {k: v for k, v in subject_budget.items() if k != "max_tool_calls"}
+            == {k: v for k, v in authoritative_budget.items() if k != "max_tool_calls"}
+        ):
+            _review_authority_error(
+                "execution budget does not match the authoritative agent definition"
+            )
     if set(subject.get("scope", [])) != set(authority.scope):
         _review_authority_error("scope does not match the authoritative agent definition")
     if set(subject.get("permissions", [])) != set(authority.permissions):

@@ -49,6 +49,15 @@ class AuthoritativeRuntimeOrchestrator:
         execution_budget = agent.payload.get("execution_budget")
         if not isinstance(execution_budget, dict) or not execution_budget:
             raise ValueError("Runnable Agent definition requires an execution budget")
+        allowed_tool_ids = sorted(
+            set(requested_tools).intersection(agent.payload.get("tool_ids", []))
+        )
+        derived_budget = dict(execution_budget)
+        if allowed_tool_ids and "max_tool_calls" not in derived_budget:
+            derived_budget["max_tool_calls"] = min(
+                int(derived_budget.get("max_steps", 1)),
+                max(1, len(allowed_tool_ids)),
+            )
         correlation_id = current_correlation_id()
         run_id = f"run_{uuid4().hex}"
         run_request: dict[str, Any] = {
@@ -68,13 +77,11 @@ class AuthoritativeRuntimeOrchestrator:
                     "authority_level": "REQUESTER",
                 },
                 "permission_refs": sorted(principal.permissions),
-                "allowed_tool_ids": sorted(
-                    set(requested_tools).intersection(agent.payload.get("tool_ids", []))
-                ),
+                "allowed_tool_ids": allowed_tool_ids,
                 "scope_refs": sorted(requested_scopes),
                 "data_classification": "INTERNAL",
                 "correlation_id": correlation_id,
-                "execution_budget": dict(execution_budget),
+                "execution_budget": derived_budget,
             },
             "input": dict(payload.get("input", {})),
             "requested_tool_ids": list(requested_tools),

@@ -251,9 +251,103 @@ async def test_integration_bootstrap_agent_definition_has_tool_budget() -> None:
     assert entry.payload["execution_budget"] == {
         "max_tokens": 100,
         "max_steps": 3,
-        "max_tool_calls": 1,
     }
     assert entry.payload["tool_ids"] == ["diagnostic.echo"]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_derives_tool_budget_when_not_declared_in_agent() -> None:
+    contracts = CanonicalContractCatalog(CONTRACTS_ROOT)
+    audit = InMemoryAuditRepository()
+    authority = AgentRunAuthority(contracts=contracts, audit=audit)
+    genesis = RecordingGenesisClient()
+    orchestrator = AuthoritativeRuntimeOrchestrator(
+        authority=authority,
+        genesis=genesis,  # type: ignore[arg-type]
+    )
+    principal = Principal(
+        actor_id="actor_runtime_orchestration",
+        tenant_id="tenant_runtime_orchestration",
+        organization_id="org_runtime_orchestration",
+        workspace_id="workspace_runtime_orchestration",
+        permissions=frozenset({"tools.diagnostic.execute"}),
+        scopes=frozenset({"scope.diagnostic"}),
+    )
+
+    registry = AgentRegistry(contracts, audit)
+    payload = {
+        "tenant_id": "tenant_runtime_orchestration",
+        "organization_id": "org_runtime_orchestration",
+        "workspace_id": "workspace_runtime_orchestration",
+        "agent_id": "agent.runtime.no_tool_budget",
+        "agent_version": "1.0.0",
+        "owner_actor_id": "actor_runtime_orchestration",
+        "name": "Runtime no tool budget",
+        "purpose": "Verify backend derives execution budget for genesis.",
+        "risk_level": "LOW",
+        "capability_ids": ["capability.runtime.orchestration"],
+        "skill_refs": [],
+        "model_policy_ref": "policy.runtime-test",
+        "tool_ids": ["diagnostic.echo"],
+        "permission_refs": ["tools.diagnostic.execute"],
+        "scope_refs": ["scope.diagnostic"],
+        "execution_budget": {
+            "max_tokens": 100,
+            "max_steps": 3,
+        },
+        "delegation_policy": {"enabled": False, "max_depth": 0},
+    }
+    entry = await registry.register(
+        payload,
+        tenant_id=payload["tenant_id"],
+        organization_id=payload["organization_id"],
+        workspace_id=payload["workspace_id"],
+        actor_id=payload["owner_actor_id"],
+        correlation_id="corr_runtime_registry_010",
+    )
+    entry = await registry.approve(
+        tenant_id=entry.tenant_id,
+        workspace_id=entry.workspace_id,
+        subject_id=entry.subject_id,
+        version=entry.version,
+        actor_id="actor_it_authority",
+        decision_id="decision.runtime.no_tool_budget",
+        authority=DecisionAuthority.IT,
+        correlation_id="corr_runtime_registry_011",
+    )
+    agent = await registry.activate(
+        tenant_id=entry.tenant_id,
+        workspace_id=entry.workspace_id,
+        subject_id=entry.subject_id,
+        version=entry.version,
+        actor_id="actor_release_authority",
+        release_id="release.runtime.no_tool_budget",
+        correlation_id="corr_runtime_registry_012",
+    )
+
+    correlation_token = correlation_id_context.set("corr_runtime_orchestration_010")
+    try:
+        completed = await orchestrator.execute(
+            {
+                "capability_id": "capability.runtime.orchestration",
+                "input": {"message": "hello"},
+                "requested_tool_ids": ["diagnostic.echo"],
+                "scope_refs": ["scope.diagnostic"],
+                "execution_mode": "TEST",
+            },
+            principal=principal,
+            agent=agent,
+            test_mode_allowed=True,
+        )
+    finally:
+        correlation_id_context.reset(correlation_token)
+
+    assert completed.status is AuthoritativeRunStatus.COMPLETED
+    assert genesis.invocation["run_request"]["execution_context"]["execution_budget"] == {
+        "max_tokens": 100,
+        "max_steps": 3,
+        "max_tool_calls": 1,
+    }
 
 
 @pytest.mark.asyncio

@@ -77,7 +77,6 @@ async def test_public_review_rejects_forged_observations_before_genesis() -> Non
         ).payload["execution_budget"] == {
             "max_tokens": 100,
             "max_steps": 3,
-            "max_tool_calls": 1,
         }
 
         invocation = json.loads(
