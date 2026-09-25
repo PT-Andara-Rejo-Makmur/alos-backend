@@ -28,7 +28,7 @@ WORKSPACES = (
 
 def upgrade() -> None:
     connection = op.get_bind()
-    
+
     connection.execute(text(
         """
         INSERT INTO core.tenants (tenant_id, name, active)
@@ -38,7 +38,6 @@ def upgrade() -> None:
         )
         """
     ))
-    
     connection.execute(text(
         """
         INSERT INTO core.organizations (organization_id, tenant_id, name, active)
@@ -63,7 +62,8 @@ def upgrade() -> None:
                 division_code,
                 active
             )
-            SELECT :workspace_id, :tenant_id, :organization_id, :name, :workspace_key, :workspace_type, NULL, :division_code, true
+                 SELECT :workspace_id, :tenant_id, :organization_id, :name,
+                     :workspace_key, :workspace_type, NULL, :division_code, true
             WHERE NOT EXISTS (
                 SELECT 1
                 FROM core.workspaces

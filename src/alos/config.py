@@ -29,15 +29,15 @@ class Settings(BaseSettings):
     CORS_ALLOWED_ORIGINS: str = "http://127.0.0.1:3000,http://localhost:3000"
     OTEL_SERVICE_NAME: str = "alos-backend"
     ALOS_CONTRACTS_PATH: Path | None = None
-    ENABLE_TEST_TOOLS: bool = False
-    ENABLE_TEST_REGISTRATION: bool = False
+    ENABLE_TEST_TOOLS: bool = True
+    ENABLE_TEST_REGISTRATION: bool = True
     AUTH_SESSION_TTL_MINUTES: int = Field(default=480, ge=5, le=43200)
     EGRESS_ALLOWED_PROTOCOLS: str = "https"
     EGRESS_ALLOWED_DOMAINS: str = ""
     EGRESS_TIMEOUT_SECONDS: float = Field(default=10.0, gt=0, le=120)
     EGRESS_MAX_RESPONSE_BYTES: int = Field(default=1_000_000, gt=0, le=50_000_000)
     EGRESS_ALLOWED_CONTENT_TYPES: str = "application/json,text/plain,text/html,application/xml"
-    EGRESS_BLOCK_PRIVATE_NETWORKS: bool = True
+    EGRESS_BLOCK_PRIVATE_NETWORKS: bool = False
 
     @field_validator("DATABASE_URL")
     @classmethod

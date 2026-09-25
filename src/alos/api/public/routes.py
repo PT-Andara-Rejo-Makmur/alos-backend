@@ -13,9 +13,9 @@ from alos.authentication.models import (
     AccountStateProjection,
     ActiveWorkspaceProjection,
     ActiveWorkspaceRequest,
-    ContextSwitchRequest,
     AuthenticatedPrincipalProjection,
     AuthTokenResponse,
+    ContextSwitchRequest,
     LoginRequest,
     MembershipMutationRequest,
     ProvisionAccountRequest,
@@ -1117,7 +1117,11 @@ async def list_identity_accounts(
     )
 
 
-@router.get("/identity/workspaces", response_model=list[WorkspaceAccessProjection], tags=["identity"])
+@router.get(
+    "/identity/workspaces",
+    response_model=list[WorkspaceAccessProjection],
+    tags=["identity"],
+)
 async def list_identity_workspaces(
     request: Request,
     principal: CurrentPrincipalDependency,
