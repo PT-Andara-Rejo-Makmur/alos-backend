@@ -1,7 +1,7 @@
 """Persist transactional release authority state.
 
-Revision ID: 0011_persistent_release
-Revises: 0009_default_workspace_bootstrap
+Revision ID: 0009_persistent_release
+Revises: 0008_canonical_identity_access
 """
 
 from datetime import UTC, datetime
@@ -9,8 +9,8 @@ from datetime import UTC, datetime
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0011_persistent_release"
-down_revision = "0009_default_workspace_bootstrap"
+revision = "0009_persistent_release"
+down_revision = "0008_canonical_identity_access"
 branch_labels = None
 depends_on = None
 

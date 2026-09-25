@@ -52,7 +52,12 @@ def _upgrade(url: str, revision: str) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("database_name", "starting_revision"),
-    (("alos_migration_fresh", None), ("alos_migration_incremental", "0006_auth_accounts")),
+    (
+        ("alos_migration_fresh", None),
+        ("alos_migration_incremental", "0006_auth_accounts"),
+        ("alos_migration_release", "0009_persistent_release"),
+        ("alos_migration_existing", "0010_unified_lifecycle"),
+    ),
 )
 async def test_postgres_upgrade_matches_runtime_metadata(
     database_name: str, starting_revision: str | None

@@ -58,6 +58,19 @@ class AccessState:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkspaceState:
+    workspace_id: str
+    workspace_key: str
+    workspace_name: str
+    workspace_type: str
+    tenant_id: str
+    organization_id: str
+    organizational_unit_id: str | None
+    division_code: str | None
+    active: bool
+
+
+@dataclass(frozen=True, slots=True)
 class ProvisionAccount:
     actor_id: str
     email: str
@@ -108,9 +121,11 @@ class AuthRepository(Protocol):
 
     async def accounts(self, *, tenant_id: str, organization_id: str) -> list[AccountState]: ...
 
+    async def workspace(self, workspace_id: str) -> WorkspaceState | None: ...
+
     async def list_organization_workspaces(
         self, *, tenant_id: str, organization_id: str
-    ) -> list[AccessState]: ...
+    ) -> list[WorkspaceState]: ...
 
     async def assign_membership(self, command: MembershipMutation) -> AccessState: ...
 
@@ -334,9 +349,14 @@ class SqlAuthRepository:
             )
             return [_account_state(record) for record in rows.all()]
 
+    async def workspace(self, workspace_id: str) -> WorkspaceState | None:
+        async with self._session_factory() as session:
+            record = await session.get(WorkspaceRecord, workspace_id)
+            return _workspace_state(record) if record is not None else None
+
     async def list_organization_workspaces(
         self, *, tenant_id: str, organization_id: str
-    ) -> list[AccessState]:
+    ) -> list[WorkspaceState]:
         async with self._session_factory() as session:
             rows = await session.scalars(
                 select(WorkspaceRecord)
@@ -347,19 +367,7 @@ class SqlAuthRepository:
                 )
                 .order_by(WorkspaceRecord.workspace_key)
             )
-            return [
-                AccessState(
-                    record.workspace_id,
-                    record.workspace_key,
-                    record.name,
-                    record.workspace_type,
-                    record.organization_id,
-                    record.organizational_unit_id,
-                    record.division_code,
-                    (), (), (), "OWN_ASSIGNED", record.active,
-                )
-                for record in rows.all()
-            ]
+            return [_workspace_state(record) for record in rows.all()]
 
     async def assign_membership(self, command: MembershipMutation) -> AccessState:
         async with self._session_factory() as session, session.begin():
@@ -586,6 +594,20 @@ def _access_state(membership: WorkspaceMembershipRecord, workspace: WorkspaceRec
         tuple(membership.scope_refs),
         membership.data_scope,
         membership.active and workspace.active,
+    )
+
+
+def _workspace_state(record: WorkspaceRecord) -> WorkspaceState:
+    return WorkspaceState(
+        record.workspace_id,
+        record.workspace_key,
+        record.name,
+        record.workspace_type,
+        record.tenant_id,
+        record.organization_id,
+        record.organizational_unit_id,
+        record.division_code,
+        record.active,
     )
 
 

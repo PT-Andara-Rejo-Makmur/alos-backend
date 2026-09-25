@@ -1,6 +1,6 @@
 import hashlib
 from datetime import UTC, datetime
-from typing import Any, NoReturn, cast
+from typing import Any, NoReturn
 
 from fastapi import APIRouter, Request, Response
 
@@ -15,12 +15,13 @@ from alos.authentication.models import (
     ActiveWorkspaceRequest,
     AuthenticatedPrincipalProjection,
     AuthTokenResponse,
-    ContextSwitchRequest,
+    IdentityAccountProjection,
     LoginRequest,
     MembershipMutationRequest,
     ProvisionAccountRequest,
     RegisterRequest,
     WorkspaceAccessProjection,
+    WorkspaceProjection,
 )
 from alos.authentication.service import CANONICAL_ROLES
 from alos.authorization import AuthorizationEnforcer
@@ -1062,18 +1063,6 @@ async def provision_account(
         raise PlatformError(
             "AUTHORIZATION_DENIED", "an active IT_ADMIN membership is required", status_code=403
         )
-    if (
-        payload.tenant_id is not None
-        and payload.tenant_id != principal.tenant_id
-    ) or (
-        payload.organization_id is not None
-        and payload.organization_id != principal.organization_id
-    ):
-        raise PlatformError(
-            "REQUEST_VALIDATION_FAILED",
-            "provisioning target is outside the authenticated authority boundary",
-            status_code=422,
-        )
     canonical_payload = payload.model_dump()
     canonical_payload.update(
         tenant_id=principal.tenant_id,
@@ -1099,12 +1088,16 @@ async def provision_account(
     return result
 
 
-@router.get("/identity/accounts", tags=["identity"])
+@router.get(
+    "/identity/accounts",
+    response_model=list[IdentityAccountProjection],
+    tags=["identity"],
+)
 async def list_identity_accounts(
     request: Request,
     principal: CurrentPrincipalDependency,
     authorization: AuthorizationEnforcerDependency,
-) -> list[dict[str, Any]]:
+) -> list[IdentityAccountProjection]:
     await _require_identity_permission(
         authorization, principal, "identity.accounts.manage", "identity.account.list"
     )
@@ -1115,19 +1108,19 @@ async def list_identity_accounts(
     accounts = await request.app.state.auth_service.list_accounts(
         tenant_id=principal.tenant_id, organization_id=principal.organization_id
     )
-    return cast(list[dict[str, Any]], accounts)
+    return [IdentityAccountProjection.model_validate(account) for account in accounts]
 
 
 @router.get(
     "/identity/workspaces",
-    response_model=list[WorkspaceAccessProjection],
+    response_model=list[WorkspaceProjection],
     tags=["identity"],
 )
 async def list_identity_workspaces(
     request: Request,
     principal: CurrentPrincipalDependency,
     authorization: AuthorizationEnforcerDependency,
-) -> list[WorkspaceAccessProjection]:
+) -> list[WorkspaceProjection]:
     await _require_identity_permission(
         authorization, principal, "identity.accounts.manage", "identity.workspace.catalog"
     )
@@ -1138,7 +1131,7 @@ async def list_identity_workspaces(
     workspaces = await request.app.state.auth_service.list_organization_workspaces(
         tenant_id=principal.tenant_id, organization_id=principal.organization_id
     )
-    return [WorkspaceAccessProjection.model_validate(item) for item in workspaces]
+    return [WorkspaceProjection.model_validate(item) for item in workspaces]
 
 
 @router.get(
@@ -1409,34 +1402,6 @@ async def select_active_workspace(
         _bearer_token(request), payload.workspace_id
     )
     return ActiveWorkspaceProjection.model_validate(selected)
-
-
-@router.get("/me/context", tags=["identity"])
-async def get_my_context(request: Request) -> dict[str, Any]:
-    principal = await request.app.state.auth_service.whoami(_bearer_token(request))
-    active = principal.get("active_workspace")
-    available = principal.get("workspace_access", [])
-
-    def project(access: dict[str, Any] | None) -> dict[str, Any] | None:
-        if access is None:
-            return None
-        return {
-            "membership_id": access["workspace"]["workspace_id"],
-            "role_refs": access["role_refs"],
-            "workspace": access["workspace"],
-        }
-
-    return {"active": project(active), "available": [project(item) for item in available]}
-
-
-@router.post("/me/context/switch", tags=["identity"])
-async def switch_my_context(
-    request: Request, payload: ContextSwitchRequest
-) -> dict[str, Any]:
-    selected = await request.app.state.auth_service.select_active_workspace(
-        _bearer_token(request), payload.membership_id
-    )
-    return {"active": {"membership_id": payload.membership_id, **selected}}
 
 
 def _bearer_token(request: Request) -> str:

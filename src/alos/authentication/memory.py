@@ -10,6 +10,7 @@ from alos.authentication.repository import (
     MembershipMutation,
     ProvisionAccount,
     SessionState,
+    WorkspaceState,
 )
 
 
@@ -115,19 +116,36 @@ class InMemoryAuthRepository:
             key=lambda account: account.email,
         )
 
+    async def workspace(self, workspace_id: str) -> WorkspaceState | None:
+        access = self._workspaces.get(workspace_id)
+        if access is None:
+            return None
+        return WorkspaceState(
+            access.workspace_id,
+            access.workspace_key,
+            access.workspace_name,
+            access.workspace_type,
+            self._workspace_tenants[workspace_id],
+            access.organization_id,
+            access.organizational_unit_id,
+            access.division_code,
+            access.active,
+        )
+
     async def list_organization_workspaces(
         self, *, tenant_id: str, organization_id: str
-    ) -> list[AccessState]:
-        return sorted(
-            (
-                workspace
-                for workspace in self._workspaces.values()
-                if self._workspace_tenants.get(workspace.workspace_id) == tenant_id
+    ) -> list[WorkspaceState]:
+        result = []
+        for workspace_id in self._workspaces:
+            workspace = await self.workspace(workspace_id)
+            if (
+                workspace is not None
+                and workspace.tenant_id == tenant_id
                 and workspace.organization_id == organization_id
                 and workspace.active
-            ),
-            key=lambda workspace: workspace.workspace_key.lower(),
-        )
+            ):
+                result.append(workspace)
+        return sorted(result, key=lambda workspace: workspace.workspace_key.lower())
 
     async def assign_membership(self, command: MembershipMutation) -> AccessState:
         self._bounded_account(command.actor_id, command.tenant_id, command.organization_id)

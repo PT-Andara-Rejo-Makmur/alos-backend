@@ -248,6 +248,122 @@ async def test_account_provisioning_uses_permission_policy_and_records_actor(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "forbidden_field",
+    [
+        "tenant_id",
+        "organization_id",
+        "workspace_key",
+        "workspace_name",
+        "workspace_type",
+    ],
+)
+async def test_public_provisioning_rejects_client_authority_metadata(
+    client: httpx.AsyncClient, forbidden_field: str
+) -> None:
+    await _register_identity(
+        client,
+        email="metadata-admin@andara.local",
+        tenant_id="tenant_metadata",
+        organization_id="org_metadata",
+        workspace_id="workspace_metadata",
+        permissions=["identity.accounts.manage"],
+    )
+    response = await client.post(
+        "/api/v1/identity/accounts",
+        headers=await _login_headers(client, "metadata-admin@andara.local"),
+        json={
+            **_provision_payload(
+                workspace_id="workspace_metadata",
+                email=f"{forbidden_field}@andara.local",
+            ),
+            forbidden_field: "browser-controlled",
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "REQUEST_VALIDATION_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_public_provisioning_derives_boundary_without_inheriting_admin_scope(
+    client: httpx.AsyncClient,
+) -> None:
+    await _register_identity(
+        client,
+        email="scope-admin@andara.local",
+        tenant_id="tenant_scope",
+        organization_id="org_scope",
+        workspace_id="workspace_scope",
+        permissions=["identity.accounts.manage"],
+    )
+    response = await client.post(
+        "/api/v1/identity/accounts",
+        headers=await _login_headers(client, "scope-admin@andara.local"),
+        json=_provision_payload(
+            workspace_id="workspace_scope",
+            email="least-privilege@andara.local",
+        ),
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["actor"]["tenant_id"] == "tenant_scope"
+    assert body["actor"]["organization_id"] == "org_scope"
+    assert body["workspace_access"][0]["scope_refs"] == []
+    assert body["workspace_access"][0]["permission_refs"] == []
+
+
+@pytest.mark.asyncio
+async def test_identity_admin_catalogs_are_canonical_and_organization_bounded(
+    client: httpx.AsyncClient,
+) -> None:
+    await _register_identity(
+        client,
+        email="catalog-admin@andara.local",
+        tenant_id="tenant_catalog",
+        organization_id="org_catalog",
+        workspace_id="workspace_catalog",
+        permissions=["identity.accounts.manage"],
+    )
+    headers = await _login_headers(client, "catalog-admin@andara.local")
+
+    roles = await client.get("/api/v1/identity/assignable-roles", headers=headers)
+    assert roles.status_code == 200
+    assert set(roles.json()) == {
+        "EXECUTIVE",
+        "WORKSPACE_LEAD",
+        "WORKSPACE_MEMBER",
+        "BUSINESS_REVIEWER",
+        "IT_ADMIN",
+        "AI_ADMIN",
+        "TECHNICAL_REVIEWER",
+        "QA_ASSURANCE",
+    }
+
+    workspaces = await client.get("/api/v1/identity/workspaces", headers=headers)
+    assert workspaces.status_code == 200
+    assert workspaces.json() == [
+        {
+            "workspace_id": "workspace_catalog",
+            "workspace_key": "workspace_catalog",
+            "organization_id": "org_catalog",
+            "workspace_name": "workspace_catalog",
+            "workspace_type": "BUSINESS",
+            "organizational_unit_id": None,
+            "division_code": None,
+            "active": True,
+        }
+    ]
+    assert "role_refs" not in workspaces.json()[0]
+
+    accounts = await client.get("/api/v1/identity/accounts", headers=headers)
+    assert accounts.status_code == 200
+    assert [account["email"] for account in accounts.json()] == [
+        "catalog-admin@andara.local"
+    ]
+    assert "password_hash" not in accounts.json()[0]
+
+
+@pytest.mark.asyncio
 async def test_account_provisioning_denies_missing_permission(client: httpx.AsyncClient) -> None:
     await client.post(
         "/api/v1/auth/register",

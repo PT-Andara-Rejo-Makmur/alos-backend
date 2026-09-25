@@ -147,3 +147,52 @@ def test_canonical_identity_migration_is_append_only() -> None:
     spec.loader.exec_module(migration)
     assert migration.revision == "0008_canonical_identity_access"
     assert migration.down_revision == "0007_runtime_research"
+
+
+def test_identity_followup_migration_chain_preserves_historical_revisions() -> None:
+    root = Path(__file__).resolve().parents[2] / "migrations" / "versions"
+    expected = (
+        (
+            "0009_persistent_release_authority.py",
+            "0009_persistent_release",
+            "0008_canonical_identity_access",
+        ),
+        ("0010_unified_agent_lifecycle.py", "0010_unified_lifecycle", "0009_persistent_release"),
+        (
+            "0011_default_workspace_bootstrap.py",
+            "0011_default_workspace_bootstrap",
+            "0010_unified_lifecycle",
+        ),
+    )
+    for filename, revision, down_revision in expected:
+        spec = importlib.util.spec_from_file_location(revision, root / filename)
+        assert spec is not None and spec.loader is not None
+        migration = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(migration)
+        assert migration.revision == revision
+        assert migration.down_revision == down_revision
+
+
+def test_default_workspace_catalog_contains_only_canonical_authority_boundaries() -> None:
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "migrations"
+        / "versions"
+        / "0011_default_workspace_bootstrap.py"
+    )
+    spec = importlib.util.spec_from_file_location("default_workspace_catalog", path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    assert {item[0] for item in migration.WORKSPACES} == {
+        "workspace_executive",
+        "workspace_finance",
+        "workspace_hr",
+        "workspace_legal",
+        "workspace_sales",
+        "workspace_property",
+        "workspace_it",
+    }
+    assert not {"workspace_projects", "workspace_reports", "workspace_findings"} & {
+        item[0] for item in migration.WORKSPACES
+    }

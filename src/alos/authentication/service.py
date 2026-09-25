@@ -15,6 +15,7 @@ from alos.authentication.repository import (
     MembershipMutation,
     ProvisionAccount,
     SessionState,
+    WorkspaceState,
 )
 from alos.security.errors import PlatformError
 
@@ -108,7 +109,25 @@ class AuthService:
                 status_code=400,
             )
         workspace_id = str(payload.get("workspace_id") or "")
-        workspace_key = str(payload.get("workspace_key") or workspace_id).upper().replace("-", "_")
+        workspace: WorkspaceState | None = None
+        if not bootstrap:
+            workspace = await self._repository.workspace(workspace_id)
+            if (
+                workspace is None
+                or not workspace.active
+                or workspace.tenant_id != str(payload.get("tenant_id") or "")
+                or workspace.organization_id != str(payload.get("organization_id") or "")
+            ):
+                raise PlatformError(
+                    "AUTHORITY_BOUNDARY_CONFLICT",
+                    "provisioning target is outside an active authority boundary",
+                    status_code=403,
+                )
+        workspace_key = (
+            workspace.workspace_key
+            if workspace is not None
+            else str(payload.get("workspace_key") or workspace_id).strip().lower()
+        )
         command = ProvisionAccount(
             actor_id=f"actor_{uuid.uuid4().hex}",
             email=email,
@@ -118,10 +137,26 @@ class AuthService:
             organization_id=str(payload.get("organization_id") or ""),
             workspace_id=workspace_id,
             workspace_key=workspace_key,
-            workspace_name=str(payload.get("workspace_name") or workspace_id),
-            workspace_type=str(payload.get("workspace_type") or "BUSINESS"),
-            organizational_unit_id=_optional(payload.get("organizational_unit_id")),
-            division_code=_optional(payload.get("division_code")),
+            workspace_name=(
+                workspace.workspace_name
+                if workspace is not None
+                else str(payload.get("workspace_name") or workspace_id)
+            ),
+            workspace_type=(
+                workspace.workspace_type
+                if workspace is not None
+                else str(payload.get("workspace_type") or "BUSINESS")
+            ),
+            organizational_unit_id=(
+                workspace.organizational_unit_id
+                if workspace is not None
+                else _optional(payload.get("organizational_unit_id"))
+            ),
+            division_code=(
+                workspace.division_code
+                if workspace is not None
+                else _optional(payload.get("division_code"))
+            ),
             role_refs=role_refs,
             permission_refs=tuple(
                 sorted(
@@ -223,7 +258,7 @@ class AuthService:
         workspaces = await self._repository.list_organization_workspaces(
             tenant_id=tenant_id, organization_id=organization_id
         )
-        return [self._access_projection(workspace) for workspace in workspaces]
+        return [self._workspace_catalog_projection(workspace) for workspace in workspaces]
 
     async def select_active_workspace(self, token: str, workspace_id: str) -> dict[str, Any]:
         session, accesses = await self._resolve_session(token)
@@ -459,6 +494,19 @@ class AuthService:
             "organizational_unit_id": access.organizational_unit_id,
             "division_code": access.division_code,
             "active": access.active,
+        }
+
+    @staticmethod
+    def _workspace_catalog_projection(workspace: WorkspaceState) -> dict[str, Any]:
+        return {
+            "workspace_id": workspace.workspace_id,
+            "workspace_key": workspace.workspace_key,
+            "organization_id": workspace.organization_id,
+            "workspace_name": workspace.workspace_name,
+            "workspace_type": workspace.workspace_type,
+            "organizational_unit_id": workspace.organizational_unit_id,
+            "division_code": workspace.division_code,
+            "active": workspace.active,
         }
 
     @staticmethod
