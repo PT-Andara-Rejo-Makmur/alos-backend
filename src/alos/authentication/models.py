@@ -52,7 +52,12 @@ class ProvisionAccountRequest(BaseModel):
     email: str = Field(min_length=3, max_length=255)
     password: str = Field(min_length=8, max_length=256)
     display_name: str = Field(min_length=1, max_length=200)
+    tenant_id: str | None = Field(default=None, min_length=3, max_length=128)
+    organization_id: str | None = Field(default=None, min_length=3, max_length=128)
     workspace_id: str = Field(min_length=3, max_length=128)
+    workspace_key: str | None = Field(default=None, max_length=64)
+    workspace_name: str | None = Field(default=None, max_length=200)
+    workspace_type: WorkspaceType | None = None
     role_refs: list[str]
     permission_refs: list[str] = Field(default_factory=list)
     scope_refs: list[str] = Field(default_factory=list)
@@ -117,6 +122,11 @@ class AuthTokenResponse(BaseModel):
 class ActiveWorkspaceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     workspace_id: str = Field(min_length=1, max_length=128)
+
+
+class ContextSwitchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    membership_id: str = Field(min_length=1, max_length=128)
 
 
 class ActiveWorkspaceProjection(BaseModel):

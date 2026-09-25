@@ -217,6 +217,14 @@ class AuthService:
         _, accesses = await self._resolve_session(token)
         return [self._access_projection(access) for access in accesses]
 
+    async def list_organization_workspaces(
+        self, *, tenant_id: str, organization_id: str
+    ) -> list[dict[str, Any]]:
+        workspaces = await self._repository.list_organization_workspaces(
+            tenant_id=tenant_id, organization_id=organization_id
+        )
+        return [self._access_projection(workspace) for workspace in workspaces]
+
     async def select_active_workspace(self, token: str, workspace_id: str) -> dict[str, Any]:
         session, accesses = await self._resolve_session(token)
         selected = next((item for item in accesses if item.workspace_id == workspace_id), None)
@@ -251,6 +259,26 @@ class AuthService:
             "actor_id": actor_id,
             "workspace_access": [self._access_projection(access) for access in accesses],
         }
+
+    async def list_accounts(self, *, tenant_id: str, organization_id: str) -> list[dict[str, Any]]:
+        accounts = await self._repository.accounts(
+            tenant_id=tenant_id, organization_id=organization_id
+        )
+        result: list[dict[str, Any]] = []
+        for account in accounts:
+            accesses = await self._repository.all_access(
+                account.actor_id, tenant_id=tenant_id, organization_id=organization_id
+            )
+            result.append({
+                "actor_id": account.actor_id,
+                "display_name": account.display_name,
+                "email": account.email,
+                "active": account.active,
+                "workspace_access": [
+                    self._access_projection(access) for access in accesses if access.active
+                ],
+            })
+        return result
 
     async def assign_membership(
         self,

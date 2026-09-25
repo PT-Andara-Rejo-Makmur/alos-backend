@@ -122,9 +122,13 @@ class AuthorizationEnforcer:
             return decision
 
         # --- Scope completeness check (NEEDS_INFO) ---
+        # Permissions are sufficient for commands that do not declare a
+        # scope requirement (for example identity account administration).
+        # Requiring an unrelated scope here made a valid IT_ADMIN membership
+        # fail with a misleading "permission is required" response.
         effective_division = division_id or principal.division_id
         effective_project = project_id or principal.project_id
-        if not principal.scopes:
+        if required_scopes and not principal.scopes:
             decision = AuthorizationDecision(
                 outcome=AuthorizationOutcome.NEEDS_INFO,
                 principal=principal,

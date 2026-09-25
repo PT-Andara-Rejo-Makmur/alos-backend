@@ -13,6 +13,7 @@ from alos.authentication.models import (
     AccountStateProjection,
     ActiveWorkspaceProjection,
     ActiveWorkspaceRequest,
+    ContextSwitchRequest,
     AuthenticatedPrincipalProjection,
     AuthTokenResponse,
     LoginRequest,
@@ -21,6 +22,7 @@ from alos.authentication.models import (
     RegisterRequest,
     WorkspaceAccessProjection,
 )
+from alos.authentication.service import CANONICAL_ROLES
 from alos.authorization import AuthorizationEnforcer
 from alos.context import build_context_projection
 from alos.contracts import ContractValidationError
@@ -1021,6 +1023,21 @@ async def register(request: Request, payload: RegisterRequest) -> dict[str, Any]
     return result
 
 
+@router.get("/identity/assignable-roles", tags=["identity"])
+async def list_assignable_roles(
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+) -> list[str]:
+    await _require_identity_permission(
+        authorization, principal, "identity.accounts.manage", "identity.account.assign_roles"
+    )
+    if "IT_ADMIN" not in principal.roles:
+        raise PlatformError(
+            "AUTHORIZATION_DENIED", "an active IT_ADMIN membership is required", status_code=403
+        )
+    return sorted(CANONICAL_ROLES)
+
+
 @router.post("/identity/accounts", status_code=201, tags=["identity"])
 async def provision_account(
     request: Request,
@@ -1040,6 +1057,22 @@ async def provision_account(
             "AUTHORIZATION_DENIED",
             "identity.accounts.manage permission is required",
             status_code=403,
+        )
+    if "IT_ADMIN" not in principal.roles:
+        raise PlatformError(
+            "AUTHORIZATION_DENIED", "an active IT_ADMIN membership is required", status_code=403
+        )
+    if (
+        payload.tenant_id is not None
+        and payload.tenant_id != principal.tenant_id
+    ) or (
+        payload.organization_id is not None
+        and payload.organization_id != principal.organization_id
+    ):
+        raise PlatformError(
+            "REQUEST_VALIDATION_FAILED",
+            "provisioning target is outside the authenticated authority boundary",
+            status_code=422,
         )
     canonical_payload = payload.model_dump()
     canonical_payload.update(
@@ -1064,6 +1097,43 @@ async def provision_account(
         )
     )
     return result
+
+
+@router.get("/identity/accounts", tags=["identity"])
+async def list_identity_accounts(
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+) -> list[dict[str, Any]]:
+    await _require_identity_permission(
+        authorization, principal, "identity.accounts.manage", "identity.account.list"
+    )
+    if "IT_ADMIN" not in principal.roles:
+        raise PlatformError(
+            "AUTHORIZATION_DENIED", "an active IT_ADMIN membership is required", status_code=403
+        )
+    return await request.app.state.auth_service.list_accounts(
+        tenant_id=principal.tenant_id, organization_id=principal.organization_id
+    )
+
+
+@router.get("/identity/workspaces", response_model=list[WorkspaceAccessProjection], tags=["identity"])
+async def list_identity_workspaces(
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+) -> list[WorkspaceAccessProjection]:
+    await _require_identity_permission(
+        authorization, principal, "identity.accounts.manage", "identity.workspace.catalog"
+    )
+    if "IT_ADMIN" not in principal.roles:
+        raise PlatformError(
+            "AUTHORIZATION_DENIED", "an active IT_ADMIN membership is required", status_code=403
+        )
+    workspaces = await request.app.state.auth_service.list_organization_workspaces(
+        tenant_id=principal.tenant_id, organization_id=principal.organization_id
+    )
+    return [WorkspaceAccessProjection.model_validate(item) for item in workspaces]
 
 
 @router.get(
@@ -1334,6 +1404,34 @@ async def select_active_workspace(
         _bearer_token(request), payload.workspace_id
     )
     return ActiveWorkspaceProjection.model_validate(selected)
+
+
+@router.get("/me/context", tags=["identity"])
+async def get_my_context(request: Request) -> dict[str, Any]:
+    principal = await request.app.state.auth_service.whoami(_bearer_token(request))
+    active = principal.get("active_workspace")
+    available = principal.get("workspace_access", [])
+
+    def project(access: dict[str, Any] | None) -> dict[str, Any] | None:
+        if access is None:
+            return None
+        return {
+            "membership_id": access["workspace"]["workspace_id"],
+            "role_refs": access["role_refs"],
+            "workspace": access["workspace"],
+        }
+
+    return {"active": project(active), "available": [project(item) for item in available]}
+
+
+@router.post("/me/context/switch", tags=["identity"])
+async def switch_my_context(
+    request: Request, payload: ContextSwitchRequest
+) -> dict[str, Any]:
+    selected = await request.app.state.auth_service.select_active_workspace(
+        _bearer_token(request), payload.membership_id
+    )
+    return {"active": {"membership_id": payload.membership_id, **selected}}
 
 
 def _bearer_token(request: Request) -> str:

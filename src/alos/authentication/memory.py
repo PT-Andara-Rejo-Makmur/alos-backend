@@ -105,6 +105,30 @@ class InMemoryAuthRepository:
         del account
         return list(self._access.get(actor_id, []))
 
+    async def accounts(self, *, tenant_id: str, organization_id: str) -> list[AccountState]:
+        return sorted(
+            (
+                account
+                for account in self._accounts.values()
+                if account.tenant_id == tenant_id and account.organization_id == organization_id
+            ),
+            key=lambda account: account.email,
+        )
+
+    async def list_organization_workspaces(
+        self, *, tenant_id: str, organization_id: str
+    ) -> list[AccessState]:
+        return sorted(
+            (
+                workspace
+                for workspace in self._workspaces.values()
+                if self._workspace_tenants.get(workspace.workspace_id) == tenant_id
+                and workspace.organization_id == organization_id
+                and workspace.active
+            ),
+            key=lambda workspace: workspace.workspace_key.lower(),
+        )
+
     async def assign_membership(self, command: MembershipMutation) -> AccessState:
         self._bounded_account(command.actor_id, command.tenant_id, command.organization_id)
         workspace = self._bounded_workspace(command)

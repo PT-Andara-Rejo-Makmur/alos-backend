@@ -106,6 +106,12 @@ class AuthRepository(Protocol):
         self, actor_id: str, *, tenant_id: str, organization_id: str
     ) -> list[AccessState]: ...
 
+    async def accounts(self, *, tenant_id: str, organization_id: str) -> list[AccountState]: ...
+
+    async def list_organization_workspaces(
+        self, *, tenant_id: str, organization_id: str
+    ) -> list[AccessState]: ...
+
     async def assign_membership(self, command: MembershipMutation) -> AccessState: ...
 
     async def update_membership(self, command: MembershipMutation) -> AccessState: ...
@@ -315,6 +321,45 @@ class SqlAuthRepository:
             )
             rows = (await session.execute(statement)).all()
             return [_access_state(membership, workspace) for membership, workspace in rows]
+
+    async def accounts(self, *, tenant_id: str, organization_id: str) -> list[AccountState]:
+        async with self._session_factory() as session:
+            rows = await session.scalars(
+                select(AuthAccountRecord)
+                .where(
+                    AuthAccountRecord.tenant_id == tenant_id,
+                    AuthAccountRecord.organization_id == organization_id,
+                )
+                .order_by(AuthAccountRecord.email)
+            )
+            return [_account_state(record) for record in rows.all()]
+
+    async def list_organization_workspaces(
+        self, *, tenant_id: str, organization_id: str
+    ) -> list[AccessState]:
+        async with self._session_factory() as session:
+            rows = await session.scalars(
+                select(WorkspaceRecord)
+                .where(
+                    WorkspaceRecord.tenant_id == tenant_id,
+                    WorkspaceRecord.organization_id == organization_id,
+                    WorkspaceRecord.active.is_(True),
+                )
+                .order_by(WorkspaceRecord.workspace_key)
+            )
+            return [
+                AccessState(
+                    record.workspace_id,
+                    record.workspace_key,
+                    record.name,
+                    record.workspace_type,
+                    record.organization_id,
+                    record.organizational_unit_id,
+                    record.division_code,
+                    (), (), (), "OWN_ASSIGNED", record.active,
+                )
+                for record in rows.all()
+            ]
 
     async def assign_membership(self, command: MembershipMutation) -> AccessState:
         async with self._session_factory() as session, session.begin():
