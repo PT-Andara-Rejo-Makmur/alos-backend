@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from alos.persistence import models  # noqa: F401
 from alos.persistence.base import Base
+from alos.persistence.strategy_models import StrategyBase
 
 
 def _database_url(name: str) -> str:
@@ -57,6 +58,7 @@ def _upgrade(url: str, revision: str) -> None:
         ("alos_migration_incremental", "0006_auth_accounts"),
         ("alos_migration_release", "0009_persistent_release"),
         ("alos_migration_existing", "0010_unified_lifecycle"),
+        ("alos_migration_strategy", "0021_domain_indexes"),
     ),
 )
 async def test_postgres_upgrade_matches_runtime_metadata(
@@ -71,20 +73,70 @@ async def test_postgres_upgrade_matches_runtime_metadata(
     engine = create_async_engine(url)
     try:
         async with engine.connect() as connection:
-            actual = await connection.run_sync(
-                lambda sync: {
-                    (table.schema, table.name): set(
-                        column["name"]
-                        for column in inspect(sync).get_columns(table.name, schema=table.schema)
-                    )
-                    for table in Base.metadata.sorted_tables
-                }
+            (
+                actual,
+                strategy_tables,
+                strategy_indexes,
+                relationship_constraints,
+            ) = await connection.run_sync(
+                lambda sync: (
+                    {
+                        (table.schema, table.name): set(
+                            column["name"]
+                            for column in inspect(sync).get_columns(table.name, schema=table.schema)
+                        )
+                        for table in (
+                            *Base.metadata.sorted_tables,
+                            *StrategyBase.metadata.sorted_tables,
+                        )
+                    },
+                    set(inspect(sync).get_table_names(schema="strategy")),
+                    {
+                        index["name"]
+                        for table in inspect(sync).get_table_names(schema="strategy")
+                        for index in inspect(sync).get_indexes(table, schema="strategy")
+                    },
+                    {
+                        item["name"]
+                        for item in inspect(sync).get_unique_constraints(
+                            "target_relationships", schema="strategy"
+                        )
+                    },
+                )
             )
     finally:
         await engine.dispose()
 
     expected = {
         (table.schema, table.name): {column.name for column in table.columns}
-        for table in Base.metadata.sorted_tables
+        for table in (*Base.metadata.sorted_tables, *StrategyBase.metadata.sorted_tables)
     }
     assert actual == expected
+    assert strategy_tables == {
+        "plans",
+        "objectives",
+        "targets",
+        "target_observations",
+        "target_relationships",
+        "planning_assumptions",
+        "cascade_rules",
+        "cascade_runs",
+        "cascade_results",
+        "planning_constraints",
+        "constraint_results",
+        "kpi_definitions",
+        "initiatives",
+        "target_revisions",
+    }
+    assert strategy_indexes >= {
+        "ix_strategy_plans_scope_state",
+        "ix_strategy_objectives_plan",
+        "ix_strategy_targets_plan_state",
+        "ix_strategy_observations_target",
+        "ix_strategy_assumptions_scope",
+        "ix_strategy_relationship_parent",
+        "ix_strategy_relationship_child",
+        "ix_strategy_cascade_status",
+        "ix_strategy_revisions_target",
+    }
+    assert "uq_strategy_target_relationship_exact_versions" in relationship_constraints

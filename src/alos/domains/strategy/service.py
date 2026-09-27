@@ -381,9 +381,27 @@ class StrategyService:
         rule_inputs: dict[str, dict[str, Decimal | None]],
         constraints: tuple[Constraint, ...],
         correlation_id: str,
+        assumption_refs: tuple[str, ...] = (),
     ) -> CascadeRun:
         root = await self._target(root_target_id, root_target_version)
         authorize(principal, "read", tenant_id=root.tenant_id, organization_id=root.organization_id)
+        available_assumptions = await self.repository.list_assumptions(
+            root.tenant_id, root.organization_id
+        )
+        assumption_snapshot: dict[str, Any] = {}
+        for assumption_id in assumption_refs:
+            matching = [
+                item for item in available_assumptions if item.assumption_id == assumption_id
+            ]
+            selected = max(matching, key=lambda item: item.version) if matching else None
+            assumption_snapshot[assumption_id] = (
+                None
+                if selected is None
+                or selected.value is None
+                or selected.verification_state is not VerificationState.VERIFIED
+                else asdict(selected)
+            )
+        assumptions_incomplete = any(value is None for value in assumption_snapshot.values())
         traces = tuple(
             self.engine.calculate(rule, inputs=rule_inputs.get(rule.rule_id, {})) for rule in rules
         )
@@ -400,8 +418,10 @@ class StrategyService:
             )
         if any(trace.status is CascadeStatus.INVALID for trace in traces):
             status = CascadeStatus.INVALID
-        elif any(trace.status is CascadeStatus.INCOMPLETE for trace in traces) or any(
-            result.outcome is ConstraintOutcome.UNKNOWN for result in constraint_results
+        elif (
+            assumptions_incomplete
+            or any(trace.status is CascadeStatus.INCOMPLETE for trace in traces)
+            or any(result.outcome is ConstraintOutcome.UNKNOWN for result in constraint_results)
         ):
             status = CascadeStatus.INCOMPLETE
         elif any(result.outcome is ConstraintOutcome.FAIL for result in constraint_results):
@@ -421,7 +441,7 @@ class StrategyService:
             root_target_id=root.target_id,
             root_target_version=root.version,
             input_snapshot=input_snapshot,
-            assumption_snapshot={},
+            assumption_snapshot=assumption_snapshot,
             rule_snapshot=tuple(asdict(rule) for rule in rules),
             constraint_snapshot=tuple(asdict(item) for item in constraints),
             result_snapshot=result_snapshot,

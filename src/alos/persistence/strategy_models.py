@@ -6,17 +6,43 @@ import json
 from dataclasses import asdict
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, ClassVar, Protocol, Self, cast
 
 from sqlalchemy import JSON, DateTime, Integer, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+from alos.domains.strategy.models import (
+    CascadeRun,
+    Objective,
+    Observation,
+    Plan,
+    PlanningAssumption,
+    Target,
+    TargetRelationship,
+    TargetRevision,
+)
+
+type StrategyDomain = (
+    Plan
+    | Objective
+    | Target
+    | Observation
+    | TargetRelationship
+    | PlanningAssumption
+    | CascadeRun
+    | TargetRevision
+)
+
+
+class DataclassInstance(Protocol):
+    __dataclass_fields__: ClassVar[dict[str, Any]]
 
 
 class StrategyBase(DeclarativeBase):
     """Separate metadata keeps legacy SQLite fixtures independent of PostgreSQL schemas."""
 
 
-def _rehydrate(domain: type, payload: dict[str, Any]) -> object:
+def _rehydrate[DomainT: StrategyDomain](domain: type[DomainT], payload: dict[str, Any]) -> DomainT:
     from alos.domains.strategy.models import (
         CascadeStatus,
         LifecycleState,
@@ -62,7 +88,7 @@ def _rehydrate(domain: type, payload: dict[str, Any]) -> object:
         value = payload.get("value")
         if value is not None and not isinstance(value, bool):
             payload["value"] = Decimal(str(value))
-    return domain(**payload)
+    return cast(DomainT, domain(**payload))
 
 
 class StrategyPayloadRecord:
@@ -76,31 +102,32 @@ class StrategyPayloadRecord:
     payload: Mapped[dict[str, Any]] = mapped_column(JSON)
 
     @classmethod
-    def from_domain(cls, value: object):
-        data = asdict(value)
+    def from_domain(cls, value: StrategyDomain) -> Self:
+        data = asdict(cast(DataclassInstance, value))
         payload = json.loads(json.dumps(data, default=str))
         workspace = data.get("owner_workspace_id") or data.get("owner_workspace_ref") or "company"
         keys = cls.primary_values(data)
         created_at = (
             data.get("created_at") or data.get("observed_at") or datetime.now().astimezone()
         )
-        return cls(
-            **keys,
-            tenant_id=data.get("tenant_id", "unknown"),
-            organization_id=data.get("organization_id", "unknown"),
-            workspace_id=workspace,
-            created_by=data.get("created_by") or data.get("actor_id", "unknown"),
-            created_at=created_at,
-            updated_at=data.get("updated_at") or created_at,
-            correlation_id=data.get("correlation_id", "unknown"),
-            payload=payload,
-        )
+        record = cls()
+        for key, item in keys.items():
+            setattr(record, key, item)
+        record.tenant_id = str(data.get("tenant_id", "unknown"))
+        record.organization_id = str(data.get("organization_id", "unknown"))
+        record.workspace_id = str(workspace)
+        record.created_by = str(data.get("created_by") or data.get("actor_id", "unknown"))
+        record.created_at = cast(datetime, created_at)
+        record.updated_at = cast(datetime, data.get("updated_at") or created_at)
+        record.correlation_id = str(data.get("correlation_id", "unknown"))
+        record.payload = payload
+        return record
 
     @classmethod
     def primary_values(cls, data: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError
 
-    def to_domain(self, domain: type) -> object:
+    def to_domain[DomainT: StrategyDomain](self, domain: type[DomainT]) -> DomainT:
         return _rehydrate(domain, dict(self.payload))
 
 
@@ -112,7 +139,7 @@ class StrategyPlanRecord(StrategyPayloadRecord, StrategyBase):
     lifecycle_state: Mapped[str] = mapped_column(String(32), index=True)
 
     @classmethod
-    def primary_values(cls, data):
+    def primary_values(cls, data: dict[str, Any]) -> dict[str, Any]:
         return {
             "plan_id": data["plan_id"],
             "version": data["version"],
@@ -128,7 +155,7 @@ class StrategyObjectiveRecord(StrategyPayloadRecord, StrategyBase):
     plan_id: Mapped[str] = mapped_column(String(128), index=True)
 
     @classmethod
-    def primary_values(cls, data):
+    def primary_values(cls, data: dict[str, Any]) -> dict[str, Any]:
         return {
             "objective_id": data["objective_id"],
             "version": data["version"],
@@ -145,7 +172,7 @@ class StrategyTargetRecord(StrategyPayloadRecord, StrategyBase):
     lifecycle_state: Mapped[str] = mapped_column(String(32), index=True)
 
     @classmethod
-    def primary_values(cls, data):
+    def primary_values(cls, data: dict[str, Any]) -> dict[str, Any]:
         return {
             "target_id": data["target_id"],
             "version": data["version"],
@@ -162,7 +189,7 @@ class StrategyObservationRecord(StrategyPayloadRecord, StrategyBase):
     target_version: Mapped[int] = mapped_column(Integer)
 
     @classmethod
-    def primary_values(cls, data):
+    def primary_values(cls, data: dict[str, Any]) -> dict[str, Any]:
         return {
             "observation_id": data["observation_id"],
             "target_id": data["target_id"],
@@ -193,7 +220,7 @@ class StrategyRelationshipRecord(StrategyPayloadRecord, StrategyBase):
     child_target_version: Mapped[int] = mapped_column(Integer)
 
     @classmethod
-    def primary_values(cls, data):
+    def primary_values(cls, data: dict[str, Any]) -> dict[str, Any]:
         return {
             "relationship_id": data["relationship_id"],
             "relationship_type": data["relationship_type"],
@@ -211,7 +238,7 @@ class StrategyAssumptionRecord(StrategyPayloadRecord, StrategyBase):
     version: Mapped[int] = mapped_column(Integer, primary_key=True)
 
     @classmethod
-    def primary_values(cls, data):
+    def primary_values(cls, data: dict[str, Any]) -> dict[str, Any]:
         return {"assumption_id": data["assumption_id"], "version": data["version"]}
 
 
@@ -222,7 +249,7 @@ class StrategyCascadeRunRecord(StrategyPayloadRecord, StrategyBase):
     status: Mapped[str] = mapped_column(String(32), index=True)
 
     @classmethod
-    def primary_values(cls, data):
+    def primary_values(cls, data: dict[str, Any]) -> dict[str, Any]:
         return {"cascade_run_id": data["cascade_run_id"], "status": data["status"]}
 
 
@@ -233,5 +260,5 @@ class StrategyRevisionRecord(StrategyPayloadRecord, StrategyBase):
     target_id: Mapped[str] = mapped_column(String(128), index=True)
 
     @classmethod
-    def primary_values(cls, data):
+    def primary_values(cls, data: dict[str, Any]) -> dict[str, Any]:
         return {"revision_id": data["revision_id"], "target_id": data["target_id"]}

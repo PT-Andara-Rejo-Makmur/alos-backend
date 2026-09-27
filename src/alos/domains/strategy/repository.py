@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Protocol, TypeVar
 
-from sqlalchemy import select
+from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from alos.domains.strategy.models import (
@@ -20,13 +20,18 @@ from alos.domains.strategy.models import (
 from alos.persistence.strategy_models import (
     StrategyAssumptionRecord,
     StrategyCascadeRunRecord,
+    StrategyDomain,
     StrategyObjectiveRecord,
     StrategyObservationRecord,
+    StrategyPayloadRecord,
     StrategyPlanRecord,
     StrategyRelationshipRecord,
     StrategyRevisionRecord,
     StrategyTargetRecord,
 )
+
+RecordT = TypeVar("RecordT", bound=StrategyPayloadRecord)
+DomainT = TypeVar("DomainT", bound=StrategyDomain)
 
 
 class StrategyRepository(Protocol):
@@ -164,7 +169,7 @@ class SqlStrategyRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._sessions = session_factory
 
-    async def _upsert(self, record: object) -> None:
+    async def _upsert(self, record: StrategyPayloadRecord) -> None:
         async with self._sessions() as session:
             await session.merge(record)
             await session.commit()
@@ -267,12 +272,14 @@ class SqlStrategyRepository:
             TargetRevision,
         )
 
-    async def _one(self, query: object, domain: type) -> object | None:
+    async def _one(self, query: Select[tuple[RecordT]], domain: type[DomainT]) -> DomainT | None:
         async with self._sessions() as session:
             record = (await session.scalars(query)).first()
             return None if record is None else record.to_domain(domain)
 
-    async def _many(self, query: object, domain: type) -> tuple:
+    async def _many(
+        self, query: Select[tuple[RecordT]], domain: type[DomainT]
+    ) -> tuple[DomainT, ...]:
         async with self._sessions() as session:
             records = (await session.scalars(query)).all()
             return tuple(record.to_domain(domain) for record in records)

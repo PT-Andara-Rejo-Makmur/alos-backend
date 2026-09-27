@@ -14,8 +14,21 @@ class CascadeEngine:
         *,
         inputs: dict[str, Decimal | None],
     ) -> CalculationTrace:
-        handler = getattr(self, f"_{rule.rule_type.value.lower()}")
-        return handler(rule, inputs)
+        if rule.rule_type.value == "DIRECT":
+            return self._direct(rule, inputs)
+        if rule.rule_type.value == "SPLIT_FIXED":
+            return self._split_fixed(rule, inputs)
+        if rule.rule_type.value == "SPLIT_PERCENT":
+            return self._split_percent(rule, inputs)
+        if rule.rule_type.value == "SUM_ROLLUP":
+            return self._sum_rollup(rule, inputs)
+        if rule.rule_type.value == "RATIO_MULTIPLY":
+            return self._ratio_multiply(rule, inputs)
+        if rule.rule_type.value == "RATIO_DIVIDE_CEIL":
+            return self._ratio_divide_ceil(rule, inputs)
+        if rule.rule_type.value == "LIMIT_CHECK":
+            return self._limit_check(rule, inputs)
+        raise ValueError(f"Unsupported cascade rule: {rule.rule_type.value}")
 
     @staticmethod
     def _trace(

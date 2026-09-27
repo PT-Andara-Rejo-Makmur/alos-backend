@@ -4,20 +4,78 @@ from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Any
+from typing import Any, ClassVar, Protocol, cast, overload
 
 from alos.domains.strategy.models import (
     CascadeRun,
     Objective,
     Observation,
+    Plan,
     PlanningAssumption,
     Target,
     TargetRelationship,
     TargetRevision,
 )
 
+type JsonScalar = str | int | float | bool | Decimal | None
+type JsonValue = JsonScalar | dict[str, "JsonValue"] | list["JsonValue"]
+type ProjectedDomain = (
+    Plan
+    | Objective
+    | Observation
+    | PlanningAssumption
+    | Target
+    | TargetRelationship
+    | TargetRevision
+    | CascadeRun
+)
 
-def project(value: Any) -> Any:
+
+class DataclassInstance(Protocol):
+    __dataclass_fields__: ClassVar[dict[str, Any]]
+
+
+@overload
+def project(value: ProjectedDomain) -> dict[str, JsonValue]: ...
+
+
+@overload
+def project(value: dict[str, object]) -> dict[str, JsonValue]: ...
+
+
+@overload
+def project(value: tuple[object, ...] | list[object]) -> list[JsonValue]: ...
+
+
+@overload
+def project(value: object) -> JsonValue: ...
+
+
+def project(value: object) -> JsonValue:
+    if isinstance(value, Plan):
+        return {
+            "plan_id": value.plan_id,
+            "version": value.version,
+            "plan_type": value.plan_type.value,
+            "name": value.name,
+            "tenant_id": value.tenant_id,
+            "organization_id": value.organization_id,
+            "owner_workspace_id": value.owner_workspace_id,
+            "owner_role_ref": value.owner_role_ref,
+            "period": project(value.period),
+            "scope": project(value.scope),
+            "lifecycle_state": value.lifecycle_state.value,
+            "created_by": value.created_by,
+            "correlation_id": value.correlation_id,
+            "created_at": project(value.created_at),
+            "updated_at": project(value.updated_at),
+            "strategic_plan_id": value.strategic_plan_id,
+            "strategic_plan_version": value.strategic_plan_version,
+            "description": value.description,
+            "materiality": value.materiality,
+            "source_refs": list(value.source_refs),
+            "evidence_refs": list(value.evidence_refs),
+        }
     if isinstance(value, Objective):
         return {
             "objective_id": value.objective_id,
@@ -88,7 +146,7 @@ def project(value: Any) -> Any:
             "status": value.status.value,
         }
     if isinstance(value, Observation):
-        result = {
+        result: dict[str, JsonValue] = {
             "observation_id": value.observation_id,
             "tenant_id": value.tenant_id,
             "organization_id": value.organization_id,
@@ -124,7 +182,7 @@ def project(value: Any) -> Any:
             "evidence_refs": list(value.evidence_refs),
         }
     if isinstance(value, Target):
-        data = {
+        data: dict[str, JsonValue] = {
             "target_id": value.target_id,
             "version": value.version,
             "tenant_id": value.tenant_id,
@@ -158,15 +216,25 @@ def project(value: Any) -> Any:
             data.pop("cascade_run_id")
         return data
     if is_dataclass(value):
-        return project(asdict(value))
+        fields = cast(dict[str, object], asdict(cast(DataclassInstance, value)))
+        return project(fields)
     if isinstance(value, dict):
         return {key: project(item) for key, item in value.items()}
     if isinstance(value, (tuple, list)):
         return [project(item) for item in value]
     if isinstance(value, Enum):
-        return value.value
+        return cast(JsonScalar, value.value)
     if isinstance(value, Decimal):
         return str(value)
     if isinstance(value, datetime):
         return value.isoformat().replace("+00:00", "Z")
-    return value
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise TypeError(f"Unsupported strategy projection type: {type(value).__name__}")
+
+
+def project_domains(
+    values: tuple[ProjectedDomain, ...] | list[ProjectedDomain],
+) -> list[dict[str, JsonValue]]:
+    """Project a homogeneous domain collection without losing its object shape."""
+    return [project(value) for value in values]

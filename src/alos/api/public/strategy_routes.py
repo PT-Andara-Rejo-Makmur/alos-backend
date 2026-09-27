@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Request
 
@@ -27,7 +27,7 @@ from alos.domains.strategy.models import (
     TargetRelationship,
     VerificationState,
 )
-from alos.domains.strategy.projections import project
+from alos.domains.strategy.projections import project, project_domains
 from alos.domains.strategy.service import StrategyService
 from alos.observability.correlation import current_correlation_id
 from alos.security.errors import PlatformError
@@ -36,7 +36,7 @@ router = APIRouter(prefix="/api/v1/strategy", tags=["strategy"])
 
 
 def _service(request: Request) -> StrategyService:
-    return request.app.state.strategy_service
+    return cast(StrategyService, request.app.state.strategy_service)
 
 
 def _period(value: dict[str, Any]) -> Period:
@@ -136,7 +136,7 @@ def _plan_projection(plan: Plan, principal: CurrentPrincipalDependency) -> dict[
         and "strategy.activate" in principal.permissions
     ):
         actions.append("ACTIVATE")
-    data["authorized_actions"] = actions
+    data["authorized_actions"] = project(actions)
     return data
 
 
@@ -213,7 +213,7 @@ async def list_objectives(
     plan_id: str, request: Request, principal: CurrentPrincipalDependency
 ) -> list[dict[str, Any]]:
     await _service(request).get_plan(principal, plan_id)
-    return project(await _service(request).repository.list_objectives(plan_id))
+    return project_domains(await _service(request).repository.list_objectives(plan_id))
 
 
 @router.post("/objectives", status_code=201)
@@ -244,7 +244,7 @@ async def create_objective(
 async def list_targets(
     request: Request, principal: CurrentPrincipalDependency
 ) -> list[dict[str, Any]]:
-    return project(await _service(request).list_targets(principal))
+    return project_domains(await _service(request).list_targets(principal))
 
 
 @router.post("/targets", status_code=201)
@@ -265,17 +265,17 @@ async def get_target(
     revisions = await _service(request).repository.list_revisions(target.target_id)
     return {
         "target": project(target),
-        "observations": project(
+        "observations": project_domains(
             await _service(request).repository.list_observations(target.target_id, target.version)
         ),
-        "relationships": project(
+        "relationships": project_domains(
             tuple(
                 item
                 for item in relationships
                 if target.target_id in {item.parent_target_id, item.child_target_id}
             )
         ),
-        "revisions": project(revisions),
+        "revisions": project_domains(revisions),
     }
 
 
@@ -284,7 +284,7 @@ async def list_observations(
     target_id: str, request: Request, principal: CurrentPrincipalDependency
 ) -> list[dict[str, Any]]:
     target = await _service(request).get_target(principal, target_id)
-    return project(
+    return project_domains(
         await _service(request).repository.list_observations(target.target_id, target.version)
     )
 
@@ -342,7 +342,7 @@ async def list_relationships(
     values = await _service(request).repository.list_relationships(
         target.tenant_id, target.organization_id
     )
-    return project(
+    return project_domains(
         tuple(item for item in values if target_id in {item.parent_target_id, item.child_target_id})
     )
 
@@ -379,7 +379,7 @@ async def list_assumptions(
     values = await _service(request).repository.list_assumptions(
         principal.tenant_id, principal.organization_id
     )
-    return project(values)
+    return project_domains(values)
 
 
 @router.post("/assumptions", status_code=201)
@@ -449,22 +449,26 @@ async def preview_cascade(
         rule_inputs=inputs,
         constraints=constraints,
         correlation_id=current_correlation_id(),
+        assumption_refs=tuple(str(item) for item in payload.get("assumption_refs", ())),
     )
     projected = project(run)
-    results = list(projected["result_snapshot"])
+    results = cast(list[dict[str, Any]], projected["result_snapshot"])
     return {
         "cascade_run_id": run.cascade_run_id,
         "status": run.status.value,
         "root_target_ref": {"id": run.root_target_id, "version": run.root_target_version},
         "derived_targets": [],
         "calculation_trace": [item for item in results if "rule_id" in item],
-        "assumptions_used": list(run.assumption_snapshot.values()),
+        "assumptions_used": [
+            item for item in run.assumption_snapshot.values() if isinstance(item, dict)
+        ],
         "constraint_results": [
             {
                 "constraint_id": item["constraint_id"],
                 "result": item["outcome"],
                 "critical": item["critical"],
                 "message": item["message"],
+                "evaluated_at": project(run.created_at),
             }
             for item in results
             if "constraint_id" in item
@@ -473,6 +477,11 @@ async def preview_cascade(
             item["message"]
             for item in results
             if item.get("outcome") in {"FAIL", "UNKNOWN"} and item.get("critical")
+        ]
+        + [
+            f"Planning assumption {assumption_id} is missing or unverified."
+            for assumption_id, item in run.assumption_snapshot.items()
+            if item is None
         ],
         "input_hash": run.input_hash,
         "result_hash": run.result_hash,
@@ -532,7 +541,7 @@ async def list_revisions(
     target_id: str, request: Request, principal: CurrentPrincipalDependency
 ) -> list[dict[str, Any]]:
     await _service(request).get_target(principal, target_id)
-    return project(await _service(request).repository.list_revisions(target_id))
+    return project_domains(await _service(request).repository.list_revisions(target_id))
 
 
 @router.post("/targets/{target_id}/revisions", status_code=201)
