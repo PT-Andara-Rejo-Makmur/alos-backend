@@ -13,6 +13,7 @@ from alos.api.internal.routes import router as internal_router
 from alos.api.models import HealthResponse, ReadinessResponse
 from alos.api.public.release_routes import router as release_router
 from alos.api.public.routes import router as public_router
+from alos.api.public.strategy_routes import router as strategy_router
 from alos.audit import InMemoryAuditRepository, SqlAuditRepository, SqlToolAuditSink
 from alos.authentication.memory import InMemoryAuthRepository
 from alos.authentication.repository import SqlAuthRepository
@@ -20,6 +21,7 @@ from alos.authentication.service import AuthService
 from alos.capabilities.registry import CapabilityRegistry
 from alos.config import Settings, get_settings
 from alos.contracts import CanonicalContractCatalog
+from alos.domains.strategy import InMemoryStrategyRepository, SqlStrategyRepository, StrategyService
 from alos.evidence import EvidenceRegistry, SqlEvidenceRegistry
 from alos.integrations import ExternalRetrievalPolicy, ExternalRetrievalService
 from alos.observability.correlation import CorrelationIdMiddleware
@@ -178,11 +180,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if resolved.APP_ENV == "test"
         else SqlToolIdempotencyStore(app.state.database.session_factory)
     )
+    strategy_audit = (
+        InMemoryAuditRepository()
+        if resolved.APP_ENV == "test"
+        else SqlAuditRepository(app.state.database.session_factory)
+    )
+    strategy_repository = (
+        InMemoryStrategyRepository()
+        if resolved.APP_ENV == "test"
+        else SqlStrategyRepository(app.state.database.session_factory)
+    )
+    app.state.strategy_audit = strategy_audit
+    app.state.strategy_repository = strategy_repository
+    app.state.strategy_service = StrategyService(strategy_repository, strategy_audit)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=resolved.cors_allowed_origins,
         allow_credentials=False,
-        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
         allow_headers=["Accept", "Authorization", "Content-Type", "X-Correlation-ID"],
         expose_headers=["X-Correlation-ID"],
     )
@@ -203,6 +218,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(public_router)
     app.include_router(release_router)
+    app.include_router(strategy_router)
     app.include_router(internal_router)
     return app
 
