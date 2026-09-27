@@ -2,13 +2,13 @@
 
 ## Tujuan dan batas sistem
 
-Stage 2 memindahkan planning state dari presentation model Stage 1 menjadi domain Backend yang contract-first, versioned, auditable, deterministic, dan persistent. Jalur authority tetap `ALOS Web → ALOS Backend Strategy Domain`; tidak ada panggilan Web ke GENESIS, provider AI, bank, social platform, GitHub, MCP, atau connector eksternal. GENESIS dan infrastructure tidak diubah.
+Stage 2 memindahkan planning state dari presentation model Stage 1 menjadi domain Backend yang contract-first, versioned, auditable, deterministic, dan persistent. Jalur authority tetap `ALOS Web → ALOS Backend Strategy Domain`; tidak ada panggilan Web ke GENESIS, provider AI, bank, social platform, GitHub, MCP, atau connector eksternal. GENESIS tidak diubah; infrastructure hanya menambahkan smoke proof terhadap API Strategy dan PostgreSQL existing.
 
 Audit awal menemukan canonical `Principal`, workspace membership, `AuthorizationPolicy`, permission registry, append-only `AuditSink`, Evidence Registry, structured `PlatformError`, serta pola router/service/repository yang dapat digunakan kembali. Migration existing berakhir pada `0021_domain_indexes`; Finance, Sales, dan Property menggunakan persistence Backend tanpa memberi Web authority bisnis.
 
 ## Contract dan persistence
 
-Canonical schema berada di `alos-contracts/schemas/strategy`, menggunakan Draft 2020-12, `additionalProperties: false`, dan identifier common. Public API versi 1.10.0 menjadi sumber endpoint. TypeScript generated projection menjadi seam Web; presentation type Stage 1 bukan canonical contract.
+Canonical schema berada di `alos-contracts/schemas/strategy`, menggunakan Draft 2020-12, `additionalProperties: false`, dan identifier common. Public API versi 1.11.0 menjadi sumber endpoint. Command schema mutation terpisah dari response projection sehingga client tidak dapat memasok tenant, organization, actor, lifecycle, atau timestamp milik Backend. TypeScript generated projection menjadi seam Web; presentation type Stage 1 bukan canonical contract.
 
 Migration append-only `0022_strategy_planning` membuat schema PostgreSQL `strategy` dan tabel:
 
@@ -63,7 +63,7 @@ Evidence memakai reference ke Evidence Registry existing, bukan objek evidence d
 
 ## Cascade run
 
-Preview menyimpan immutable input, assumption, rule, constraint, result snapshot beserta SHA-256 input/result hash dan exact root target version. Preview tidak memutasi target. Accept hanya menerima run `VALID`, memverifikasi scope, authority, plan version, serta kecocokan penuh output calculation, lalu menyimpan derived target sebagai `DRAFT`. Nilai hasil menjadi observation `TARGET` bertipe `SOURCE_LINKED`, terverifikasi, dan tertaut ke cascade run. Accept tidak approve atau activate. Activation kembali memvalidasi accepted run, calculation/constraint snapshot, graph, evidence, serta setiap observation TARGET; nilai null atau belum `VERIFIED` memblokir activation.
+Preview menyimpan immutable input, assumption, rule, constraint, result snapshot beserta SHA-256 input/result hash dan exact root target version. Referensi assumption di-resolve dalam tenant/organization yang sama dan hanya assumption `VERIFIED` bernilai non-null yang masuk snapshot; missing atau unverified assumption menghasilkan `INCOMPLETE`. Preview tidak memutasi target. Accept hanya menerima run `VALID`, memverifikasi scope, authority, plan version, serta kecocokan penuh output calculation, lalu menyimpan derived target sebagai `DRAFT`. Nilai hasil menjadi observation `TARGET` bertipe `SOURCE_LINKED`, terverifikasi, dan tertaut ke cascade run. Accept tidak approve atau activate. Activation kembali memvalidasi accepted run, calculation/constraint snapshot, graph, evidence, serta setiap observation TARGET; nilai null atau belum `VERIFIED` memblokir activation.
 
 ## API
 
@@ -82,3 +82,38 @@ Vertical slice deterministik: Executive membuat Operating Plan DRAFT, objective 
 ## Definition of Done dan Stage 3
 
 Stage 2 selesai ketika contract canonical, migration, repository/service authoritative, deterministic cascade, constraints fail-closed, version history, RBAC, audit, connected Web views, vertical slice, dan seluruh quality gates hijau. Stage 3 dapat menambahkan source-linked ingestion/connectors, evidence verification workflow yang lebih luas, scheduler/cadence automation, dan AI advisory melalui Backend→GENESIS boundary. Stage 2 sengaja tidak mengimplementasikan connector, runtime AI calculation, automatic approval/activation, atau frontend business authority.
+
+## Stage 2 Closure Verification
+
+Closure diverifikasi pada 27 September 2026 terhadap branch `development`:
+
+- Contracts 1.11.0: 107 schema dan OpenAPI valid, generated artifacts konsisten, 98 test lulus;
+  workflow `Contract quality` run `36314047818` berstatus `SUCCESS`.
+- Backend: Ruff dan strict Mypy lulus untuk 152 source files. PostgreSQL migration test menjalankan
+  fresh upgrade dan incremental upgrade tepat dari `0021_domain_indexes`, memeriksa 14 tabel
+  `strategy`, index lookup, exact-version relationship constraint, dan kesesuaian runtime metadata.
+- Full Backend Pytest lulus 286 test; import/startup `ALOS Backend` lulus. Workflow
+  `Kualitas backend` run `36314215194` berstatus `SUCCESS`, termasuk Ruff, Mypy, PostgreSQL
+  migration, full Pytest, dan startup tanpa step yang dilewati.
+- Persistent test `tests/integration/test_strategy_planning_e2e.py` menggunakan FastAPI, SQL auth,
+  `SqlStrategyRepository`, `SqlAuditRepository`, dan PostgreSQL migrated—bukan repository in-memory.
+  Test membuktikan create RKAP/objective/target/verified observation/assumption, Decimal cascade
+  preview, PASS constraint, non-mutating preview, accept-to-DRAFT, submit/approve/activate,
+  fresh-session read-back, assigned division read, retained historical revision, serta audit events.
+- Negative persistent coverage membuktikan 403 lintas tenant, organization, workspace, dan missing
+  permission; self/duplicate/cyclic relationship rejection; unauthorized accept; missing assumption
+  `INCOMPLETE`; zero ratio `INVALID`; unverified observation dan missing evidence rejection; critical
+  `FAIL`/`UNKNOWN` activation blockers; serta APPROVED plan immutability.
+- Infra smoke membuat deterministic Strategy flow pada stack disposable, membaca persistence melalui
+  sesi baru, menguji unrelated-workspace denial, dan memeriksa row ACTIVE/ACCEPTED langsung di
+  PostgreSQL. Workflow `Integrasi Backend dan GENESIS` run `36314072508` dan `Validasi Infrastruktur`
+  run `36314072510` berstatus `SUCCESS`; GENESIS tidak digunakan dalam perhitungan Strategy.
+- Web tidak memerlukan perubahan. Lint, typecheck, 732 test, dan production build lulus lokal;
+  workflow `Kualitas ALOS Web` run `36311447927` berstatus `SUCCESS`.
+
+Technical debt yang tidak memblokir Stage 2: payload-table `cascade_rules`, `cascade_results`,
+`planning_constraints`, dan `constraint_results` tersedia untuk kebutuhan query materialized masa
+depan, sedangkan authority saat ini menggunakan immutable snapshot pada `cascade_runs`. Upgrade
+Action GitHub dari runtime Node 20 ke runtime action yang lebih baru juga merupakan maintenance
+infra terpisah. Dependency Stage 3 tetap source-linked ingestion dan workflow evidence/connector;
+tidak ada dependency Stage 3 yang dimasukkan ke Stage 2.
