@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Protocol, TypeVar
+from typing import Protocol
 
-from sqlalchemy import Select, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from alos.domains.strategy.models import (
@@ -20,7 +20,6 @@ from alos.domains.strategy.models import (
 from alos.persistence.strategy_models import (
     StrategyAssumptionRecord,
     StrategyCascadeRunRecord,
-    StrategyDomain,
     StrategyObjectiveRecord,
     StrategyObservationRecord,
     StrategyPayloadRecord,
@@ -29,9 +28,6 @@ from alos.persistence.strategy_models import (
     StrategyRevisionRecord,
     StrategyTargetRecord,
 )
-
-RecordT = TypeVar("RecordT", bound=StrategyPayloadRecord)
-DomainT = TypeVar("DomainT", bound=StrategyDomain)
 
 
 class StrategyRepository(Protocol):
@@ -182,23 +178,27 @@ class SqlStrategyRepository:
         if version is not None:
             query = query.where(StrategyPlanRecord.version == version)
         query = query.order_by(StrategyPlanRecord.version.desc()).limit(1)
-        return await self._one(query, Plan)
+        async with self._sessions() as session:
+            record = (await session.scalars(query)).first()
+            return None if record is None else record.to_domain(Plan)
 
     async def list_plans(self, tenant_id: str, organization_id: str) -> tuple[Plan, ...]:
         query = select(StrategyPlanRecord).where(
             StrategyPlanRecord.tenant_id == tenant_id,
             StrategyPlanRecord.organization_id == organization_id,
         )
-        return await self._many(query, Plan)
+        async with self._sessions() as session:
+            records = (await session.scalars(query)).all()
+            return tuple(record.to_domain(Plan) for record in records)
 
     async def save_objective(self, objective: Objective) -> None:
         await self._upsert(StrategyObjectiveRecord.from_domain(objective))
 
     async def list_objectives(self, plan_id: str) -> tuple[Objective, ...]:
-        return await self._many(
-            select(StrategyObjectiveRecord).where(StrategyObjectiveRecord.plan_id == plan_id),
-            Objective,
-        )
+        query = select(StrategyObjectiveRecord).where(StrategyObjectiveRecord.plan_id == plan_id)
+        async with self._sessions() as session:
+            records = (await session.scalars(query)).all()
+            return tuple(record.to_domain(Objective) for record in records)
 
     async def save_target(self, target: Target) -> None:
         await self._upsert(StrategyTargetRecord.from_domain(target))
@@ -213,20 +213,27 @@ class SqlStrategyRepository:
             StrategyObservationRecord.target_id == target_id,
             StrategyObservationRecord.target_version == target_version,
         )
-        return await self._many(query, Observation)
+        async with self._sessions() as session:
+            records = (await session.scalars(query)).all()
+            return tuple(record.to_domain(Observation) for record in records)
 
     async def get_target(self, target_id: str, version: int | None = None) -> Target | None:
         query = select(StrategyTargetRecord).where(StrategyTargetRecord.target_id == target_id)
         if version is not None:
             query = query.where(StrategyTargetRecord.version == version)
-        return await self._one(query.order_by(StrategyTargetRecord.version.desc()).limit(1), Target)
+        query = query.order_by(StrategyTargetRecord.version.desc()).limit(1)
+        async with self._sessions() as session:
+            record = (await session.scalars(query)).first()
+            return None if record is None else record.to_domain(Target)
 
     async def list_targets(self, tenant_id: str, organization_id: str) -> tuple[Target, ...]:
         query = select(StrategyTargetRecord).where(
             StrategyTargetRecord.tenant_id == tenant_id,
             StrategyTargetRecord.organization_id == organization_id,
         )
-        return await self._many(query, Target)
+        async with self._sessions() as session:
+            records = (await session.scalars(query)).all()
+            return tuple(record.to_domain(Target) for record in records)
 
     async def save_relationship(self, relationship: TargetRelationship) -> None:
         await self._upsert(StrategyRelationshipRecord.from_domain(relationship))
@@ -238,7 +245,9 @@ class SqlStrategyRepository:
             StrategyRelationshipRecord.tenant_id == tenant_id,
             StrategyRelationshipRecord.organization_id == organization_id,
         )
-        return await self._many(query, TargetRelationship)
+        async with self._sessions() as session:
+            records = (await session.scalars(query)).all()
+            return tuple(record.to_domain(TargetRelationship) for record in records)
 
     async def save_assumption(self, assumption: PlanningAssumption) -> None:
         await self._upsert(StrategyAssumptionRecord.from_domain(assumption))
@@ -250,36 +259,26 @@ class SqlStrategyRepository:
             StrategyAssumptionRecord.tenant_id == tenant_id,
             StrategyAssumptionRecord.organization_id == organization_id,
         )
-        return await self._many(query, PlanningAssumption)
+        async with self._sessions() as session:
+            records = (await session.scalars(query)).all()
+            return tuple(record.to_domain(PlanningAssumption) for record in records)
 
     async def save_cascade_run(self, run: CascadeRun) -> None:
         await self._upsert(StrategyCascadeRunRecord.from_domain(run))
 
     async def get_cascade_run(self, run_id: str) -> CascadeRun | None:
-        return await self._one(
-            select(StrategyCascadeRunRecord).where(
-                StrategyCascadeRunRecord.cascade_run_id == run_id
-            ),
-            CascadeRun,
+        query = select(StrategyCascadeRunRecord).where(
+            StrategyCascadeRunRecord.cascade_run_id == run_id
         )
+        async with self._sessions() as session:
+            record = (await session.scalars(query)).first()
+            return None if record is None else record.to_domain(CascadeRun)
 
     async def save_revision(self, revision: TargetRevision) -> None:
         await self._upsert(StrategyRevisionRecord.from_domain(revision))
 
     async def list_revisions(self, target_id: str) -> tuple[TargetRevision, ...]:
-        return await self._many(
-            select(StrategyRevisionRecord).where(StrategyRevisionRecord.target_id == target_id),
-            TargetRevision,
-        )
-
-    async def _one(self, query: Select[tuple[RecordT]], domain: type[DomainT]) -> DomainT | None:
-        async with self._sessions() as session:
-            record = (await session.scalars(query)).first()
-            return None if record is None else record.to_domain(domain)
-
-    async def _many(
-        self, query: Select[tuple[RecordT]], domain: type[DomainT]
-    ) -> tuple[DomainT, ...]:
+        query = select(StrategyRevisionRecord).where(StrategyRevisionRecord.target_id == target_id)
         async with self._sessions() as session:
             records = (await session.scalars(query)).all()
-            return tuple(record.to_domain(domain) for record in records)
+            return tuple(record.to_domain(TargetRevision) for record in records)
