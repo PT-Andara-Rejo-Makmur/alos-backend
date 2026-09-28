@@ -43,15 +43,77 @@ CANONICAL_ROLES = frozenset(
 )
 
 DEFAULT_DOMAIN_PERMISSIONS: dict[str, tuple[str, ...]] = {
-    "hr": ("hr.read", "hr.write", "hr.delete", "work.read", "work.write", "navigation.read"),
-    "finance": ("finance.read", "finance.write", "finance.delete", "work.read", "work.write", "navigation.read"),
-    "sales": ("sales.read", "sales.write", "sales.delete", "work.read", "work.write", "navigation.read"),
-    "marketing": ("marketing.read", "marketing.write", "marketing.delete", "work.read", "work.write", "navigation.read"),
-    "legal": ("legal.read", "legal.write", "legal.delete", "work.read", "work.write", "navigation.read"),
-    "property": ("property.read", "property.write", "property.delete", "work.read", "work.write", "navigation.read"),
-    "it": ("it.read", "it.write", "it.delete", "work.read", "work.write", "navigation.read", "navigation.manage"),
-    "genesis": ("genesis.read", "genesis.write", "genesis.delete", "work.read", "work.write", "navigation.read"),
-    "shared": ("work.read", "work.write", "work.delete", "navigation.read"),
+    "hr": (
+        "hr.read",
+        "hr.write",
+        "hr.delete",
+        "work.read",
+        "work.write",
+        "navigation.read",
+    ),
+    "finance": (
+        "finance.read",
+        "finance.write",
+        "finance.delete",
+        "work.read",
+        "work.write",
+        "navigation.read",
+    ),
+    "sales": (
+        "sales.read",
+        "sales.write",
+        "sales.delete",
+        "work.read",
+        "work.write",
+        "navigation.read",
+    ),
+    "marketing": (
+        "marketing.read",
+        "marketing.write",
+        "marketing.delete",
+        "work.read",
+        "work.write",
+        "navigation.read",
+    ),
+    "legal": (
+        "legal.read",
+        "legal.write",
+        "legal.delete",
+        "work.read",
+        "work.write",
+        "navigation.read",
+    ),
+    "property": (
+        "property.read",
+        "property.write",
+        "property.delete",
+        "work.read",
+        "work.write",
+        "navigation.read",
+    ),
+    "it": (
+        "it.read",
+        "it.write",
+        "it.delete",
+        "work.read",
+        "work.write",
+        "navigation.read",
+        "navigation.manage",
+    ),
+    "genesis": (
+        "genesis.read",
+        "genesis.write",
+        "genesis.delete",
+        "work.read",
+        "work.write",
+        "navigation.read",
+    ),
+    "shared": (
+        "work.read",
+        "work.write",
+        "work.delete",
+        "navigation.read",
+    ),
 }
 
 ROLE_DEFAULT_PERMISSIONS: dict[str, tuple[str, ...]] = {
@@ -77,7 +139,12 @@ def _resolve_default_permissions(
     resolved = set(provided_permissions or [])
     clean_key = (workspace_key or "").strip().lower()
     for domain, perms in DEFAULT_DOMAIN_PERMISSIONS.items():
-        if clean_key == domain or clean_key.startswith(f"{domain}_") or clean_key.endswith(f"_{domain}"):
+        matches_domain = (
+            clean_key == domain
+            or clean_key.startswith(f"{domain}_")
+            or clean_key.endswith(f"_{domain}")
+        )
+        if matches_domain:
             resolved.update(perms)
     for role in role_refs:
         if role in ROLE_DEFAULT_PERMISSIONS:
