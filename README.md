@@ -89,6 +89,12 @@ Endpoint minimum:
 - `GET /openapi.json` untuk dokumen OpenAPI otomatis
 - `/internal/v1/...` sebagai namespace internal yang memerlukan token
 
+CRUD workspace-scoped untuk resource migrasi operasional tersedia di
+[`docs/DOMAIN_DATA_API.md`](docs/DOMAIN_DATA_API.md). Endpoint menggunakan permission per domain
+(`finance.read`, `finance.write`, `finance.delete`, dan seterusnya) serta selalu membatasi data ke
+tenant, organization, dan workspace aktif dari principal. Strategy planning migration `0022`
+tetap menggunakan API lifecycle khusus `/api/v1/strategy`.
+
 Boundary `POST /internal/v1/tool-requests` menerima canonical `ToolRequest` dari GENESIS dan hanya
 menjalankan adapter setelah contract, context, permission, scope, registry, dan allowlist lulus.
 Lihat [Boundary Eksekusi Tool](docs/TOOL_EXECUTION_BOUNDARY.md).

@@ -42,6 +42,50 @@ CANONICAL_ROLES = frozenset(
     }
 )
 
+DEFAULT_DOMAIN_PERMISSIONS: dict[str, tuple[str, ...]] = {
+    "hr": ("hr.read", "hr.write", "hr.delete", "work.read", "work.write", "navigation.read"),
+    "finance": ("finance.read", "finance.write", "finance.delete", "work.read", "work.write", "navigation.read"),
+    "sales": ("sales.read", "sales.write", "sales.delete", "work.read", "work.write", "navigation.read"),
+    "marketing": ("marketing.read", "marketing.write", "marketing.delete", "work.read", "work.write", "navigation.read"),
+    "legal": ("legal.read", "legal.write", "legal.delete", "work.read", "work.write", "navigation.read"),
+    "property": ("property.read", "property.write", "property.delete", "work.read", "work.write", "navigation.read"),
+    "it": ("it.read", "it.write", "it.delete", "work.read", "work.write", "navigation.read", "navigation.manage"),
+    "genesis": ("genesis.read", "genesis.write", "genesis.delete", "work.read", "work.write", "navigation.read"),
+    "shared": ("work.read", "work.write", "work.delete", "navigation.read"),
+}
+
+ROLE_DEFAULT_PERMISSIONS: dict[str, tuple[str, ...]] = {
+    "IT_ADMIN": (
+        "identity.accounts.manage",
+        "identity.memberships.manage",
+        "identity.memberships.read",
+        "navigation.manage",
+        "navigation.read",
+    ),
+    "EXECUTIVE": (
+        "navigation.read",
+        "work.read",
+    ),
+}
+
+
+def _resolve_default_permissions(
+    workspace_key: str | None,
+    role_refs: tuple[str, ...],
+    provided_permissions: list[str] | tuple[str, ...] | None = None,
+) -> tuple[str, ...]:
+    resolved = set(provided_permissions or [])
+    clean_key = (workspace_key or "").strip().lower()
+    for domain, perms in DEFAULT_DOMAIN_PERMISSIONS.items():
+        if clean_key == domain or clean_key.startswith(f"{domain}_") or clean_key.endswith(f"_{domain}"):
+            resolved.update(perms)
+    for role in role_refs:
+        if role in ROLE_DEFAULT_PERMISSIONS:
+            resolved.update(ROLE_DEFAULT_PERMISSIONS[role])
+    if not resolved:
+        resolved.update(("work.read", "navigation.read"))
+    return tuple(sorted(str(item) for item in resolved))
+
 
 class AuthService:
     """Authenticate accounts and resolve access exclusively through an injected repository."""
@@ -158,11 +202,10 @@ class AuthService:
                 else _optional(payload.get("division_code"))
             ),
             role_refs=role_refs,
-            permission_refs=tuple(
-                sorted(
-                    str(item)
-                    for item in (payload.get("permission_refs") or payload.get("permissions", []))
-                )
+            permission_refs=_resolve_default_permissions(
+                workspace_key,
+                role_refs,
+                payload.get("permission_refs") or payload.get("permissions", []),
             ),
             scope_refs=tuple(
                 sorted(
@@ -478,7 +521,11 @@ class AuthService:
             tenant_id=tenant_id,
             organization_id=organization_id,
             role_refs=role_refs,
-            permission_refs=tuple(sorted(str(item) for item in payload.get("permission_refs", []))),
+            permission_refs=_resolve_default_permissions(
+                str(payload.get("workspace_key") or payload.get("workspace_id") or ""),
+                role_refs,
+                payload.get("permission_refs") or payload.get("permissions", []),
+            ),
             scope_refs=tuple(sorted(str(item) for item in payload.get("scope_refs", []))),
             data_scope=str(payload.get("data_scope") or "OWN_ASSIGNED"),
         )

@@ -1,0 +1,347 @@
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import uuid
+from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
+
+import asyncpg
+import httpx
+import pytest
+
+from alos.config import Settings
+from alos.domains.crud import DOMAIN_RESOURCES
+from alos.main import create_app
+
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _database_url(name: str) -> str:
+    source = os.environ.get(
+        "ALOS_TEST_DATABASE_URL",
+        "postgresql+asyncpg://alos:alos@127.0.0.1:5432/alos_test",
+    )
+    parts = urlsplit(source)
+    return urlunsplit((parts.scheme, parts.netloc, f"/{name}", parts.query, parts.fragment))
+
+
+async def _create_test_database(name: str) -> None:
+    admin_url = _database_url("postgres").replace("+asyncpg", "")
+    admin = await asyncpg.connect(admin_url)
+    try:
+        await admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+        await admin.execute(f'CREATE DATABASE "{name}"')
+    finally:
+        await admin.close()
+
+
+def _upgrade_database(database_url: str) -> None:
+    subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=BACKEND_ROOT,
+        env={**os.environ, "DATABASE_URL": database_url},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+async def _drop_test_database(name: str) -> None:
+    admin = await asyncpg.connect(_database_url("postgres").replace("+asyncpg", ""))
+    try:
+        await admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+    finally:
+        await admin.close()
+
+
+async def _register_and_login(
+    client: httpx.AsyncClient,
+    *,
+    email: str,
+    permissions: list[str],
+    roles: list[str] | None = None,
+    workspace_id: str = "workspace_it",
+) -> dict[str, str]:
+    registered = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": email,
+            "password": "StrongPass!123",
+            "display_name": "Domain API Test",
+            "tenant_id": "tenant_default",
+            "organization_id": "org_default",
+            "workspace_id": workspace_id,
+            "workspace_key": workspace_id.removeprefix("workspace_"),
+            "workspace_name": f"{workspace_id.removeprefix('workspace_').upper()} Workspace",
+            "workspace_type": "IT_OPERATIONS" if workspace_id == "workspace_it" else "BUSINESS",
+            "role_refs": roles or ["IT_ADMIN"],
+            "permission_refs": permissions,
+            "scope_refs": ["scope.domain.test"],
+            "data_scope": "WORKSPACE",
+        },
+    )
+    assert registered.status_code == 201
+    login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": email, "password": "StrongPass!123"},
+    )
+    assert login.status_code == 200
+    return {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+
+def test_domain_resource_catalog_covers_migrations_0012_to_0021() -> None:
+    assert len(DOMAIN_RESOURCES) == 95
+    assert ("core", "projects") in DOMAIN_RESOURCES
+    assert ("finance", "bank_accounts") in DOMAIN_RESOURCES
+    assert ("hr", "employees") in DOMAIN_RESOURCES
+    assert ("legal", "contracts") in DOMAIN_RESOURCES
+    assert ("sales", "customers") in DOMAIN_RESOURCES
+    assert ("marketing", "campaigns") in DOMAIN_RESOURCES
+    assert ("property", "property_units") in DOMAIN_RESOURCES
+    assert ("it", "systems") in DOMAIN_RESOURCES
+    assert ("genesis", "uat_gates") in DOMAIN_RESOURCES
+    assert ("strategy", "plans") not in DOMAIN_RESOURCES
+
+
+@pytest.mark.asyncio
+async def test_domain_data_api_rejects_missing_read_and_write_permissions(
+    client: httpx.AsyncClient,
+) -> None:
+    headers = await _register_and_login(
+        client,
+        email="domain-no-permission@andara.local",
+        permissions=[],
+    )
+
+    read = await client.get("/api/v1/domains/finance/bank_accounts", headers=headers)
+    create = await client.post(
+        "/api/v1/domains/finance/bank_accounts",
+        headers=headers,
+        json={"account_name": "Main account", "bank_name": "Example Bank"},
+    )
+
+    assert read.status_code == 403
+    assert read.json()["code"] == "AUTHORIZATION_DENIED"
+    assert create.status_code == 403
+    assert create.json()["code"] == "AUTHORIZATION_DENIED"
+
+
+@pytest.mark.asyncio
+async def test_domain_data_api_uses_action_specific_permissions(
+    client: httpx.AsyncClient,
+) -> None:
+    headers = await _register_and_login(
+        client,
+        email="domain-reader@andara.local",
+        permissions=["finance.read"],
+    )
+
+    create = await client.post(
+        "/api/v1/domains/finance/bank_accounts",
+        headers=headers,
+        json={"account_name": "Main account", "bank_name": "Example Bank"},
+    )
+
+    assert create.status_code == 403
+    assert create.json()["code"] == "AUTHORIZATION_DENIED"
+
+
+@pytest.mark.asyncio
+async def test_global_navigation_catalog_requires_it_account_admin(
+    client: httpx.AsyncClient,
+) -> None:
+    headers = await _register_and_login(
+        client,
+        email="navigation-non-admin@andara.local",
+        permissions=["identity.accounts.manage"],
+        roles=["WORKSPACE_MEMBER"],
+    )
+
+    response = await client.get("/api/v1/domains/navigation/navigation_items", headers=headers)
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "AUTHORIZATION_DENIED"
+
+
+@pytest.mark.asyncio
+async def test_domain_crud_round_trip_and_shared_workspace_scope() -> None:
+    database_name = f"alos_domain_crud_{uuid.uuid4().hex[:12]}"
+    await _create_test_database(database_name)
+    database_url = _database_url(database_name)
+    client: httpx.AsyncClient | None = None
+    app = None
+    try:
+        _upgrade_database(database_url)
+        settings = Settings(
+            _env_file=None,
+            APP_ENV="test",
+            DATABASE_URL=database_url,
+            GENESIS_BASE_URL="http://genesis.test",
+            GENESIS_INTERNAL_TOKEN="domain-crud-test-token",  # noqa: S106
+        )
+        app = create_app(settings)
+        client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+        headers = await _register_and_login(
+            client,
+            email="domain-crud-round-trip@andara.local",
+            permissions=[
+                "finance.read",
+                "finance.write",
+                "finance.delete",
+                "work.read",
+                "work.write",
+                "work.delete",
+            ],
+        )
+        whoami = await client.get("/api/v1/auth/whoami", headers=headers)
+        actor_id = whoami.json()["actor"]["actor_id"]
+        postgres_url = database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+        postgres = await asyncpg.connect(postgres_url)
+        try:
+            await postgres.execute(
+                """
+                INSERT INTO core.actors (actor_id, tenant_id, organization_id, display_name, active)
+                VALUES ($1, 'tenant_default', 'org_default', 'CRUD Admin', true)
+                """,
+                actor_id,
+            )
+            await postgres.execute(
+                """
+                INSERT INTO core.workspace_memberships (
+                    actor_id, workspace_id, tenant_id, organization_id, roles,
+                    permission_refs, scope_refs, data_scope, active, created_at
+                )
+                VALUES (
+                    $1, 'workspace_it', 'tenant_default', 'org_default',
+                    '["IT_ADMIN"]'::jsonb, '[]'::jsonb, '[]'::jsonb,
+                    'WORKSPACE', true, now()
+                )
+                """,
+                actor_id,
+            )
+        finally:
+            await postgres.close()
+
+        created = await client.post(
+            "/api/v1/domains/finance/bank_accounts",
+            headers=headers,
+            json={"account_name": "Operating account", "bank_name": "Example Bank"},
+        )
+        assert created.status_code == 201, created.text
+        account = created.json()
+        assert account["workspace_id"] == "workspace_it"
+
+        listed = await client.get("/api/v1/domains/finance/bank_accounts", headers=headers)
+        assert listed.status_code == 200
+        assert any(row["bank_account_id"] == account["bank_account_id"] for row in listed.json())
+
+        updated = await client.patch(
+            f"/api/v1/domains/finance/bank_accounts/{account['bank_account_id']}",
+            headers=headers,
+            json={"bank_name": "Updated Bank"},
+        )
+        assert updated.status_code == 200
+        assert updated.json()["bank_name"] == "Updated Bank"
+
+        created_project = await client.post(
+            "/api/v1/domains/shared/projects",
+            headers=headers,
+            json={"code": "API-PROJECT", "name": "API Project"},
+        )
+        assert created_project.status_code == 201, created_project.text
+        project_id = created_project.json()["project_id"]
+        assert created_project.json()["workspace_id"] == "workspace_it"
+
+        hr_headers = await _register_and_login(
+            client,
+            email="domain-crud-hr@andara.local",
+            permissions=["work.read", "finance.read", "finance.write"],
+            roles=["WORKSPACE_MEMBER"],
+            workspace_id="workspace_hr",
+        )
+        hr_actor_id = (await client.get("/api/v1/auth/whoami", headers=hr_headers)).json()["actor"][
+            "actor_id"
+        ]
+        postgres = await asyncpg.connect(postgres_url)
+        try:
+            await postgres.execute(
+                """
+                INSERT INTO core.actors (actor_id, tenant_id, organization_id, display_name, active)
+                VALUES ($1, 'tenant_default', 'org_default', 'HR User', true)
+                """,
+                hr_actor_id,
+            )
+            await postgres.execute(
+                """
+                INSERT INTO core.workspace_memberships (
+                    actor_id, workspace_id, tenant_id, organization_id, roles,
+                    permission_refs, scope_refs, data_scope, active, created_at
+                )
+                VALUES (
+                    $1, 'workspace_hr', 'tenant_default', 'org_default',
+                    '["WORKSPACE_MEMBER"]'::jsonb,
+                    '["work.read","finance.read","finance.write"]'::jsonb,
+                    '[]'::jsonb, 'WORKSPACE', true, now()
+                )
+                """,
+                hr_actor_id,
+            )
+        finally:
+            await postgres.close()
+
+        hidden_project = await client.get(
+            f"/api/v1/domains/shared/projects/{project_id}", headers=hr_headers
+        )
+        hidden_finance_rows = await client.get(
+            "/api/v1/domains/finance/bank_accounts", headers=hr_headers
+        )
+        assert hidden_project.status_code == 404
+        assert hidden_finance_rows.status_code == 200
+        assert hidden_finance_rows.json() == []
+        cross_workspace_reference = await client.post(
+            "/api/v1/domains/finance/bank_transactions",
+            headers=hr_headers,
+            json={
+                "bank_account_id": account["bank_account_id"],
+                "transaction_date": "2026-09-28",
+                "direction": "IN",
+                "amount": "10.00",
+            },
+        )
+        assert cross_workspace_reference.status_code == 404
+        assert cross_workspace_reference.json()["code"] == "DOMAIN_REFERENCE_NOT_FOUND"
+
+        forged_scope = await client.post(
+            "/api/v1/domains/finance/bank_accounts",
+            headers=headers,
+            json={
+                "account_name": "Forged account",
+                "bank_name": "Example Bank",
+                "tenant_id": "tenant_attacker",
+            },
+        )
+        assert forged_scope.status_code == 422
+        assert forged_scope.json()["code"] == "INVALID_DOMAIN_FIELDS"
+
+        deleted_project = await client.delete(
+            f"/api/v1/domains/shared/projects/{project_id}", headers=headers
+        )
+        assert deleted_project.status_code == 204
+        missing_project = await client.get(
+            f"/api/v1/domains/shared/projects/{project_id}", headers=headers
+        )
+        assert missing_project.status_code == 404
+
+        deleted_account = await client.delete(
+            f"/api/v1/domains/finance/bank_accounts/{account['bank_account_id']}",
+            headers=headers,
+        )
+        assert deleted_account.status_code == 204
+    finally:
+        if client is not None:
+            await client.aclose()
+        if app is not None:
+            await app.state.database.dispose()
+        await _drop_test_database(database_name)

@@ -17,7 +17,7 @@
 - `documents/`, `sources/`: metadata document dan source reference.
 - `jobs/`: queue state machine, scheduler, bounded worker, retry/idempotency, dan stale-lease recovery; tidak memakai message broker.
 - `notifications/`: notification intent dan provider boundary masa depan.
-- `domains/`: boundary property, finance, sales, HR, legal, dan GIIVEPRO dengan authority ALOS yang sama.
+- `domains/`: boundary property, finance, sales, HR, legal, strategy, serta CRUD domain-data berbasis workspace dengan authority ALOS yang sama.
 - `integrations/genesis/`: client HTTP menuju AI Control Plane tanpa import kode GENESIS.
 - `observability/`: correlation context dan OpenTelemetry API boundary.
 - `persistence/`: SQLAlchemy base, engine/session lifecycle, serta model database.
