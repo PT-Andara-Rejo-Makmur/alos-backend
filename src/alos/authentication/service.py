@@ -121,8 +121,6 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, tuple[str, ...]] = {
         "identity.accounts.manage",
         "identity.memberships.manage",
         "identity.memberships.read",
-        "navigation.manage",
-        "navigation.read",
     ),
     "EXECUTIVE": (
         "navigation.read",
@@ -149,8 +147,6 @@ def _resolve_default_permissions(
     for role in role_refs:
         if role in ROLE_DEFAULT_PERMISSIONS:
             resolved.update(ROLE_DEFAULT_PERMISSIONS[role])
-    if not resolved:
-        resolved.update(("work.read", "navigation.read"))
     return tuple(sorted(str(item) for item in resolved))
 
 
