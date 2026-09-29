@@ -364,9 +364,33 @@ async def test_domain_crud_round_trip_and_shared_workspace_scope() -> None:
         marketing_actor_id = (
             await client.get("/api/v1/auth/whoami", headers=marketing_headers)
         ).json()["actor"]["actor_id"]
+        await app.state.auth_service.assign_membership(
+            sales_actor_id,
+            {
+                "workspace_id": "workspace_marketing",
+                "role_refs": ["WORKSPACE_MEMBER"],
+                "permission_refs": ["marketing.read"],
+                "scope_refs": [],
+                "data_scope": "WORKSPACE",
+            },
+            tenant_id="tenant_default",
+            organization_id="org_default",
+        )
 
         postgres = await asyncpg.connect(postgres_url)
         try:
+            await postgres.execute(
+                """
+                INSERT INTO core.workspaces (
+                    workspace_id, tenant_id, organization_id, name, workspace_key,
+                    workspace_type, division_code, active
+                )
+                VALUES (
+                    'workspace_marketing', 'tenant_default', 'org_default',
+                    'Marketing Workspace', 'marketing', 'BUSINESS', 'MARKETING', true
+                )
+                """
+            )
             await postgres.execute(
                 """
                 INSERT INTO core.actors (actor_id, tenant_id, organization_id, display_name, active)
@@ -385,12 +409,14 @@ async def test_domain_crud_round_trip_and_shared_workspace_scope() -> None:
                 )
                 VALUES
                     ($1, 'workspace_sales', 'tenant_default', 'org_default',
-                     '["WORKSPACE_LEAD"]'::jsonb, '["sales.read","sales.write","sales.delete"]'::jsonb,
+                     '["WORKSPACE_LEAD"]'::jsonb,
+                     '["sales.read","sales.write","sales.delete"]'::jsonb,
                      '[]'::jsonb, 'WORKSPACE', true, now()),
                     ($2, 'workspace_marketing', 'tenant_default', 'org_default',
-                     '["WORKSPACE_LEAD"]'::jsonb, '["marketing.read","marketing.write","marketing.delete"]'::jsonb,
+                     '["WORKSPACE_LEAD"]'::jsonb,
+                     '["marketing.read","marketing.write","marketing.delete"]'::jsonb,
                      '[]'::jsonb, 'WORKSPACE', true, now()),
-                    -- Tambahkan keanggotaan kedua (workspace_marketing) untuk sales_actor (Multi-Workspace)
+                    -- Tambahkan keanggotaan kedua untuk sales_actor (Multi-Workspace)
                     ($1, 'workspace_marketing', 'tenant_default', 'org_default',
                      '["WORKSPACE_MEMBER"]'::jsonb, '["marketing.read"]'::jsonb,
                      '[]'::jsonb, 'WORKSPACE', true, now())
@@ -431,7 +457,7 @@ async def test_domain_crud_round_trip_and_shared_workspace_scope() -> None:
         assert created_campaign.status_code == 201
         campaign_id = created_campaign.json()["campaign_id"]
 
-        # 4. Sales coba baca campaign saat masih aktif di workspace_sales -> 403 (karena izin di sales cuma sales.*)
+        # Sales coba baca campaign di workspace_sales -> 403 (izin hanya sales.*).
         sales_view_campaigns = await client.get(
             f"/api/v1/domains/marketing/campaigns/{campaign_id}", headers=sales_headers
         )
@@ -452,7 +478,7 @@ async def test_domain_crud_round_trip_and_shared_workspace_scope() -> None:
         assert sales_read_campaign_after_switch.status_code == 200
         assert sales_read_campaign_after_switch.json()["name"] == "Promo Q4"
 
-        # Namun tidak bisa lagi membaca Customer Sales (karena workspace aktif sudah pindah ke marketing)
+        # Tidak dapat membaca Customer Sales setelah pindah ke workspace marketing.
         sales_read_old_customer = await client.get(
             f"/api/v1/domains/sales/customers/{customer_id}", headers=sales_headers
         )
