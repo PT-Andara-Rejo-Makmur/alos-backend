@@ -144,7 +144,7 @@ async def strategy_context() -> AsyncIterator[StrategyContext]:
             tenant_id="tenant_strategy_e2e",
             organization_id="org_strategy_e2e",
             workspace_id="workspace_strategy_executive_e2e",
-            roles=["EXECUTIVE", "BUSINESS_REVIEWER"],
+            roles=["EXECUTIVE"],
             permissions=strategy_permissions,
         )
         sales_headers, _ = await _register_and_login(
@@ -153,7 +153,7 @@ async def strategy_context() -> AsyncIterator[StrategyContext]:
             tenant_id="tenant_strategy_e2e",
             organization_id="org_strategy_e2e",
             workspace_id="workspace_strategy_sales_e2e",
-            roles=["WORKSPACE_LEAD"],
+            roles=["DIVISION_LEAD"],
             permissions=["strategy.read", "strategy.division.manage"],
         )
         unrelated_headers, _ = await _register_and_login(
@@ -162,7 +162,7 @@ async def strategy_context() -> AsyncIterator[StrategyContext]:
             tenant_id="tenant_strategy_e2e",
             organization_id="org_strategy_e2e",
             workspace_id="workspace_strategy_property_e2e",
-            roles=["WORKSPACE_LEAD"],
+            roles=["DIVISION_LEAD"],
             permissions=["strategy.read", "strategy.division.manage"],
         )
         cross_org_headers, _ = await _register_and_login(
@@ -207,7 +207,7 @@ async def strategy_context() -> AsyncIterator[StrategyContext]:
                 "org_strategy_e2e",
                 "workspace_strategy_executive_e2e",
                 permissions=frozenset(strategy_permissions),
-                roles=frozenset({"EXECUTIVE", "BUSINESS_REVIEWER"}),
+                roles=frozenset({"EXECUTIVE"}),
             ),
         )
     await app.state.database.dispose()
@@ -254,7 +254,7 @@ def _target_payload(
         "measurement_type": "CUMULATIVE",
         "unit": "COUNT",
         "owner_workspace_id": workspace_id,
-        "owner_role_ref": "EXECUTIVE" if scope_type == "COMPANY" else "WORKSPACE_LEAD",
+        "owner_role_ref": "EXECUTIVE" if scope_type == "COMPANY" else "DIVISION_LEAD",
         "materiality": "MATERIAL",
         "source_refs": ["source:approved-rkap"],
         "evidence_refs": ["evidence:approved-rkap"],
@@ -523,7 +523,7 @@ async def test_persistent_strategy_api_vertical_slice_and_scope_security(
             **_plan_payload("plan.cross-workspace.e2e"),
             "scope": {"type": "DIVISION", "ref": "workspace_strategy_sales_e2e"},
             "owner_workspace_id": "workspace_strategy_sales_e2e",
-            "owner_role_ref": "WORKSPACE_LEAD",
+            "owner_role_ref": "DIVISION_LEAD",
         },
     )
     assert denied_workspace.status_code == 403

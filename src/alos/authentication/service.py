@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import secrets
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -19,26 +20,12 @@ from alos.authentication.repository import (
 )
 from alos.security.errors import PlatformError
 
-CANONICAL_ROLE_MAP = {
-    "DIRECTOR": "EXECUTIVE",
-    "DIVISION_LEAD": "WORKSPACE_LEAD",
-    "DIVISION_OWNER": "WORKSPACE_LEAD",
-    "DIVISION_MEMBER": "WORKSPACE_MEMBER",
-    "MEMBER": "WORKSPACE_MEMBER",
-    "IT_LEAD": "IT_ADMIN",
-    "ADMIN": "IT_ADMIN",
-    "QA_SECURITY": "QA_ASSURANCE",
-}
 CANONICAL_ROLES = frozenset(
     {
         "EXECUTIVE",
-        "WORKSPACE_LEAD",
-        "WORKSPACE_MEMBER",
-        "BUSINESS_REVIEWER",
+        "DIVISION_LEAD",
+        "DIVISION_MEMBER",
         "IT_ADMIN",
-        "AI_ADMIN",
-        "TECHNICAL_REVIEWER",
-        "QA_ASSURANCE",
     }
 )
 
@@ -136,14 +123,17 @@ def _resolve_default_permissions(
 ) -> tuple[str, ...]:
     resolved = set(provided_permissions or [])
     clean_key = (workspace_key or "").strip().lower()
-    for domain, perms in DEFAULT_DOMAIN_PERMISSIONS.items():
-        matches_domain = (
-            clean_key == domain
-            or clean_key.startswith(f"{domain}_")
-            or clean_key.endswith(f"_{domain}")
-        )
-        if matches_domain:
-            resolved.update(perms)
+    if any(role in {"DIVISION_LEAD", "DIVISION_MEMBER"} for role in role_refs):
+        for domain, perms in DEFAULT_DOMAIN_PERMISSIONS.items():
+            matches_domain = (
+                clean_key == domain
+                or clean_key.startswith(f"{domain}_")
+                or clean_key.endswith(f"_{domain}")
+            )
+            if matches_domain:
+                resolved.update(perms)
+    if "IT_ADMIN" in role_refs and clean_key == "it":
+        resolved.update(DEFAULT_DOMAIN_PERMISSIONS["it"])
     for role in role_refs:
         if role in ROLE_DEFAULT_PERMISSIONS:
             resolved.update(ROLE_DEFAULT_PERMISSIONS[role])
@@ -153,9 +143,16 @@ def _resolve_default_permissions(
 class AuthService:
     """Authenticate accounts and resolve access exclusively through an injected repository."""
 
-    def __init__(self, repository: AuthRepository, *, session_ttl_minutes: int = 480) -> None:
+    def __init__(
+        self,
+        repository: AuthRepository,
+        *,
+        session_ttl_minutes: int = 480,
+        activation_sink: Callable[[str, str], None] | None = None,
+    ) -> None:
         self._repository = repository
         self._session_ttl = timedelta(minutes=session_ttl_minutes)
+        self._activation_sink = activation_sink
 
     async def register_for_test(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Bootstrap synthetic identity only when the application explicitly enables it."""
@@ -184,6 +181,39 @@ class AuthService:
         """Provision an account into an existing Backend-owned authority boundary."""
         return await self._provision(payload, bootstrap=False)
 
+    async def activate(
+        self, token: str, password: str, password_confirmation: str
+    ) -> dict[str, str]:
+        if password != password_confirmation:
+            raise PlatformError(
+                "PASSWORD_CONFIRMATION_MISMATCH",
+                "password confirmation does not match",
+                status_code=422,
+            )
+        activated = await self._repository.activate_account(
+            self._token_hash(token), self._hash_password(password), datetime.now(UTC)
+        )
+        if activated is None:
+            raise PlatformError(
+                "ACTIVATION_CHALLENGE_INVALID",
+                "activation challenge is invalid, expired, or already used",
+                status_code=422,
+            )
+        return {
+            "actor_id": activated.actor_id,
+            "activation_state": activated.activation_state,
+            "tenant_id": activated.tenant_id,
+            "organization_id": activated.organization_id,
+            "workspace_id": activated.primary_workspace_id or "",
+        }
+
+    async def provisioning_candidates(
+        self, *, tenant_id: str, organization_id: str
+    ) -> list[dict[str, str | None]]:
+        return await self._repository.provisioning_candidates(
+            tenant_id=tenant_id, organization_id=organization_id
+        )
+
     async def _provision(
         self,
         payload: dict[str, Any],
@@ -192,27 +222,21 @@ class AuthService:
         initial_authority: bool = False,
     ) -> dict[str, Any]:
         email = str(payload.get("email", "")).strip().lower()
-        password = str(payload.get("password") or "")
         if not email:
             raise PlatformError("INVALID_EMAIL", "email is required", status_code=400)
-        if len(password) < 8:
+        password = str(payload.get("password") or "") if bootstrap else secrets.token_urlsafe(48)
+        if bootstrap and len(password) < 8:
             raise PlatformError(
                 "WEAK_PASSWORD", "password must be at least 8 characters long", status_code=400
             )
         requested_roles = {
-            str(item).upper()
-            for item in (payload.get("role_refs") or payload.get("roles", []))
+            str(item).upper() for item in (payload.get("role_refs") or payload.get("roles", []))
         }
-        role_refs = tuple(
-            sorted(
-                CANONICAL_ROLE_MAP.get(item, item) if bootstrap else item
-                for item in requested_roles
-            )
-        )
-        if not role_refs or not set(role_refs).issubset(CANONICAL_ROLES):
+        role_refs = tuple(sorted(requested_roles))
+        if len(role_refs) != 1 or not set(role_refs).issubset(CANONICAL_ROLES):
             raise PlatformError(
                 "INVALID_AUTHORIZATION_ROLE",
-                "role_refs must use the canonical authorization vocabulary",
+                "role_refs must contain exactly one canonical authorization role",
                 status_code=400,
             )
         workspace_id = str(payload.get("workspace_id") or "")
@@ -235,11 +259,23 @@ class AuthService:
             if workspace is not None
             else str(payload.get("workspace_key") or workspace_id).strip().lower()
         )
+        effective_at = _as_utc(payload.get("effective_at")) or datetime.now(UTC)
+        expires_at = _as_utc(payload.get("expires_at"))
+        if expires_at is not None and expires_at <= effective_at:
+            raise PlatformError(
+                "INVALID_MEMBERSHIP_DATES",
+                "expires_at must be later than effective_at",
+                status_code=422,
+            )
+        activation_token = secrets.token_urlsafe(40) if not bootstrap else None
+        activation_expires_at = datetime.now(UTC) + timedelta(hours=24)
         command = ProvisionAccount(
             actor_id=f"actor_{uuid.uuid4().hex}",
             email=email,
             password_hash=self._hash_password(password),
-            display_name=str(payload.get("display_name") or email.split("@", 1)[0]),
+            display_name=(
+                str(payload.get("display_name") or email.split("@", 1)[0]) if bootstrap else ""
+            ),
             tenant_id=str(payload.get("tenant_id") or ""),
             organization_id=str(payload.get("organization_id") or ""),
             workspace_id=workspace_id,
@@ -268,14 +304,30 @@ class AuthService:
             permission_refs=_resolve_default_permissions(
                 workspace_key,
                 role_refs,
-                payload.get("permission_refs") or payload.get("permissions", []),
+                (payload.get("permission_refs") or payload.get("permissions", []))
+                if bootstrap
+                else None,
             ),
             scope_refs=tuple(
                 sorted(
-                    str(item) for item in (payload.get("scope_refs") or payload.get("scopes", []))
+                    str(item)
+                    for item in (
+                        (payload.get("scope_refs") or payload.get("scopes", []))
+                        if bootstrap
+                        else []
+                    )
                 )
             ),
-            data_scope=str(payload.get("data_scope") or "OWN_ASSIGNED"),
+            data_scope=(
+                str(payload.get("data_scope") or "OWN_ASSIGNED") if bootstrap else "WORKSPACE"
+            ),
+            employee_id=(str(payload.get("employee_id")) if not bootstrap else None),
+            effective_at=effective_at,
+            expires_at=expires_at,
+            activation_token_hash=(
+                self._token_hash(activation_token) if activation_token else None
+            ),
+            activation_expires_at=activation_expires_at,
         )
         if not all(
             (
@@ -299,30 +351,48 @@ class AuthService:
         except ValueError as exc:
             message = str(exc)
             if "initial identity authority already exists" in message:
-                raise PlatformError(
-                    "IDENTITY_BOOTSTRAP_EXISTS", message, status_code=409
-                ) from exc
+                raise PlatformError("IDENTITY_BOOTSTRAP_EXISTS", message, status_code=409) from exc
             if "outside an active authority boundary" in message:
                 raise PlatformError(
                     "AUTHORITY_BOUNDARY_CONFLICT", message, status_code=403
                 ) from exc
             code = "USER_ALREADY_EXISTS" if "already exists" in message else "IDENTITY_CONFLICT"
             raise PlatformError(code, message, status_code=409) from exc
+        if activation_token is not None and self._activation_sink is not None:
+            self._activation_sink(email, activation_token)
         accesses = await self._repository.active_access(account.actor_id)
-        return self._account_projection(
-            account.email,
-            account.actor_id,
-            account.tenant_id,
-            account.organization_id,
-            account.display_name,
-            accesses,
-        )
+        return {
+            "actor_id": account.actor_id,
+            "display_name": account.display_name,
+            "email": account.email,
+            "active": account.active,
+            "administrative_state": account.administrative_state,
+            "activation_state": account.activation_state,
+            "primary_workspace_id": (
+                account.primary_workspace_id
+                if any(
+                    access.active and access.workspace_id == account.primary_workspace_id
+                    for access in accesses
+                )
+                else None
+            ),
+            "employee_id": account.employee_id or command.employee_id,
+            "employee_number": account.employee_number,
+            "department_code": account.department_code,
+            "position_title": account.position_title,
+            "employment_status": account.employment_status,
+            "created_at": account.created_at.isoformat() if account.created_at else None,
+            "last_login_at": account.last_login_at.isoformat() if account.last_login_at else None,
+            "workspace_access": [self._access_projection(access) for access in accesses],
+        }
 
     async def login(self, email: str, password: str) -> dict[str, Any]:
         account = await self._repository.account_by_email(str(email or "").strip().lower())
         if (
             account is None
             or not account.active
+            or account.administrative_state != "ENABLED"
+            or account.activation_state != "ACTIVATED"
             or not self._verify_password(password, account.password_hash)
         ):
             raise PlatformError(
@@ -387,6 +457,30 @@ class AuthService:
         session, _ = await self._resolve_session(token)
         await self._repository.revoke_session(session.session_id, datetime.now(UTC))
 
+    async def admin_sessions(
+        self, actor_id: str, *, tenant_id: str, organization_id: str
+    ) -> list[dict[str, object]]:
+        try:
+            return await self._repository.admin_sessions(
+                actor_id, tenant_id=tenant_id, organization_id=organization_id
+            )
+        except ValueError as exc:
+            raise PlatformError("IDENTITY_NOT_FOUND", str(exc), status_code=404) from exc
+
+    async def revoke_actor_session(
+        self, actor_id: str, session_id: str, *, tenant_id: str, organization_id: str
+    ) -> None:
+        try:
+            await self._repository.revoke_actor_session(
+                actor_id,
+                session_id,
+                tenant_id=tenant_id,
+                organization_id=organization_id,
+                revoked_at=datetime.now(UTC),
+            )
+        except ValueError as exc:
+            raise PlatformError("SESSION_NOT_FOUND", str(exc), status_code=404) from exc
+
     async def list_account_access(
         self, actor_id: str, *, tenant_id: str, organization_id: str
     ) -> dict[str, Any]:
@@ -410,15 +504,34 @@ class AuthService:
             accesses = await self._repository.all_access(
                 account.actor_id, tenant_id=tenant_id, organization_id=organization_id
             )
-            result.append({
-                "actor_id": account.actor_id,
-                "display_name": account.display_name,
-                "email": account.email,
-                "active": account.active,
-                "workspace_access": [
-                    self._access_projection(access) for access in accesses if access.active
-                ],
-            })
+            result.append(
+                {
+                    "actor_id": account.actor_id,
+                    "display_name": account.display_name,
+                    "email": account.email,
+                    "active": account.active,
+                    "administrative_state": account.administrative_state,
+                    "activation_state": account.activation_state,
+                    "primary_workspace_id": (
+                        account.primary_workspace_id
+                        if any(
+                            access.active and access.workspace_id == account.primary_workspace_id
+                            for access in accesses
+                        )
+                        else None
+                    ),
+                    "employee_id": account.employee_id,
+                    "employee_number": account.employee_number,
+                    "position_title": account.position_title,
+                    "department_code": account.department_code,
+                    "employment_status": account.employment_status,
+                    "created_at": account.created_at.isoformat() if account.created_at else None,
+                    "last_login_at": account.last_login_at.isoformat()
+                    if account.last_login_at
+                    else None,
+                    "workspace_access": [self._access_projection(access) for access in accesses],
+                }
+            )
         return result
 
     async def assign_membership(
@@ -572,10 +685,10 @@ class AuthService:
         organization_id: str,
     ) -> MembershipMutation:
         role_refs = tuple(sorted({str(item).upper() for item in payload.get("role_refs", [])}))
-        if not role_refs or not set(role_refs).issubset(CANONICAL_ROLES):
+        if len(role_refs) != 1 or not set(role_refs).issubset(CANONICAL_ROLES):
             raise PlatformError(
                 "INVALID_AUTHORIZATION_ROLE",
-                "role_refs must use the canonical authorization vocabulary",
+                "role_refs must contain exactly one canonical authorization role",
                 status_code=400,
             )
         return MembershipMutation(
@@ -587,10 +700,13 @@ class AuthService:
             permission_refs=_resolve_default_permissions(
                 str(payload.get("workspace_key") or payload.get("workspace_id") or ""),
                 role_refs,
-                payload.get("permission_refs") or payload.get("permissions", []),
+                None,
             ),
-            scope_refs=tuple(sorted(str(item) for item in payload.get("scope_refs", []))),
-            data_scope=str(payload.get("data_scope") or "OWN_ASSIGNED"),
+            scope_refs=(),
+            data_scope="WORKSPACE",
+            effective_at=_as_utc(payload.get("effective_at")) or datetime.now(UTC),
+            expires_at=_as_utc(payload.get("expires_at")),
+            note=_optional(payload.get("note")),
         )
 
     @staticmethod
@@ -643,3 +759,14 @@ class AuthService:
 
 def _optional(value: object) -> str | None:
     return str(value) if value not in {None, ""} else None
+
+
+def _as_utc(value: object) -> datetime | None:
+    if value is None or value == "":
+        return None
+    parsed = (
+        value
+        if isinstance(value, datetime)
+        else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    )
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)

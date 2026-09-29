@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Protocol
 
@@ -10,9 +10,11 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from alos.persistence.models import (
+    ActivationChallengeRecord,
     ActorRecord,
     AuthAccountRecord,
     AuthSessionRecord,
+    EmployeeRecord,
     OrganizationRecord,
     TenantRecord,
     WorkspaceMembershipRecord,
@@ -30,6 +32,16 @@ class AccountState:
     organization_id: str
     display_name: str
     active: bool
+    administrative_state: str = "ENABLED"
+    activation_state: str = "ACTIVATED"
+    primary_workspace_id: str | None = None
+    employee_id: str | None = None
+    employee_number: str | None = None
+    position_title: str | None = None
+    department_code: str | None = None
+    employment_status: str | None = None
+    created_at: datetime | None = None
+    last_login_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +100,11 @@ class ProvisionAccount:
     permission_refs: tuple[str, ...]
     scope_refs: tuple[str, ...]
     data_scope: str
+    employee_id: str | None = None
+    effective_at: datetime | None = None
+    expires_at: datetime | None = None
+    activation_token_hash: str | None = None
+    activation_expires_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +117,9 @@ class MembershipMutation:
     permission_refs: tuple[str, ...]
     scope_refs: tuple[str, ...]
     data_scope: str
+    effective_at: datetime | None = None
+    expires_at: datetime | None = None
+    note: str | None = None
 
 
 class AuthRepository(Protocol):
@@ -120,6 +140,10 @@ class AuthRepository(Protocol):
     ) -> list[AccessState]: ...
 
     async def accounts(self, *, tenant_id: str, organization_id: str) -> list[AccountState]: ...
+
+    async def provisioning_candidates(
+        self, *, tenant_id: str, organization_id: str
+    ) -> list[dict[str, str | None]]: ...
 
     async def workspace(self, workspace_id: str) -> WorkspaceState | None: ...
 
@@ -164,9 +188,27 @@ class AuthRepository(Protocol):
 
     async def session_by_token_hash(self, token_hash: str) -> SessionState | None: ...
 
+    async def activate_account(
+        self, token_hash: str, password_hash: str, activated_at: datetime
+    ) -> AccountState | None: ...
+
     async def set_active_workspace(self, session_id: str, workspace_id: str) -> None: ...
 
     async def revoke_session(self, session_id: str, revoked_at: datetime) -> None: ...
+
+    async def admin_sessions(
+        self, actor_id: str, *, tenant_id: str, organization_id: str
+    ) -> list[dict[str, object]]: ...
+
+    async def revoke_actor_session(
+        self,
+        actor_id: str,
+        session_id: str,
+        *,
+        tenant_id: str,
+        organization_id: str,
+        revoked_at: datetime,
+    ) -> None: ...
 
 
 class SqlAuthRepository:
@@ -202,6 +244,25 @@ class SqlAuthRepository:
                     raise ValueError("initial identity authority already exists")
             if await self._account_record(session, command.email) is not None:
                 raise ValueError("account already exists")
+            employee = None
+            if not bootstrap:
+                employee = await session.scalar(
+                    select(EmployeeRecord)
+                    .where(
+                        EmployeeRecord.employee_id == command.employee_id,
+                        EmployeeRecord.tenant_id == command.tenant_id,
+                        EmployeeRecord.organization_id == command.organization_id,
+                    )
+                    .with_for_update()
+                )
+                if (
+                    employee is None
+                    or employee.actor_id is not None
+                    or employee.employment_status != "ACTIVE"
+                    or (employee.join_date is not None and employee.join_date > now.date())
+                    or (employee.end_date is not None and employee.end_date < now.date())
+                ):
+                    raise ValueError("employee is not eligible for account provisioning")
             tenant = await session.get(TenantRecord, command.tenant_id)
             organization = await session.get(OrganizationRecord, command.organization_id)
             workspace = await session.get(WorkspaceRecord, command.workspace_id)
@@ -251,7 +312,7 @@ class SqlAuthRepository:
                 actor_id=command.actor_id,
                 tenant_id=command.tenant_id,
                 organization_id=command.organization_id,
-                display_name=command.display_name,
+                display_name=employee.full_name if employee is not None else command.display_name,
                 active=True,
             )
             session.add(actor)
@@ -268,6 +329,9 @@ class SqlAuthRepository:
                     data_scope=command.data_scope,
                     active=True,
                     created_at=now,
+                    effective_at=command.effective_at or now,
+                    expires_at=command.expires_at,
+                    updated_at=now,
                     revoked_at=None,
                 )
             )
@@ -279,14 +343,45 @@ class SqlAuthRepository:
                 tenant_id=command.tenant_id,
                 organization_id=command.organization_id,
                 legacy_workspace_id=None,
-                display_name=command.display_name,
+                display_name=employee.full_name if employee is not None else command.display_name,
                 created_at=now,
                 updated_at=now,
                 active=True,
+                primary_workspace_id=(
+                    command.workspace_id
+                    if (command.effective_at or now) <= now
+                    and (command.expires_at is None or command.expires_at > now)
+                    else None
+                ),
+                administrative_state="ENABLED",
+                activation_state="PENDING" if not bootstrap else "ACTIVATED",
+                activated_at=now if bootstrap else None,
             )
             session.add(account)
             await session.flush()
-            return _account_state(account)
+            if employee is not None:
+                employee.actor_id = command.actor_id
+            if not bootstrap and command.activation_token_hash and command.activation_expires_at:
+                session.add(
+                    ActivationChallengeRecord(
+                        challenge_id=f"activation_{command.actor_id}",
+                        account_id=account.account_id,
+                        token_hash=command.activation_token_hash,
+                        created_at=now,
+                        expires_at=command.activation_expires_at,
+                        consumed_at=None,
+                    )
+                )
+            await session.flush()
+            return replace(
+                _account_state(account),
+                employee_id=employee.employee_id if employee else None,
+                employee_number=employee.employee_number if employee else None,
+                position_title=employee.position_title if employee else None,
+                department_code=employee.department_code if employee else None,
+                employment_status=employee.employment_status if employee else None,
+                created_at=now,
+            )
 
     async def account_by_email(self, email: str) -> AccountState | None:
         async with self._session_factory() as session:
@@ -294,6 +389,7 @@ class SqlAuthRepository:
             return _account_state(record) if record is not None else None
 
     async def active_access(self, actor_id: str) -> list[AccessState]:
+        now = datetime.now(UTC)
         async with self._session_factory() as session:
             statement = (
                 select(WorkspaceMembershipRecord, WorkspaceRecord, ActorRecord)
@@ -306,6 +402,11 @@ class SqlAuthRepository:
                     WorkspaceMembershipRecord.actor_id == actor_id,
                     WorkspaceMembershipRecord.active.is_(True),
                     WorkspaceMembershipRecord.revoked_at.is_(None),
+                    WorkspaceMembershipRecord.effective_at <= now,
+                    (
+                        WorkspaceMembershipRecord.expires_at.is_(None)
+                        | (WorkspaceMembershipRecord.expires_at > now)
+                    ),
                     WorkspaceRecord.active.is_(True),
                     ActorRecord.active.is_(True),
                 )
@@ -347,7 +448,75 @@ class SqlAuthRepository:
                 )
                 .order_by(AuthAccountRecord.email)
             )
-            return [_account_state(record) for record in rows.all()]
+            result: list[AccountState] = []
+            for record in rows.all():
+                employee = await session.scalar(
+                    select(EmployeeRecord).where(EmployeeRecord.actor_id == record.actor_id)
+                )
+                last_login_at = await session.scalar(
+                    select(AuthSessionRecord.last_activity_at)
+                    .where(AuthSessionRecord.actor_id == record.actor_id)
+                    .order_by(AuthSessionRecord.last_activity_at.desc())
+                    .limit(1)
+                )
+                activation = await session.scalar(
+                    select(ActivationChallengeRecord)
+                    .where(ActivationChallengeRecord.account_id == record.account_id)
+                    .order_by(ActivationChallengeRecord.created_at.desc())
+                    .limit(1)
+                )
+                activation_state = record.activation_state
+                if (
+                    activation_state == "PENDING"
+                    and activation is not None
+                    and activation.expires_at <= datetime.now(UTC)
+                ):
+                    activation_state = "EXPIRED"
+                result.append(
+                    replace(
+                        _account_state(record),
+                        employee_id=employee.employee_id if employee else None,
+                        employee_number=employee.employee_number if employee else None,
+                        position_title=employee.position_title if employee else None,
+                        department_code=employee.department_code if employee else None,
+                        employment_status=employee.employment_status if employee else None,
+                        created_at=_utc(record.created_at),
+                        last_login_at=_utc(last_login_at) if last_login_at else None,
+                        activation_state=activation_state,
+                    )
+                )
+            return result
+
+    async def provisioning_candidates(
+        self, *, tenant_id: str, organization_id: str
+    ) -> list[dict[str, str | None]]:
+        today = datetime.now(UTC).date()
+        async with self._session_factory() as session:
+            employees = await session.scalars(
+                select(EmployeeRecord)
+                .where(
+                    EmployeeRecord.tenant_id == tenant_id,
+                    EmployeeRecord.organization_id == organization_id,
+                    EmployeeRecord.actor_id.is_(None),
+                    EmployeeRecord.employment_status == "ACTIVE",
+                    (EmployeeRecord.join_date.is_(None) | (EmployeeRecord.join_date <= today)),
+                    (EmployeeRecord.end_date.is_(None) | (EmployeeRecord.end_date >= today)),
+                )
+                .order_by(EmployeeRecord.full_name, EmployeeRecord.employee_number)
+            )
+            return [
+                {
+                    "employee_id": employee.employee_id,
+                    "employee_number": employee.employee_number,
+                    "full_name": employee.full_name,
+                    "email": employee.email,
+                    "department_code": employee.department_code,
+                    "position_title": employee.position_title,
+                    "employment_status": employee.employment_status,
+                    "linkage_state": "AVAILABLE",
+                }
+                for employee in employees.all()
+            ]
 
     async def workspace(self, workspace_id: str) -> WorkspaceState | None:
         async with self._session_factory() as session:
@@ -389,6 +558,9 @@ class SqlAuthRepository:
                 data_scope=command.data_scope,
                 active=True,
                 created_at=datetime.now(UTC),
+                effective_at=command.effective_at or datetime.now(UTC),
+                expires_at=command.expires_at,
+                updated_at=datetime.now(UTC),
                 revoked_at=None,
             )
             session.add(membership)
@@ -407,6 +579,9 @@ class SqlAuthRepository:
             membership.permission_refs = list(command.permission_refs)
             membership.scope_refs = list(command.scope_refs)
             membership.data_scope = command.data_scope
+            membership.effective_at = command.effective_at or datetime.now(UTC)
+            membership.expires_at = command.expires_at
+            membership.updated_at = datetime.now(UTC)
             await session.flush()
             return _access_state(membership, workspace)
 
@@ -429,6 +604,21 @@ class SqlAuthRepository:
                 raise ValueError("active workspace membership does not exist")
             membership.active = False
             membership.revoked_at = revoked_at
+            account = await session.scalar(
+                select(AuthAccountRecord).where(AuthAccountRecord.actor_id == actor_id)
+            )
+            if account is not None and account.primary_workspace_id == workspace_id:
+                account.primary_workspace_id = None
+            sessions = (
+                await session.scalars(
+                    select(AuthSessionRecord).where(
+                        AuthSessionRecord.actor_id == actor_id,
+                        AuthSessionRecord.active_workspace_id == workspace_id,
+                    )
+                )
+            ).all()
+            for auth_session in sessions:
+                auth_session.active_workspace_id = None
 
     async def set_account_active(
         self,
@@ -455,6 +645,7 @@ class SqlAuthRepository:
                 raise ValueError("account is outside the authority boundary")
             actor.active = active
             account.active = active
+            account.administrative_state = "ENABLED" if active else "SUSPENDED"
             account.updated_at = changed_at
             if not active:
                 sessions = (
@@ -490,6 +681,7 @@ class SqlAuthRepository:
                 token_hash=token_hash,
                 issued_at=issued_at,
                 expires_at=expires_at,
+                last_activity_at=issued_at,
                 revoked_at=None,
                 active=True,
             )
@@ -497,7 +689,7 @@ class SqlAuthRepository:
         return SessionState(session_id, account, active_workspace_id, issued_at, expires_at)
 
     async def session_by_token_hash(self, token_hash: str) -> SessionState | None:
-        async with self._session_factory() as session:
+        async with self._session_factory() as session, session.begin():
             statement = (
                 select(AuthSessionRecord, AuthAccountRecord, ActorRecord)
                 .join(
@@ -516,9 +708,11 @@ class SqlAuthRepository:
             if row is None:
                 return None
             current, account, _ = row
+            now = datetime.now(UTC)
             expires_at = _utc(current.expires_at)
-            if expires_at <= datetime.now(UTC):
+            if expires_at <= now:
                 return None
+            current.last_activity_at = now
             return SessionState(
                 current.session_id,
                 _account_state(account),
@@ -526,6 +720,32 @@ class SqlAuthRepository:
                 _utc(current.issued_at),
                 expires_at,
             )
+
+    async def activate_account(
+        self, token_hash: str, password_hash: str, activated_at: datetime
+    ) -> AccountState | None:
+        async with self._session_factory() as session, session.begin():
+            challenge = await session.scalar(
+                select(ActivationChallengeRecord)
+                .where(
+                    ActivationChallengeRecord.token_hash == token_hash,
+                    ActivationChallengeRecord.consumed_at.is_(None),
+                    ActivationChallengeRecord.expires_at > activated_at,
+                )
+                .with_for_update()
+            )
+            if challenge is None:
+                return None
+            account = await session.get(AuthAccountRecord, challenge.account_id)
+            if account is None or account.activation_state != "PENDING":
+                return None
+            account.password_hash = password_hash
+            account.activation_state = "ACTIVATED"
+            account.activated_at = activated_at
+            account.updated_at = activated_at
+            challenge.consumed_at = activated_at
+            await session.flush()
+            return _account_state(account)
 
     async def set_active_workspace(self, session_id: str, workspace_id: str) -> None:
         async with self._session_factory() as session, session.begin():
@@ -540,6 +760,60 @@ class SqlAuthRepository:
             if record is not None:
                 record.active = False
                 record.revoked_at = revoked_at
+
+    async def admin_sessions(
+        self, actor_id: str, *, tenant_id: str, organization_id: str
+    ) -> list[dict[str, object]]:
+        async with self._session_factory() as session:
+            actor = await session.get(ActorRecord, actor_id)
+            if (
+                actor is None
+                or actor.tenant_id != tenant_id
+                or actor.organization_id != organization_id
+            ):
+                raise ValueError("actor is outside the authority boundary")
+            rows = await session.scalars(
+                select(AuthSessionRecord)
+                .where(AuthSessionRecord.actor_id == actor_id)
+                .order_by(AuthSessionRecord.issued_at.desc())
+            )
+            return [
+                {
+                    "session_id": row.session_id,
+                    "issued_at": _utc(row.issued_at),
+                    "expires_at": _utc(row.expires_at),
+                    "active_workspace_id": row.active_workspace_id,
+                    "revoked": not row.active or row.revoked_at is not None,
+                    "expired": _utc(row.expires_at) <= datetime.now(UTC),
+                    "last_activity_at": _utc(row.last_activity_at)
+                    if row.last_activity_at
+                    else None,
+                }
+                for row in rows.all()
+            ]
+
+    async def revoke_actor_session(
+        self,
+        actor_id: str,
+        session_id: str,
+        *,
+        tenant_id: str,
+        organization_id: str,
+        revoked_at: datetime,
+    ) -> None:
+        async with self._session_factory() as session, session.begin():
+            actor = await session.get(ActorRecord, actor_id)
+            record = await session.get(AuthSessionRecord, session_id)
+            if (
+                actor is None
+                or actor.tenant_id != tenant_id
+                or actor.organization_id != organization_id
+                or record is None
+                or record.actor_id != actor_id
+            ):
+                raise ValueError("session is outside the authority boundary")
+            record.active = False
+            record.revoked_at = revoked_at
 
     @staticmethod
     async def _membership_boundary(
@@ -577,10 +851,14 @@ def _account_state(record: AuthAccountRecord) -> AccountState:
         record.organization_id,
         record.display_name,
         record.active,
+        record.administrative_state,
+        record.activation_state,
+        record.primary_workspace_id,
     )
 
 
 def _access_state(membership: WorkspaceMembershipRecord, workspace: WorkspaceRecord) -> AccessState:
+    now = datetime.now(UTC)
     return AccessState(
         workspace.workspace_id,
         workspace.workspace_key,
@@ -593,7 +871,11 @@ def _access_state(membership: WorkspaceMembershipRecord, workspace: WorkspaceRec
         tuple(membership.permission_refs),
         tuple(membership.scope_refs),
         membership.data_scope,
-        membership.active and workspace.active,
+        membership.active
+        and membership.revoked_at is None
+        and membership.effective_at <= now
+        and (membership.expires_at is None or membership.expires_at > now)
+        and workspace.active,
     )
 
 

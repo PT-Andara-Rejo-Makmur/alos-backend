@@ -50,6 +50,16 @@ def _upgrade(url: str, revision: str) -> None:
     )
 
 
+def _attempt_upgrade(url: str, revision: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(  # noqa: S603 - arguments are fixed test migrations and an explicit test database URL
+        [sys.executable, "-m", "alembic", "upgrade", revision],
+        check=False,
+        env={**os.environ, "DATABASE_URL": url},
+        capture_output=True,
+        text=True,
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("database_name", "starting_revision"),
@@ -140,3 +150,130 @@ async def test_postgres_upgrade_matches_runtime_metadata(
         "ix_strategy_revisions_target",
     }
     assert "uq_strategy_target_relationship_exact_versions" in relationship_constraints
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("database_name", "roles", "message"),
+    (
+        (
+            "alos_role_multi_preflight",
+            '["DIVISION_LEAD", "IT_ADMIN"]',
+            "one role per membership",
+        ),
+        (
+            "alos_role_review_preflight",
+            '["BUSINESS_REVIEWER"]',
+            "role=BUSINESS_REVIEWER actor_id=actor_preflight workspace_id=workspace_it",
+        ),
+    ),
+)
+async def test_identity_migration_fails_closed_for_unremediated_memberships(
+    database_name: str, roles: str, message: str
+) -> None:
+    await _recreate_database(database_name)
+    url = _database_url(database_name)
+    _upgrade(url, "0022_strategy_planning")
+    connection = await asyncpg.connect(_asyncpg_url(url))
+    try:
+        await connection.execute(
+            """
+            INSERT INTO core.actors (actor_id, tenant_id, organization_id, display_name, active)
+            VALUES ('actor_preflight', 'tenant_default', 'org_default', 'Preflight Actor', true)
+            """
+        )
+        await connection.execute(
+            """
+            INSERT INTO core.workspace_memberships (
+                actor_id, workspace_id, tenant_id, organization_id, roles,
+                permission_refs, scope_refs, data_scope, active, created_at, revoked_at
+            )
+            VALUES (
+                'actor_preflight', 'workspace_it', 'tenant_default', 'org_default',
+                $1::json, '["it.read"]'::json, '[]'::json, 'WORKSPACE', true, now(), NULL
+            )
+            """,
+            roles,
+        )
+    finally:
+        await connection.close()
+
+    result = _attempt_upgrade(url, "head")
+    assert result.returncode != 0
+    assert message in result.stderr
+
+
+@pytest.mark.asyncio
+async def test_identity_migration_maps_equivalent_roles_without_changing_authority() -> None:
+    database_name = "alos_role_equivalent_migration"
+    await _recreate_database(database_name)
+    url = _database_url(database_name)
+    _upgrade(url, "0022_strategy_planning")
+    connection = await asyncpg.connect(_asyncpg_url(url))
+    try:
+        await connection.execute(
+            """
+            INSERT INTO core.actors (actor_id, tenant_id, organization_id, display_name, active)
+            VALUES ('actor_equivalent', 'tenant_default', 'org_default', 'Equivalent Actor', true)
+            """
+        )
+        await connection.execute(
+            """
+            INSERT INTO core.workspace_memberships (
+                actor_id, workspace_id, tenant_id, organization_id, roles,
+                permission_refs, scope_refs, data_scope, active, created_at, revoked_at
+            )
+            VALUES (
+                'actor_equivalent', 'workspace_it', 'tenant_default', 'org_default',
+                '["WORKSPACE_LEAD"]'::json, '["it.read"]'::json,
+                '["scope.it"]'::json, 'WORKSPACE', true, now(), NULL
+            )
+            """
+        )
+        await connection.execute(
+            """
+            INSERT INTO core.role_grants (
+                tenant_id, organization_id, role_id, permission_refs, scope_refs, active
+            ) VALUES (
+                'tenant_default', 'org_default', 'WORKSPACE_LEAD',
+                '["strategy.division.manage"]'::json, '["scope.division"]'::json, true
+            )
+            """
+        )
+    finally:
+        await connection.close()
+
+    _upgrade(url, "head")
+    connection = await asyncpg.connect(_asyncpg_url(url))
+    try:
+        membership = await connection.fetchrow(
+            """
+            SELECT roles::text AS roles, permission_refs::text AS permissions,
+                   scope_refs::text AS scopes, data_scope, active, revoked_at,
+                   effective_at, updated_at
+            FROM core.workspace_memberships
+            WHERE actor_id = 'actor_equivalent' AND workspace_id = 'workspace_it'
+            """
+        )
+        grant = await connection.fetchrow(
+            """
+            SELECT role_id, permission_refs::text AS permissions, scope_refs::text AS scopes, active
+            FROM core.role_grants
+            WHERE tenant_id = 'tenant_default' AND organization_id = 'org_default'
+            """
+        )
+    finally:
+        await connection.close()
+
+    assert membership["roles"] == '["DIVISION_LEAD"]'
+    assert membership["permissions"] == '["it.read"]'
+    assert membership["scopes"] == '["scope.it"]'
+    assert membership["data_scope"] == "WORKSPACE"
+    assert membership["active"] is True
+    assert membership["revoked_at"] is None
+    assert membership["effective_at"] is not None
+    assert membership["updated_at"] is not None
+    assert grant["role_id"] == "DIVISION_LEAD"
+    assert grant["permissions"] == '["strategy.division.manage"]'
+    assert grant["scopes"] == '["scope.division"]'
+    assert grant["active"] is True

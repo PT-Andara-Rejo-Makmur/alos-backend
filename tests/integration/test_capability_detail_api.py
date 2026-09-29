@@ -141,7 +141,7 @@ async def build_workspace() -> tuple[httpx.AsyncClient, DetailGenesisStub, str, 
         client,
         "restricted@detail.local",
         permissions=[],
-        role="BUSINESS_REVIEWER",
+        role="DIVISION_MEMBER",
     )
     await client.post(
         "/api/v1/genesis/factory/analyze",

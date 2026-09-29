@@ -54,7 +54,7 @@ class StrategyService:
         if "EXECUTIVE" in principal.roles and "strategy.company.manage" in principal.permissions:
             actions.append("CREATE_COMPANY_PLAN")
         if (
-            "WORKSPACE_LEAD" in principal.roles
+            "DIVISION_LEAD" in principal.roles
             and "strategy.division.manage" in principal.permissions
         ):
             actions.append("CREATE_DIVISION_PLAN")

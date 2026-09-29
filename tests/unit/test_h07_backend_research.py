@@ -28,6 +28,7 @@ def session_factory():
                 "governance": "main",
                 "research": "main",
                 "evidence": "main",
+                "hr": "main",
             }
         },
     )

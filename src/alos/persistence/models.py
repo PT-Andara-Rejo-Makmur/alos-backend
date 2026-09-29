@@ -1,12 +1,14 @@
 """Minimal authoritative persistence model; cross-repo payloads remain in alos-contracts."""
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -151,7 +153,13 @@ class ActorRecord(Base):
 
 class WorkspaceMembershipRecord(Base):
     __tablename__ = "workspace_memberships"
-    __table_args__ = {"schema": "core"}  # noqa: RUF012
+    __table_args__ = (
+        CheckConstraint(
+            "jsonb_array_length(roles::jsonb) = 1",
+            name="ck_workspace_memberships_one_role",
+        ).ddl_if(dialect="postgresql"),
+        {"schema": "core"},
+    )
 
     actor_id: Mapped[str] = mapped_column(ForeignKey("core.actors.actor_id"), primary_key=True)
     workspace_id: Mapped[str] = mapped_column(
@@ -165,6 +173,9 @@ class WorkspaceMembershipRecord(Base):
     data_scope: Mapped[str] = mapped_column(String(32), default="OWN_ASSIGNED")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    effective_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -554,6 +565,9 @@ class AuthAccountRecord(Base):
     actor_id: Mapped[str] = mapped_column(String(128), index=True)
     tenant_id: Mapped[str] = mapped_column(String(128), index=True)
     organization_id: Mapped[str] = mapped_column(String(128), index=True)
+    primary_workspace_id: Mapped[str | None] = mapped_column(
+        ForeignKey("core.workspaces.workspace_id"), nullable=True
+    )
     legacy_workspace_id: Mapped[str | None] = mapped_column(
         "workspace_id", String(128), nullable=True, index=True
     )
@@ -561,6 +575,9 @@ class AuthAccountRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    administrative_state: Mapped[str] = mapped_column(String(16), default="ENABLED")
+    activation_state: Mapped[str] = mapped_column(String(16), default="ACTIVATED")
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AuthSessionRecord(Base):
@@ -583,8 +600,53 @@ class AuthSessionRecord(Base):
     token_hash: Mapped[str] = mapped_column(Text)
     issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_activity_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class ActivationChallengeRecord(Base):
+    __tablename__ = "activation_challenges"
+    __table_args__ = {"schema": "core"}  # noqa: RUF012
+
+    challenge_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("core.auth_accounts.account_id", name="fk_activation_challenge_account")
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class EmployeeRecord(Base):
+    __tablename__ = "employees"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "organization_id", "employee_number", name="uq_hr_employee_number"
+        ),
+        {"schema": "hr"},
+    )
+
+    employee_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), index=True)
+    organization_id: Mapped[str] = mapped_column(String(128), index=True)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey("core.workspaces.workspace_id"), index=True
+    )
+    actor_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    employee_number: Mapped[str] = mapped_column(String(128))
+    full_name: Mapped[str] = mapped_column(String(300))
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    employment_status: Mapped[str] = mapped_column(String(32), default="ACTIVE", index=True)
+    join_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    department_code: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    position_title: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class ReleaseLifecycleEventRecord(Base):

@@ -1,58 +1,60 @@
-# Canonical Identity and Workspace Access
+# Identity and Access
 
-ALOS Backend is the only authority for authentication, actor identity, organization boundary,
-workspace membership, roles, permissions, scopes, and active workspace. Web projects these facts;
-GENESIS receives only the Backend-issued execution context it needs.
+ALOS Backend is the authority for account lifecycle, workspace membership, and session state. The
+active authorization roles are `EXECUTIVE`, `DIVISION_LEAD`, `DIVISION_MEMBER`, and `IT_ADMIN`.
+Each workspace membership carries exactly one role. Effective and optional expiration times are
+checked with revocation, workspace state, and account state before access is projected.
 
-## Persistent model
+## Employee provisioning
 
-- `auth_accounts` owns credential state and links an account to one canonical actor.
-- `identity_actors` owns tenant, organization, display name, and active state.
-- `identity_workspaces` owns stable workspace key, type, organizational unit, division, and active state.
-- `identity_memberships` owns per-workspace role, permission, scope, data scope, and revocation state.
-- `auth_sessions` stores only a SHA-256 digest of a random opaque token, an expiry, revocation state,
-  and the selected active workspace.
+`hr.employees` remains the employee source. Identity uses `employee_id` and `actor_id` to link an
+existing eligible employee to an account; it does not modify employment, department, position, or
+employment dates. `GET /api/v1/identity/provisioning-candidates` returns the minimum employee fields
+after Backend filters to the caller's tenant and organization, active employment, current employment
+dates, and unlinked records.
 
-Migration `0008_canonical_identity_access` backfills the new workspace/session fields before making
-canonical fields required. Its downgrade is intentionally disabled because reverting would discard
-authority and revocation semantics.
+`POST /api/v1/identity/accounts` accepts employee, account email, initial workspace, one role,
+effective and optional expiration times, and a note. Backend derives tenant and organization from
+the authenticated administrator, checks the workspace and role policy, then atomically creates the
+actor, account, initial membership, employee link, and activation challenge. The request cannot
+select permissions, scopes, data scope, or a password.
 
-## Public session flow
+New accounts begin `ENABLED` and `PENDING`. Login remains denied until the employee activates with
+a one-time expiring token and chooses a password. The database stores a challenge hash only. Challenge
+creation does not imply delivery; this backend does not claim that an email or message was sent.
+The activation sink is available only when `APP_ENV=test`.
 
-1. `POST /api/v1/auth/login` verifies the password and creates a persisted, expiring session.
-2. `GET /api/v1/auth/whoami` resolves the account, actor, active memberships, and active workspace
-   again; it does not trust identity facts supplied by the caller.
-3. `GET /api/v1/workspaces` returns only active memberships for the authenticated actor.
-4. `PUT /api/v1/auth/active-workspace` accepts a workspace id only when an active membership exists.
-5. `POST /api/v1/auth/logout` revokes the persisted session.
+## Membership and account lifecycle
 
-The bearer value is an opaque session token, not a JWT. Production uses the SQL repository.
-The in-memory repository is selected only for `APP_ENV=test`.
+The account's primary workspace is a Backend-owned reference to an active membership. It does not
+grant access or select a session's active workspace. Revoking the primary membership clears the
+reference and clears any session selection for that workspace. Membership revocation is soft and
+preserves history.
 
-## Provisioning and vocabulary
+Account administration exposes separate administrative and activation states. Suspending an account
+blocks login and revokes its sessions without changing HR status. Reactivation enables the account
+but does not restore revoked memberships or sessions.
 
-Production account creation is `POST /api/v1/identity/accounts` and requires the
-`identity.accounts.manage` permission. `/api/v1/auth/register` is excluded from OpenAPI and returns
-not-found unless explicitly enabled in test/development.
+Session administration returns only session ID, timestamps, active workspace, revocation state, and
+last activity. Token values and token hashes are never projected. Identity history is read from the
+append-only audit store and omits credential material.
 
-Administrative lifecycle operations are actor-scoped and organization-bounded:
+## Authority and errors
 
-- list access requires `identity.memberships.read`;
-- assign, replace, or revoke a membership requires `identity.memberships.manage`;
-- activate or suspend an account requires `identity.accounts.manage`.
+All identity administration is bounded to the caller's tenant and organization and requires the
+Backend permission policy plus an active `IT_ADMIN` membership where specified by the route. The
+`IT_ADMIN` role alone grants no Finance, HR, Legal, or other business-domain access. `EXECUTIVE` alone
+grants no identity administration permission. Client authority fields are rejected by strict request
+models.
 
-They use the shared authorization enforcer instead of role-name checks. Each successful material
-change records the authenticated administrator actor and correlation id in the append-only audit
-sink. Suspending an account also revokes its current sessions; activating it never restores them.
+Duplicate account or membership state returns a conflict. Missing resources return not found,
+authorization failures return forbidden, and invalid requests return validation errors. Failed
+provisioning rolls back the employee link and all created identity records together.
 
-Canonical roles are `EXECUTIVE`, `WORKSPACE_LEAD`, `WORKSPACE_MEMBER`, `BUSINESS_REVIEWER`,
-`IT_ADMIN`, `AI_ADMIN`, `TECHNICAL_REVIEWER`, and `QA_ASSURANCE`. Legacy role aliases are accepted
-only at the gated bootstrap boundary and are normalized before persistence.
+## Storage migration
 
-## Fail-closed invariants
-
-- inactive account, actor, workspace, or membership grants no access;
-- expired or revoked sessions are rejected;
-- selecting a workspace cannot create or expand membership;
-- public requests cannot override tenant, organization, role, permission, scope, or data scope;
-- downstream runtime authorization is derived from the active Backend membership.
+Migration `0023_identity_access` is append-only. It converts only equivalent persisted workspace
+roles and policy grants, preserves permission and scope metadata, and adds membership dates,
+account lifecycle fields, primary workspace, session activity, and activation challenges. It fails
+closed when a membership has multiple roles or an active non-equivalent legacy role or grant remains.
+Historical migrations remain unchanged.

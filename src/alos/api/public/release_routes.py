@@ -71,7 +71,7 @@ async def create_release(
     principal: CurrentPrincipalDependency,
     authority: ReleaseAuthorityDependency,
 ) -> dict[str, Any]:
-    _authorize(principal, payload, permission="release.create", role="AI_ADMIN")
+    _authorize(principal, payload, permission="release.create", role="IT_ADMIN")
     try:
         release = await authority.create(
             release_id=str(payload["release_id"]),

@@ -156,7 +156,7 @@ async def test_global_navigation_catalog_requires_it_account_admin(
         client,
         email="navigation-non-admin@andara.local",
         permissions=["identity.accounts.manage"],
-        roles=["WORKSPACE_MEMBER"],
+        roles=["DIVISION_MEMBER"],
     )
 
     response = await client.get("/api/v1/domains/navigation/navigation_items", headers=headers)
@@ -211,12 +211,13 @@ async def test_domain_crud_round_trip_and_shared_workspace_scope() -> None:
                 """
                 INSERT INTO core.workspace_memberships (
                     actor_id, workspace_id, tenant_id, organization_id, roles,
-                    permission_refs, scope_refs, data_scope, active, created_at
+                    permission_refs, scope_refs, data_scope, active, created_at,
+                    effective_at, expires_at, updated_at
                 )
                 VALUES (
                     $1, 'workspace_it', 'tenant_default', 'org_default',
                     '["IT_ADMIN"]'::jsonb, '[]'::jsonb, '[]'::jsonb,
-                    'WORKSPACE', true, now()
+                    'WORKSPACE', true, now(), now(), NULL, now()
                 )
                 """,
                 actor_id,
@@ -258,7 +259,7 @@ async def test_domain_crud_round_trip_and_shared_workspace_scope() -> None:
             client,
             email="domain-crud-hr@andara.local",
             permissions=["work.read", "finance.read", "finance.write"],
-            roles=["WORKSPACE_MEMBER"],
+            roles=["DIVISION_MEMBER"],
             workspace_id="workspace_hr",
         )
         hr_actor_id = (await client.get("/api/v1/auth/whoami", headers=hr_headers)).json()["actor"][
@@ -277,13 +278,14 @@ async def test_domain_crud_round_trip_and_shared_workspace_scope() -> None:
                 """
                 INSERT INTO core.workspace_memberships (
                     actor_id, workspace_id, tenant_id, organization_id, roles,
-                    permission_refs, scope_refs, data_scope, active, created_at
+                    permission_refs, scope_refs, data_scope, active, created_at,
+                    effective_at, expires_at, updated_at
                 )
                 VALUES (
                     $1, 'workspace_hr', 'tenant_default', 'org_default',
-                    '["WORKSPACE_MEMBER"]'::jsonb,
+                    '["DIVISION_MEMBER"]'::jsonb,
                     '["work.read","finance.read","finance.write"]'::jsonb,
-                    '[]'::jsonb, 'WORKSPACE', true, now()
+                    '[]'::jsonb, 'WORKSPACE', true, now(), now(), NULL, now()
                 )
                 """,
                 hr_actor_id,
@@ -347,7 +349,7 @@ async def test_domain_crud_round_trip_and_shared_workspace_scope() -> None:
             client,
             email="sales-lead@andara.local",
             permissions=["sales.read", "sales.write", "sales.delete"],
-            roles=["WORKSPACE_LEAD"],
+            roles=["DIVISION_LEAD"],
             workspace_id="workspace_sales",
         )
         sales_actor_id = (await client.get("/api/v1/auth/whoami", headers=sales_headers)).json()[
@@ -358,7 +360,7 @@ async def test_domain_crud_round_trip_and_shared_workspace_scope() -> None:
             client,
             email="marketing-lead@andara.local",
             permissions=["marketing.read", "marketing.write", "marketing.delete"],
-            roles=["WORKSPACE_LEAD"],
+            roles=["DIVISION_LEAD"],
             workspace_id="workspace_marketing",
         )
         marketing_actor_id = (
@@ -368,7 +370,7 @@ async def test_domain_crud_round_trip_and_shared_workspace_scope() -> None:
             sales_actor_id,
             {
                 "workspace_id": "workspace_marketing",
-                "role_refs": ["WORKSPACE_MEMBER"],
+                "role_refs": ["DIVISION_MEMBER"],
                 "permission_refs": ["marketing.read"],
                 "scope_refs": [],
                 "data_scope": "WORKSPACE",
@@ -405,21 +407,22 @@ async def test_domain_crud_round_trip_and_shared_workspace_scope() -> None:
                 """
                 INSERT INTO core.workspace_memberships (
                     actor_id, workspace_id, tenant_id, organization_id, roles,
-                    permission_refs, scope_refs, data_scope, active, created_at
+                    permission_refs, scope_refs, data_scope, active, created_at,
+                    effective_at, expires_at, updated_at
                 )
                 VALUES
                     ($1, 'workspace_sales', 'tenant_default', 'org_default',
-                     '["WORKSPACE_LEAD"]'::jsonb,
+                     '["DIVISION_LEAD"]'::jsonb,
                      '["sales.read","sales.write","sales.delete"]'::jsonb,
-                     '[]'::jsonb, 'WORKSPACE', true, now()),
+                     '[]'::jsonb, 'WORKSPACE', true, now(), now(), NULL, now()),
                     ($2, 'workspace_marketing', 'tenant_default', 'org_default',
-                     '["WORKSPACE_LEAD"]'::jsonb,
+                     '["DIVISION_LEAD"]'::jsonb,
                      '["marketing.read","marketing.write","marketing.delete"]'::jsonb,
-                     '[]'::jsonb, 'WORKSPACE', true, now()),
+                     '[]'::jsonb, 'WORKSPACE', true, now(), now(), NULL, now()),
                     -- Tambahkan keanggotaan kedua untuk sales_actor (Multi-Workspace)
                     ($1, 'workspace_marketing', 'tenant_default', 'org_default',
-                     '["WORKSPACE_MEMBER"]'::jsonb, '["marketing.read"]'::jsonb,
-                     '[]'::jsonb, 'WORKSPACE', true, now())
+                     '["DIVISION_MEMBER"]'::jsonb, '["marketing.read"]'::jsonb,
+                     '[]'::jsonb, 'WORKSPACE', true, now(), now(), NULL, now())
                 """,
                 sales_actor_id,
                 marketing_actor_id,

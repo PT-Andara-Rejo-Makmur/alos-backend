@@ -47,9 +47,12 @@ async def test_initial_bootstrap_creates_minimal_canonical_authority_once() -> N
 def test_bootstrap_cli_has_no_password_or_override_argument() -> None:
     options = {
         action.dest
-        for action in build_parser()._subparsers._group_actions[0].choices[  # type: ignore[union-attr]
+        for action in build_parser()
+        ._subparsers._group_actions[0]
+        .choices[  # type: ignore[union-attr]
             "bootstrap-identity"
-        ]._actions
+        ]
+        ._actions
     }
     assert "password" not in options
     assert "override" not in options

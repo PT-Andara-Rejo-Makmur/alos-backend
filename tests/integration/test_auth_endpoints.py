@@ -42,12 +42,31 @@ async def _login_headers(client: httpx.AsyncClient, email: str) -> dict[str, str
 
 def _provision_payload(*, workspace_id: str, email: str) -> dict:
     return {
+        "employee_id": "employee_" + email.split("@", 1)[0].replace("-", "_"),
         "email": email,
-        "password": "StrongPass!456",
-        "display_name": "Provisioned Account",
         "workspace_id": workspace_id,
-        "role_refs": ["WORKSPACE_MEMBER"],
+        "role_refs": ["DIVISION_MEMBER"],
+        "effective_at": "2026-01-01T00:00:00Z",
     }
+
+
+def _seed_test_employee(
+    client: httpx.AsyncClient,
+    employee_id: str,
+    *,
+    tenant_id: str,
+    organization_id: str,
+    full_name: str = "Provisioned Employee",
+    employment_status: str = "ACTIVE",
+) -> None:
+    app = client._transport.app  # type: ignore[attr-defined]
+    app.state.auth_service._repository.add_test_employee(
+        employee_id,
+        tenant_id=tenant_id,
+        organization_id=organization_id,
+        full_name=full_name,
+        employment_status=employment_status,
+    )
 
 
 @pytest.mark.asyncio
@@ -85,7 +104,7 @@ async def test_register_and_login_round_trip(client: httpx.AsyncClient) -> None:
     active = body["principal"]["active_workspace"]
     assert active["workspace"]["workspace_id"] == "workspace_operations"
     assert "scope.workspace.operations" in active["scope_refs"]
-    assert active["role_refs"] == ["WORKSPACE_LEAD"]
+    assert active["role_refs"] == ["DIVISION_LEAD"]
 
 
 @pytest.mark.asyncio
@@ -133,7 +152,7 @@ async def test_workspace_listing_and_selection_fail_closed(client: httpx.AsyncCl
             "tenant_id": "tenant_default",
             "organization_id": "org_default",
             "workspace_id": "workspace_operations",
-            "role_refs": ["WORKSPACE_MEMBER"],
+            "role_refs": ["DIVISION_MEMBER"],
             "permission_refs": ["documents.read"],
             "scope_refs": ["scope.workspace.operations"],
             "data_scope": "WORKSPACE",
@@ -172,7 +191,7 @@ async def test_logout_revokes_session(client: httpx.AsyncClient) -> None:
             "tenant_id": "tenant_default",
             "organization_id": "org_default",
             "workspace_id": "workspace_operations",
-            "role_refs": ["WORKSPACE_MEMBER"],
+            "role_refs": ["DIVISION_MEMBER"],
         },
     )
     login = await client.post(
@@ -218,26 +237,28 @@ async def test_account_provisioning_uses_permission_policy_and_records_actor(
         json={"email": "identity-admin@andara.local", "password": "StrongPass!123"},
     )
     principal = login.json()["principal"]
+    employee_id = _provision_payload(
+        workspace_id="workspace_operations", email="provisioned@andara.local"
+    )["employee_id"]
+    _seed_test_employee(
+        client,
+        employee_id,
+        tenant_id="tenant_default",
+        organization_id="org_default",
+    )
     response = await client.post(
         "/api/v1/identity/accounts",
         headers={
             "Authorization": f"Bearer {login.json()['access_token']}",
             "X-Correlation-ID": "corr_identity_provision_001",
         },
-        json={
-            "email": "provisioned@andara.local",
-            "password": "StrongPass!456",
-            "display_name": "Provisioned Account",
-            "workspace_id": "workspace_operations",
-            "role_refs": ["WORKSPACE_MEMBER"],
-            "permission_refs": ["documents.read"],
-            "scope_refs": ["scope.workspace.operations"],
-            "data_scope": "WORKSPACE",
-        },
+        json=_provision_payload(
+            workspace_id="workspace_operations", email="provisioned@andara.local"
+        ),
     )
 
     assert response.status_code == 201
-    assert response.json()["actor"]["actor_id"] != principal["actor"]["actor_id"]
+    assert response.json()["actor_id"] != principal["actor"]["actor_id"]
 
     audit_events = client._transport.app.state.identity_audit.list_events(  # type: ignore[attr-defined]
         tenant_id="tenant_default"
@@ -245,6 +266,59 @@ async def test_account_provisioning_uses_permission_policy_and_records_actor(
     event = audit_events[0]
     assert event.event_type == "identity.account.provisioned"
     assert event.actor_id == principal["actor"]["actor_id"]
+
+
+@pytest.mark.asyncio
+async def test_employee_activation_owns_password_setup(client: httpx.AsyncClient) -> None:
+    await _register_identity(
+        client,
+        email="activation-admin@andara.local",
+        tenant_id="tenant_activation",
+        organization_id="org_activation",
+        workspace_id="workspace_activation",
+        permissions=["identity.accounts.manage"],
+    )
+    payload = _provision_payload(
+        workspace_id="workspace_activation", email="new-employee@andara.local"
+    )
+    _seed_test_employee(
+        client,
+        payload["employee_id"],
+        tenant_id="tenant_activation",
+        organization_id="org_activation",
+        full_name="New Employee",
+    )
+    provisioned = await client.post(
+        "/api/v1/identity/accounts",
+        headers=await _login_headers(client, "activation-admin@andara.local"),
+        json=payload,
+    )
+    assert provisioned.status_code == 201
+    assert provisioned.json()["activation_state"] == "PENDING"
+
+    denied_login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "new-employee@andara.local", "password": "EmployeePass!123"},
+    )
+    assert denied_login.status_code == 401
+
+    app = client._transport.app  # type: ignore[attr-defined]
+    token = app.state.test_activation_sink["new-employee@andara.local"]
+    activation = await client.post(
+        "/api/v1/identity/activate",
+        json={
+            "token": token,
+            "password": "EmployeePass!123",
+            "password_confirmation": "EmployeePass!123",
+        },
+    )
+    assert activation.status_code == 200
+    assert activation.json()["activation_state"] == "ACTIVATED"
+    login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "new-employee@andara.local", "password": "EmployeePass!123"},
+    )
+    assert login.status_code == 200
 
 
 @pytest.mark.asyncio
@@ -256,6 +330,11 @@ async def test_account_provisioning_uses_permission_policy_and_records_actor(
         "workspace_key",
         "workspace_name",
         "workspace_type",
+        "password",
+        "permission_refs",
+        "scope_refs",
+        "data_scope",
+        "actor_id",
     ],
 )
 async def test_public_provisioning_rejects_client_authority_metadata(
@@ -296,6 +375,15 @@ async def test_public_provisioning_derives_boundary_without_inheriting_admin_sco
         workspace_id="workspace_scope",
         permissions=["identity.accounts.manage"],
     )
+    employee_id = _provision_payload(
+        workspace_id="workspace_scope", email="least-privilege@andara.local"
+    )["employee_id"]
+    _seed_test_employee(
+        client,
+        employee_id,
+        tenant_id="tenant_scope",
+        organization_id="org_scope",
+    )
     response = await client.post(
         "/api/v1/identity/accounts",
         headers=await _login_headers(client, "scope-admin@andara.local"),
@@ -306,8 +394,9 @@ async def test_public_provisioning_derives_boundary_without_inheriting_admin_sco
     )
     assert response.status_code == 201
     body = response.json()
-    assert body["actor"]["tenant_id"] == "tenant_scope"
-    assert body["actor"]["organization_id"] == "org_scope"
+    assert body["actor_id"]
+    assert "tenant_id" not in body
+    assert "organization_id" not in body
     assert body["workspace_access"][0]["scope_refs"] == []
     assert body["workspace_access"][0]["permission_refs"] == []
 
@@ -328,16 +417,7 @@ async def test_identity_admin_catalogs_are_canonical_and_organization_bounded(
 
     roles = await client.get("/api/v1/identity/assignable-roles", headers=headers)
     assert roles.status_code == 200
-    assert set(roles.json()) == {
-        "EXECUTIVE",
-        "WORKSPACE_LEAD",
-        "WORKSPACE_MEMBER",
-        "BUSINESS_REVIEWER",
-        "IT_ADMIN",
-        "AI_ADMIN",
-        "TECHNICAL_REVIEWER",
-        "QA_ASSURANCE",
-    }
+    assert roles.json() == ["DIVISION_LEAD", "DIVISION_MEMBER", "EXECUTIVE", "IT_ADMIN"]
 
     workspaces = await client.get("/api/v1/identity/workspaces", headers=headers)
     assert workspaces.status_code == 200
@@ -357,10 +437,61 @@ async def test_identity_admin_catalogs_are_canonical_and_organization_bounded(
 
     accounts = await client.get("/api/v1/identity/accounts", headers=headers)
     assert accounts.status_code == 200
-    assert [account["email"] for account in accounts.json()] == [
-        "catalog-admin@andara.local"
-    ]
+    assert [account["email"] for account in accounts.json()] == ["catalog-admin@andara.local"]
     assert "password_hash" not in accounts.json()[0]
+
+
+@pytest.mark.asyncio
+async def test_provisioning_candidates_are_minimal_and_backend_filtered(
+    client: httpx.AsyncClient,
+) -> None:
+    await _register_identity(
+        client,
+        email="candidate-admin@andara.local",
+        tenant_id="tenant_candidate",
+        organization_id="org_candidate",
+        workspace_id="workspace_candidate",
+        permissions=["identity.accounts.manage"],
+    )
+    headers = await _login_headers(client, "candidate-admin@andara.local")
+    _seed_test_employee(
+        client,
+        "employee_candidate_available",
+        tenant_id="tenant_candidate",
+        organization_id="org_candidate",
+        full_name="Available Employee",
+    )
+    _seed_test_employee(
+        client,
+        "employee_candidate_inactive",
+        tenant_id="tenant_candidate",
+        organization_id="org_candidate",
+        full_name="Inactive Employee",
+        employment_status="INACTIVE",
+    )
+    _seed_test_employee(
+        client,
+        "employee_candidate_foreign",
+        tenant_id="tenant_candidate",
+        organization_id="org_elsewhere",
+        full_name="Foreign Employee",
+    )
+
+    response = await client.get("/api/v1/identity/provisioning-candidates", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "employee_id": "employee_candidate_available",
+            "employee_number": "employee_candidate_available",
+            "full_name": "Available Employee",
+            "email": None,
+            "department_code": None,
+            "position_title": None,
+            "employment_status": "ACTIVE",
+            "linkage_state": "AVAILABLE",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -374,7 +505,7 @@ async def test_account_provisioning_denies_missing_permission(client: httpx.Asyn
             "tenant_id": "tenant_default",
             "organization_id": "org_default",
             "workspace_id": "workspace_operations",
-            "role_refs": ["WORKSPACE_MEMBER"],
+            "role_refs": ["DIVISION_MEMBER"],
             "scope_refs": ["scope.identity.manage"],
         },
     )
@@ -385,13 +516,7 @@ async def test_account_provisioning_denies_missing_permission(client: httpx.Asyn
     response = await client.post(
         "/api/v1/identity/accounts",
         headers={"Authorization": f"Bearer {login.json()['access_token']}"},
-        json={
-            "email": "denied@andara.local",
-            "password": "StrongPass!456",
-            "display_name": "Denied Account",
-            "workspace_id": "workspace_operations",
-            "role_refs": ["WORKSPACE_MEMBER"],
-        },
+        json=_provision_payload(workspace_id="workspace_operations", email="denied@andara.local"),
     )
 
     assert response.status_code == 403
@@ -528,7 +653,8 @@ async def test_membership_assignment_denies_cross_organization_actor(
         headers=await _login_headers(client, "membership-admin@andara.local"),
         json={
             "workspace_id": "workspace_a",
-            "role_refs": ["WORKSPACE_MEMBER"],
+            "role_refs": ["DIVISION_MEMBER"],
+            "effective_at": "2026-01-01T00:00:00Z",
         },
     )
 
@@ -562,9 +688,8 @@ async def test_multi_workspace_login_requires_explicit_selection_and_revocation_
         headers=initial_headers,
         json={
             "workspace_id": "workspace_beta",
-            "role_refs": ["WORKSPACE_LEAD"],
-            "permission_refs": ["identity.memberships.manage"],
-            "scope_refs": ["scope.identity.manage"],
+            "role_refs": ["DIVISION_LEAD"],
+            "effective_at": "2026-01-01T00:00:00Z",
         },
     )
     assert assigned.status_code == 201
@@ -591,7 +716,7 @@ async def test_multi_workspace_login_requires_explicit_selection_and_revocation_
     assert whoami.status_code == 200
     active = whoami.json()["active_workspace"]
     assert active["workspace"]["workspace_id"] == "workspace_beta"
-    assert active["role_refs"] == ["WORKSPACE_LEAD"]
+    assert active["role_refs"] == ["DIVISION_LEAD"]
     assert whoami.json()["actor"]["actor_id"] == actor_id
 
     revoked = await client.delete(
@@ -604,8 +729,7 @@ async def test_multi_workspace_login_requires_explicit_selection_and_revocation_
     assert after_revocation.status_code == 200
     assert after_revocation.json()["active_workspace"] is None
     assert {
-        item["workspace"]["workspace_id"]
-        for item in after_revocation.json()["workspace_access"]
+        item["workspace"]["workspace_id"] for item in after_revocation.json()["workspace_access"]
     } == {"workspace_alpha"}
     protected = await client.get(
         f"/api/v1/identity/actors/{actor_id}/access",
@@ -616,7 +740,7 @@ async def test_multi_workspace_login_requires_explicit_selection_and_revocation_
 
 
 @pytest.mark.asyncio
-async def test_production_provisioning_rejects_legacy_role_alias(
+async def test_production_provisioning_rejects_unsupported_role(
     client: httpx.AsyncClient,
 ) -> None:
     await _register_identity(
@@ -631,7 +755,7 @@ async def test_production_provisioning_rejects_legacy_role_alias(
         workspace_id="workspace_roles",
         email="legacy-role@andara.local",
     )
-    payload["role_refs"] = ["IT_LEAD"]
+    payload["role_refs"] = ["UNSUPPORTED_ROLE"]
 
     response = await client.post(
         "/api/v1/identity/accounts",
@@ -639,12 +763,11 @@ async def test_production_provisioning_rejects_legacy_role_alias(
         json=payload,
     )
 
-    assert response.status_code == 400
-    assert response.json()["code"] == "INVALID_AUTHORIZATION_ROLE"
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio
-async def test_membership_mutation_rejects_legacy_role_alias(
+async def test_membership_mutation_rejects_unsupported_role(
     client: httpx.AsyncClient,
 ) -> None:
     admin = await _register_identity(
@@ -661,12 +784,12 @@ async def test_membership_mutation_rejects_legacy_role_alias(
         headers=await _login_headers(client, "membership-role-admin@andara.local"),
         json={
             "workspace_id": "workspace_roles",
-            "role_refs": ["IT_LEAD"],
+            "role_refs": ["UNSUPPORTED_ROLE"],
+            "effective_at": "2026-01-01T00:00:00Z",
         },
     )
 
-    assert response.status_code == 400
-    assert response.json()["code"] == "INVALID_AUTHORIZATION_ROLE"
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -704,7 +827,7 @@ async def test_admin_manages_multi_workspace_membership_and_account_state(
             "workspace_id": "workspace_finance",
             "workspace_key": "FINANCE",
             "workspace_name": "Finance",
-            "role_refs": ["WORKSPACE_MEMBER"],
+            "role_refs": ["DIVISION_MEMBER"],
             "scope_refs": ["scope.workspace.finance"],
         },
     )
@@ -717,10 +840,8 @@ async def test_admin_manages_multi_workspace_membership_and_account_state(
     headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
     membership = {
         "workspace_id": "workspace_finance",
-        "role_refs": ["BUSINESS_REVIEWER"],
-        "permission_refs": ["finance.read"],
-        "scope_refs": ["scope.workspace.finance"],
-        "data_scope": "WORKSPACE",
+        "role_refs": ["DIVISION_MEMBER"],
+        "effective_at": "2026-01-01T00:00:00Z",
     }
 
     assigned = await client.post(
@@ -730,13 +851,12 @@ async def test_admin_manages_multi_workspace_membership_and_account_state(
     )
     assert assigned.status_code == 201
 
-    access = await client.get(
-        f"/api/v1/identity/actors/{admin_actor_id}/access", headers=headers
-    )
+    access = await client.get(f"/api/v1/identity/actors/{admin_actor_id}/access", headers=headers)
     assert access.status_code == 200
-    assert {
-        item["workspace"]["workspace_id"] for item in access.json()["workspace_access"]
-    } == {"workspace_operations", "workspace_finance"}
+    assert {item["workspace"]["workspace_id"] for item in access.json()["workspace_access"]} == {
+        "workspace_operations",
+        "workspace_finance",
+    }
 
     selected = await client.put(
         "/api/v1/auth/active-workspace",
@@ -755,10 +875,10 @@ async def test_admin_manages_multi_workspace_membership_and_account_state(
     updated = await client.put(
         f"/api/v1/identity/actors/{admin_actor_id}/memberships",
         headers=headers,
-        json={**membership, "role_refs": ["WORKSPACE_LEAD"]},
+        json={**membership, "role_refs": ["DIVISION_LEAD"]},
     )
     assert updated.status_code == 200
-    assert updated.json()["role_refs"] == ["WORKSPACE_LEAD"]
+    assert updated.json()["role_refs"] == ["DIVISION_LEAD"]
 
     suspended = await client.post(
         f"/api/v1/identity/actors/{target_actor_id}/suspend", headers=headers

@@ -19,7 +19,7 @@ def test_principal_factory_uses_canonical_execution_context() -> None:
     principal = factory.from_execution_context(payload)
 
     assert principal.actor_id == "actor_mvp1_it_lead"
-    assert principal.roles == frozenset({"IT_LEAD", "PLATFORM_OPERATOR"})
+    assert principal.roles == frozenset({"IT_ADMIN"})
     assert "permission.agent.run" in principal.permissions
 
 

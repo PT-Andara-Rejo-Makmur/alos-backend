@@ -350,7 +350,7 @@ async def test_public_skill_endpoints_omit_absent_optional_values() -> None:
             "tenant_id": "tenant_delta",
             "organization_id": "organization_delta",
             "workspace_id": "workspace_delta",
-            "role_refs": ["WORKSPACE_MEMBER"],
+            "role_refs": ["DIVISION_MEMBER"],
             "permissions": ["permission.a", "permission.b"],
             "scopes": ["scope.x", "scope.y"],
         }

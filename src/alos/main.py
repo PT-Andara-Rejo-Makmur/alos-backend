@@ -65,6 +65,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         version="0.1.0",
         description="Authoritative core platform API for ALOS.",
         lifespan=lifespan,
+        telemetry={"auto_configure": False},
     )
     app.state.settings = resolved
     app.state.started = False
@@ -79,8 +80,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if resolved.APP_ENV == "test"
         else SqlAuthRepository(app.state.database.session_factory)
     )
+    app.state.test_activation_sink = {} if resolved.APP_ENV == "test" else None
+    activation_sink = None
+    if resolved.APP_ENV == "test":
+
+        def store_test_activation(email: str, token: str) -> None:
+            app.state.test_activation_sink[email] = token
+
+        activation_sink = store_test_activation
     app.state.auth_service = AuthService(
-        auth_repository, session_ttl_minutes=resolved.AUTH_SESSION_TTL_MINUTES
+        auth_repository,
+        session_ttl_minutes=resolved.AUTH_SESSION_TTL_MINUTES,
+        activation_sink=activation_sink,
     )
     app.state.identity_audit = (
         InMemoryAuditRepository()

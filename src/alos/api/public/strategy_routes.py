@@ -118,7 +118,7 @@ def _plan_projection(plan: Plan, principal: CurrentPrincipalDependency) -> dict[
         "EXECUTIVE" in principal.roles and "strategy.company.manage" in principal.permissions
     )
     division_authority = (
-        "WORKSPACE_LEAD" in principal.roles
+        "DIVISION_LEAD" in principal.roles
         and "strategy.division.manage" in principal.permissions
         and plan.owner_workspace_id == principal.workspace_id
     )

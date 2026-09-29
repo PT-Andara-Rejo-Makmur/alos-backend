@@ -139,6 +139,7 @@ async def test_sql_run_and_step_persistence_reconstructs_ordered_history() -> No
                 "governance": "main",
                 "research": "main",
                 "evidence": "main",
+                "hr": "main",
             }
         },
     )
@@ -512,6 +513,7 @@ async def test_backlog_candidates_persist_as_draft_only_and_reject_self_promotio
                 "governance": "main",
                 "research": "main",
                 "evidence": "main",
+                "hr": "main",
             }
         },
     )

@@ -37,7 +37,7 @@ def principal(
     tenant: str = "tenant-1",
     organization: str = "org-1",
     workspace: str = "executive",
-    roles: frozenset[str] = frozenset({"EXECUTIVE", "BUSINESS_REVIEWER"}),
+    roles: frozenset[str] = frozenset({"EXECUTIVE"}),
     permissions: frozenset[str] = frozenset(
         {
             "strategy.read",
@@ -94,7 +94,7 @@ def target(identity: str, *, workspace: str = "executive", scope: str = "COMPANY
         "tenant-1",
         "org-1",
         workspace,
-        "EXECUTIVE" if scope == "COMPANY" else "WORKSPACE_LEAD",
+        "EXECUTIVE" if scope == "COMPANY" else "DIVISION_LEAD",
         "COUNT",
         "COUNT",
         period(),
@@ -233,7 +233,7 @@ def test_collection_authority_requires_role_and_permission():
     ]
     division = principal(
         workspace="sales",
-        roles=frozenset({"WORKSPACE_LEAD"}),
+        roles=frozenset({"DIVISION_LEAD"}),
         permissions=frozenset({"strategy.read", "strategy.division.manage"}),
     )
     assert StrategyService.authority_projection(division)["authorized_actions"] == [
@@ -241,7 +241,7 @@ def test_collection_authority_requires_role_and_permission():
     ]
     member = principal(
         workspace="sales",
-        roles=frozenset({"WORKSPACE_MEMBER"}),
+        roles=frozenset({"DIVISION_MEMBER"}),
         permissions=frozenset({"strategy.read"}),
     )
     assert StrategyService.authority_projection(member)["authorized_actions"] == []
@@ -326,7 +326,7 @@ async def test_scope_and_role_permission_denials():
     assert missing_permission.value.status_code == 403
     division_actor = principal(
         workspace="sales",
-        roles=frozenset({"WORKSPACE_LEAD"}),
+        roles=frozenset({"DIVISION_LEAD"}),
         permissions=frozenset({"strategy.read", "strategy.division.manage"}),
     )
     division_plan = replace(
@@ -447,7 +447,7 @@ async def test_preview_is_immutable_and_accept_creates_draft_only():
     await service.activate_plan(actor, "plan-rkap")
     division_actor = principal(
         workspace="sales",
-        roles=frozenset({"WORKSPACE_MEMBER"}),
+        roles=frozenset({"DIVISION_MEMBER"}),
         permissions=frozenset({"strategy.read"}),
     )
     visible = await service.list_targets(division_actor)

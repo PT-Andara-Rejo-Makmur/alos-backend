@@ -2,19 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 AuthorizationRole = Literal[
     "EXECUTIVE",
-    "WORKSPACE_LEAD",
-    "WORKSPACE_MEMBER",
-    "BUSINESS_REVIEWER",
+    "DIVISION_LEAD",
+    "DIVISION_MEMBER",
     "IT_ADMIN",
-    "AI_ADMIN",
-    "TECHNICAL_REVIEWER",
-    "QA_ASSURANCE",
 ]
 IdentityDataScope = Literal[
     "COMPANY", "ORGANIZATIONAL_UNIT", "WORKSPACE", "PROJECT", "OWN_ASSIGNED"
@@ -50,19 +47,42 @@ class RegisterRequest(BaseModel):
 class ProvisionAccountRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     email: str = Field(min_length=3, max_length=255)
-    password: str = Field(min_length=8, max_length=256)
-    display_name: str = Field(min_length=1, max_length=200)
+    employee_id: str = Field(min_length=3, max_length=128)
     workspace_id: str = Field(min_length=3, max_length=128)
-    role_refs: list[str]
-    permission_refs: list[str] = Field(default_factory=list)
-    scope_refs: list[str] = Field(default_factory=list)
-    data_scope: IdentityDataScope = "OWN_ASSIGNED"
+    role_refs: list[AuthorizationRole] = Field(min_length=1, max_length=1)
+    effective_at: datetime
+    expires_at: datetime | None = None
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class ProvisioningCandidateProjection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    employee_id: str
+    employee_number: str | None = None
+    full_name: str
+    email: str | None = None
+    department_code: str | None = None
+    position_title: str | None = None
+    employment_status: Literal["ACTIVE"]
+    linkage_state: Literal["AVAILABLE"]
 
 
 class LoginRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     email: str = Field(min_length=3, max_length=255)
     password: str = Field(min_length=8, max_length=256)
+
+
+class ActivateAccountRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    token: str = Field(min_length=20, max_length=256)
+    password: str = Field(min_length=8, max_length=256)
+    password_confirmation: str = Field(min_length=8, max_length=256)
+
+
+class AccountStateChangeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str | None = Field(default=None, max_length=2000)
 
 
 class ActorProjection(BaseModel):
@@ -130,10 +150,15 @@ class ActiveWorkspaceProjection(BaseModel):
 class MembershipMutationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     workspace_id: str = Field(min_length=1, max_length=128)
-    role_refs: list[str]
-    permission_refs: list[str] = Field(default_factory=list)
-    scope_refs: list[str] = Field(default_factory=list)
-    data_scope: IdentityDataScope = "OWN_ASSIGNED"
+    role_refs: list[AuthorizationRole] = Field(min_length=1, max_length=1)
+    effective_at: datetime
+    expires_at: datetime | None = None
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class MembershipRevokeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str | None = Field(default=None, max_length=2000)
 
 
 class AccountAccessProjection(BaseModel):
@@ -148,6 +173,16 @@ class IdentityAccountProjection(BaseModel):
     display_name: str
     email: str
     active: bool
+    administrative_state: str = "ENABLED"
+    activation_state: str = "ACTIVATED"
+    primary_workspace_id: str | None = None
+    employee_id: str | None = None
+    employee_number: str | None = None
+    position_title: str | None = None
+    department_code: str | None = None
+    employment_status: str | None = None
+    created_at: datetime | None = None
+    last_login_at: datetime | None = None
     workspace_access: list[WorkspaceAccessProjection]
 
 
@@ -155,3 +190,25 @@ class AccountStateProjection(BaseModel):
     model_config = ConfigDict(extra="forbid")
     actor_id: str
     active: bool
+
+
+class AdminSessionProjection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    session_id: str
+    issued_at: datetime
+    expires_at: datetime
+    active_workspace_id: str | None
+    revoked: bool
+    expired: bool = False
+    last_activity_at: datetime | None = None
+
+
+class IdentityAuditProjection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    occurred_at: datetime
+    event_type: str
+    entity_type: str
+    entity_id: str
+    workspace_id: str | None
+    actor_id: str
+    outcome: str

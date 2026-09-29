@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from typing import Any, NoReturn
 
 from fastapi import APIRouter, Request, Response
+from sqlalchemy import select
 
 from alos import __version__
 from alos.agents.lifecycle import RunAuthorityError
@@ -10,15 +11,21 @@ from alos.api.models import ResearchRequestBody, SystemInfoResponse
 from alos.audit import AuditEvent
 from alos.authentication.models import (
     AccountAccessProjection,
+    AccountStateChangeRequest,
     AccountStateProjection,
+    ActivateAccountRequest,
     ActiveWorkspaceProjection,
     ActiveWorkspaceRequest,
+    AdminSessionProjection,
     AuthenticatedPrincipalProjection,
     AuthTokenResponse,
     IdentityAccountProjection,
+    IdentityAuditProjection,
     LoginRequest,
     MembershipMutationRequest,
+    MembershipRevokeRequest,
     ProvisionAccountRequest,
+    ProvisioningCandidateProjection,
     RegisterRequest,
     WorkspaceAccessProjection,
     WorkspaceProjection,
@@ -44,6 +51,7 @@ from alos.identity import Principal
 from alos.integrations.genesis import GenesisClientError, IntegrationContractError
 from alos.observability.correlation import current_correlation_id
 from alos.persistence.models import (
+    AuditRecord,
     BacklogCandidateRecord,
     ResearchFindingRecord,
     ResearchRecommendationRecord,
@@ -1021,7 +1029,7 @@ async def register(request: Request, payload: RegisterRequest) -> dict[str, Any]
         )
     service = request.app.state.auth_service
     result: dict[str, Any] = await service.register_for_test(payload.model_dump())
-    return result
+    return {**result, "actor": {"actor_id": result["actor_id"]}}
 
 
 @router.get("/identity/assignable-roles", tags=["identity"])
@@ -1037,6 +1045,30 @@ async def list_assignable_roles(
             "AUTHORIZATION_DENIED", "an active IT_ADMIN membership is required", status_code=403
         )
     return sorted(CANONICAL_ROLES)
+
+
+@router.get(
+    "/identity/provisioning-candidates",
+    response_model=list[ProvisioningCandidateProjection],
+    tags=["identity"],
+)
+async def list_provisioning_candidates(
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+) -> list[dict[str, str | None]]:
+    await _require_identity_permission(
+        authorization, principal, "identity.accounts.manage", "identity.account.provision"
+    )
+    if "IT_ADMIN" not in principal.roles:
+        raise PlatformError(
+            "AUTHORIZATION_DENIED", "an active IT_ADMIN membership is required", status_code=403
+        )
+    candidates = await request.app.state.auth_service.provisioning_candidates(
+        tenant_id=principal.tenant_id,
+        organization_id=principal.organization_id,
+    )
+    return [dict(candidate) for candidate in candidates]
 
 
 @router.post("/identity/accounts", status_code=201, tags=["identity"])
@@ -1073,7 +1105,7 @@ async def provision_account(
         AuditEvent(
             event_type="identity.account.provisioned",
             entity_type="actor",
-            entity_id=str(result["actor"]["actor_id"]),
+            entity_id=str(result["actor_id"]),
             tenant_id=principal.tenant_id,
             organization_id=principal.organization_id,
             workspace_id=payload.workspace_id,
@@ -1238,6 +1270,7 @@ async def revoke_workspace_membership(
     workspace_id: str,
     principal: CurrentPrincipalDependency,
     authorization: AuthorizationEnforcerDependency,
+    payload: MembershipRevokeRequest | None = None,
 ) -> Response:
     correlation_id = await _require_identity_permission(
         authorization,
@@ -1258,8 +1291,107 @@ async def revoke_workspace_membership(
         event_type="identity.membership.revoked",
         actor_id=actor_id,
         workspace_id=workspace_id,
+        reason=payload.reason if payload else None,
     )
     return Response(status_code=204)
+
+
+@router.get(
+    "/identity/actors/{actor_id}/sessions",
+    response_model=list[AdminSessionProjection],
+    tags=["identity"],
+)
+async def list_actor_sessions(
+    request: Request,
+    actor_id: str,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+) -> list[AdminSessionProjection]:
+    await _require_identity_permission(
+        authorization, principal, "identity.accounts.manage", "identity.sessions.read"
+    )
+    sessions = await request.app.state.auth_service.admin_sessions(
+        actor_id, tenant_id=principal.tenant_id, organization_id=principal.organization_id
+    )
+    return [AdminSessionProjection.model_validate(session) for session in sessions]
+
+
+@router.delete(
+    "/identity/actors/{actor_id}/sessions/{session_id}", status_code=204, tags=["identity"]
+)
+async def revoke_actor_session(
+    request: Request,
+    actor_id: str,
+    session_id: str,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+) -> Response:
+    correlation_id = await _require_identity_permission(
+        authorization, principal, "identity.accounts.manage", "identity.sessions.revoke"
+    )
+    await request.app.state.auth_service.revoke_actor_session(
+        actor_id,
+        session_id,
+        tenant_id=principal.tenant_id,
+        organization_id=principal.organization_id,
+    )
+    await request.app.state.identity_audit.append(
+        AuditEvent(
+            event_type="identity.session.revoked",
+            entity_type="actor",
+            entity_id=actor_id,
+            tenant_id=principal.tenant_id,
+            organization_id=principal.organization_id,
+            workspace_id="",
+            actor_id=principal.actor_id,
+            correlation_id=correlation_id,
+            outcome="SUCCEEDED",
+            occurred_at=datetime.now(UTC),
+            reason=f"Session revoked for actor {actor_id}",
+            metadata={"session_id": session_id},
+        )
+    )
+    return Response(status_code=204)
+
+
+@router.get(
+    "/identity/actors/{actor_id}/history",
+    response_model=list[IdentityAuditProjection],
+    tags=["identity"],
+)
+async def list_actor_identity_history(
+    request: Request,
+    actor_id: str,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+) -> list[IdentityAuditProjection]:
+    await _require_identity_permission(
+        authorization, principal, "identity.accounts.manage", "identity.audit.read"
+    )
+    async with request.app.state.database.session_factory() as session:
+        rows = await session.scalars(
+            select(AuditRecord)
+            .where(
+                AuditRecord.tenant_id == principal.tenant_id,
+                AuditRecord.organization_id == principal.organization_id,
+                AuditRecord.entity_id == actor_id,
+                AuditRecord.event_type.like("identity.%"),
+            )
+            .order_by(AuditRecord.occurred_at.desc())
+            .limit(100)
+        )
+        return [
+            IdentityAuditProjection(
+                occurred_at=row.occurred_at,
+                event_type=row.event_type,
+                entity_type=row.entity_type,
+                entity_id=row.entity_id,
+                workspace_id=row.workspace_id or None,
+                actor_id=row.actor_id,
+                outcome=row.outcome,
+            )
+            for row in rows.all()
+        ]
 
 
 @router.post(
@@ -1272,9 +1404,15 @@ async def activate_account(
     actor_id: str,
     principal: CurrentPrincipalDependency,
     authorization: AuthorizationEnforcerDependency,
+    payload: AccountStateChangeRequest | None = None,
 ) -> AccountStateProjection:
     return await _change_account_state(
-        request, actor_id, True, principal=principal, authorization=authorization
+        request,
+        actor_id,
+        True,
+        principal=principal,
+        authorization=authorization,
+        reason=payload.reason if payload else None,
     )
 
 
@@ -1288,9 +1426,15 @@ async def suspend_account(
     actor_id: str,
     principal: CurrentPrincipalDependency,
     authorization: AuthorizationEnforcerDependency,
+    payload: AccountStateChangeRequest | None = None,
 ) -> AccountStateProjection:
     return await _change_account_state(
-        request, actor_id, False, principal=principal, authorization=authorization
+        request,
+        actor_id,
+        False,
+        principal=principal,
+        authorization=authorization,
+        reason=payload.reason if payload else None,
     )
 
 
@@ -1301,6 +1445,7 @@ async def _change_account_state(
     *,
     principal: Principal,
     authorization: AuthorizationEnforcer,
+    reason: str | None = None,
 ) -> AccountStateProjection:
     action = "activate" if active else "suspend"
     correlation_id = await _require_identity_permission(
@@ -1319,6 +1464,7 @@ async def _change_account_state(
         event_type=f"identity.account.{'activated' if active else 'suspended'}",
         actor_id=actor_id,
         workspace_id=principal.workspace_id,
+        reason=reason,
     )
     return AccountStateProjection.model_validate(result)
 
@@ -1351,6 +1497,7 @@ async def _record_identity_change(
     event_type: str,
     actor_id: str,
     workspace_id: str,
+    reason: str | None = None,
 ) -> None:
     await request.app.state.identity_audit.append(
         AuditEvent(
@@ -1364,7 +1511,7 @@ async def _record_identity_change(
             correlation_id=correlation_id,
             outcome="SUCCEEDED",
             occurred_at=datetime.now(UTC),
-            reason="Governed identity authority state changed",
+            reason=reason or "Governed identity authority state changed",
         )
     )
 
@@ -1374,6 +1521,32 @@ async def login(request: Request, payload: LoginRequest) -> AuthTokenResponse:
     service = request.app.state.auth_service
     response = await service.login(payload.email, payload.password)
     return AuthTokenResponse.model_validate(response)
+
+
+@router.post("/identity/activate")
+async def activate_identity_account(
+    request: Request, payload: ActivateAccountRequest
+) -> dict[str, str]:
+    result: dict[str, str] = await request.app.state.auth_service.activate(
+        payload.token, payload.password, payload.password_confirmation
+    )
+    await request.app.state.identity_audit.append(
+        AuditEvent(
+            event_type="identity.account.activated",
+            entity_type="actor",
+            entity_id=result["actor_id"],
+            tenant_id=result["tenant_id"],
+            organization_id=result["organization_id"],
+            workspace_id=result["workspace_id"],
+            actor_id=result["actor_id"],
+            correlation_id=current_correlation_id(),
+            outcome="SUCCEEDED",
+            occurred_at=datetime.now(UTC),
+            reason="Employee activated their account",
+        )
+    )
+    result = {key: result[key] for key in ("actor_id", "activation_state")}
+    return result
 
 
 @router.get("/auth/whoami", response_model=AuthenticatedPrincipalProjection)
