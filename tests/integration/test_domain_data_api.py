@@ -339,6 +339,125 @@ async def test_domain_crud_round_trip_and_shared_workspace_scope() -> None:
             headers=headers,
         )
         assert deleted_account.status_code == 204
+
+        # -------------------------------------------------------------
+        # Pengujian Antar Divisi: Sales vs Marketing & Workspace Switch
+        # -------------------------------------------------------------
+        sales_headers = await _register_and_login(
+            client,
+            email="sales-lead@andara.local",
+            permissions=["sales.read", "sales.write", "sales.delete"],
+            roles=["WORKSPACE_LEAD"],
+            workspace_id="workspace_sales",
+        )
+        sales_actor_id = (await client.get("/api/v1/auth/whoami", headers=sales_headers)).json()[
+            "actor"
+        ]["actor_id"]
+
+        marketing_headers = await _register_and_login(
+            client,
+            email="marketing-lead@andara.local",
+            permissions=["marketing.read", "marketing.write", "marketing.delete"],
+            roles=["WORKSPACE_LEAD"],
+            workspace_id="workspace_marketing",
+        )
+        marketing_actor_id = (
+            await client.get("/api/v1/auth/whoami", headers=marketing_headers)
+        ).json()["actor"]["actor_id"]
+
+        postgres = await asyncpg.connect(postgres_url)
+        try:
+            await postgres.execute(
+                """
+                INSERT INTO core.actors (actor_id, tenant_id, organization_id, display_name, active)
+                VALUES
+                    ($1, 'tenant_default', 'org_default', 'Sales Lead', true),
+                    ($2, 'tenant_default', 'org_default', 'Marketing Lead', true)
+                """,
+                sales_actor_id,
+                marketing_actor_id,
+            )
+            await postgres.execute(
+                """
+                INSERT INTO core.workspace_memberships (
+                    actor_id, workspace_id, tenant_id, organization_id, roles,
+                    permission_refs, scope_refs, data_scope, active, created_at
+                )
+                VALUES
+                    ($1, 'workspace_sales', 'tenant_default', 'org_default',
+                     '["WORKSPACE_LEAD"]'::jsonb, '["sales.read","sales.write","sales.delete"]'::jsonb,
+                     '[]'::jsonb, 'WORKSPACE', true, now()),
+                    ($2, 'workspace_marketing', 'tenant_default', 'org_default',
+                     '["WORKSPACE_LEAD"]'::jsonb, '["marketing.read","marketing.write","marketing.delete"]'::jsonb,
+                     '[]'::jsonb, 'WORKSPACE', true, now()),
+                    -- Tambahkan keanggotaan kedua (workspace_marketing) untuk sales_actor (Multi-Workspace)
+                    ($1, 'workspace_marketing', 'tenant_default', 'org_default',
+                     '["WORKSPACE_MEMBER"]'::jsonb, '["marketing.read"]'::jsonb,
+                     '[]'::jsonb, 'WORKSPACE', true, now())
+                """,
+                sales_actor_id,
+                marketing_actor_id,
+            )
+        finally:
+            await postgres.close()
+
+        # 1. Sales buat data Customer
+        created_customer = await client.post(
+            "/api/v1/domains/sales/customers",
+            headers=sales_headers,
+            json={
+                "customer_code": "CUST-001",
+                "name": "PT Mitra Abadi",
+                "customer_type": "CORPORATE",
+                "status": "ACTIVE",
+            },
+        )
+        assert created_customer.status_code == 201
+        customer_id = created_customer.json()["customer_id"]
+
+        # 2. Marketing coba intip customer Sales -> Harus kosong [] / 404
+        marketing_view_customers = await client.get(
+            "/api/v1/domains/sales/customers", headers=marketing_headers
+        )
+        # Tidak punya permission sales.read -> 403
+        assert marketing_view_customers.status_code == 403
+
+        # 3. Marketing buat Campaign
+        created_campaign = await client.post(
+            "/api/v1/domains/marketing/campaigns",
+            headers=marketing_headers,
+            json={"name": "Promo Q4", "campaign_type": "DIGITAL", "status": "ACTIVE"},
+        )
+        assert created_campaign.status_code == 201
+        campaign_id = created_campaign.json()["campaign_id"]
+
+        # 4. Sales coba baca campaign saat masih aktif di workspace_sales -> 403 (karena izin di sales cuma sales.*)
+        sales_view_campaigns = await client.get(
+            f"/api/v1/domains/marketing/campaigns/{campaign_id}", headers=sales_headers
+        )
+        assert sales_view_campaigns.status_code == 403
+
+        # 5. Uji Switch Workspace: Sales pindah workspace aktif ke workspace_marketing
+        switch_resp = await client.put(
+            "/api/v1/auth/active-workspace",
+            headers=sales_headers,
+            json={"workspace_id": "workspace_marketing"},
+        )
+        assert switch_resp.status_code == 200
+
+        # Sekarang Sales di workspace_marketing dapat membaca campaign Marketing
+        sales_read_campaign_after_switch = await client.get(
+            f"/api/v1/domains/marketing/campaigns/{campaign_id}", headers=sales_headers
+        )
+        assert sales_read_campaign_after_switch.status_code == 200
+        assert sales_read_campaign_after_switch.json()["name"] == "Promo Q4"
+
+        # Namun tidak bisa lagi membaca Customer Sales (karena workspace aktif sudah pindah ke marketing)
+        sales_read_old_customer = await client.get(
+            f"/api/v1/domains/sales/customers/{customer_id}", headers=sales_headers
+        )
+        # Di workspace_marketing izinnya marketing.read, tidak punya sales.read -> 403
+        assert sales_read_old_customer.status_code == 403
     finally:
         if client is not None:
             await client.aclose()
