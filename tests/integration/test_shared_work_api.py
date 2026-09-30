@@ -135,7 +135,7 @@ async def test_projects_and_tasks_are_workspace_scoped_and_permission_bounded() 
             assert project_data["workspace_ids"] == ["workspace_property"]
             assert project_data["tenant_id"] == "tenant_default"
             assert project_data["organization_id"] == "org_default"
-            assert project_data["owner_actor_id"] is None
+            assert project_data["owner_actor_id"]
 
             task = await client.post(
                 "/api/v1/tasks",
@@ -144,6 +144,7 @@ async def test_projects_and_tasks_are_workspace_scoped_and_permission_bounded() 
             )
             assert task.status_code == 201, task.text
             task_data = task.json()
+            assert project_data["owner_actor_id"] == task_data["created_by"]
             task_id = task_data["task_id"]
             assert task_data["status"] == "OPEN"
             assert task_data["priority"] == "HIGH"

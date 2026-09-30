@@ -324,9 +324,12 @@ async def test_documents_metadata_and_immutable_versions_use_postgres() -> None:
             assert data["content_hash"] == "sha256:" + "a" * 64
             assert data["created_by"] == versioner_actor_id
             assert data["created_at"]
-            assert (await client.get(
+            history = (await client.get(
                 f"/api/v1/documents/{document_id}/versions", headers=legacy
-            )).json() == [data]
+            )).json()
+            assert len(history) == 1
+            assert all(history[0][key] == value for key, value in data.items())
+            assert history[0]["source_title"] == "Authoritative source"
             assert (
                 await client.post(
                     f"/api/v1/documents/{document_id}/versions", headers=versioner,

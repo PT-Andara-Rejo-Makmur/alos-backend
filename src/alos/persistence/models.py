@@ -451,11 +451,16 @@ class DocumentAuthorityRecord(Base):
     organization_id: Mapped[str] = mapped_column(String(128), index=True)
     workspace_id: Mapped[str] = mapped_column(String(128), index=True)
     title: Mapped[str] = mapped_column(String(500))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     category: Mapped[str] = mapped_column(String(128))
     data_classification: Mapped[str] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(32), index=True)
     owner_actor_id: Mapped[str] = mapped_column(String(128))
+    project_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    effective_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class DocumentVersionAuthorityRecord(Base):
