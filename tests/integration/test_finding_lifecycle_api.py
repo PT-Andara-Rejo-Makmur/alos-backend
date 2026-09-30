@@ -7,20 +7,76 @@ import os
 import subprocess
 import sys
 import uuid
+from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import asyncpg
 import httpx
 import pytest
-from tests.integration.test_reports_findings_api import (
-    BACKEND_ROOT,
-    CONTRACTS_ROOT,
-    _database,
-    _database_url,
-    _login,
-)
 
 from alos.config import Settings
 from alos.main import create_app
+
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+CONTRACTS_ROOT = BACKEND_ROOT.parent / "alos-contracts"
+
+
+def _database_url(name: str) -> str:
+    source = os.environ.get(
+        "ALOS_TEST_DATABASE_URL", "postgresql+asyncpg://alos:alos@127.0.0.1:5432/alos_test"
+    )
+    parts = urlsplit(source)
+    return urlunsplit((parts.scheme, parts.netloc, f"/{name}", parts.query, parts.fragment))
+
+
+async def _database(name: str, *, create: bool) -> None:
+    admin = await asyncpg.connect(_database_url("postgres").replace("+asyncpg", ""))
+    try:
+        if create:
+            await admin.execute(f'CREATE DATABASE "{name}"')
+        else:
+            await admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+    finally:
+        await admin.close()
+
+
+async def _login(
+    client: httpx.AsyncClient,
+    *,
+    email: str,
+    permissions: list[str],
+    tenant_id: str = "tenant_default",
+    organization_id: str = "org_default",
+    workspace_id: str = "workspace_property",
+    workspace_key: str = "property",
+) -> tuple[dict[str, str], str]:
+    registered = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": email,
+            "password": "StrongPass!123",
+            "display_name": "Finding Test",
+            "tenant_id": tenant_id,
+            "organization_id": organization_id,
+            "workspace_id": workspace_id,
+            "workspace_key": workspace_key,
+            "workspace_name": "Test Workspace",
+            "workspace_type": "BUSINESS",
+            "division_code": "UNASSIGNED",
+            "role_refs": ["DIVISION_MEMBER"],
+            "permission_refs": permissions,
+            "scope_refs": [],
+            "data_scope": "WORKSPACE",
+        },
+    )
+    assert registered.status_code == 201, registered.text
+    login = await client.post(
+        "/api/v1/auth/login", json={"email": email, "password": "StrongPass!123"}
+    )
+    assert login.status_code == 200, login.text
+    return {"Authorization": f"Bearer {login.json()['access_token']}"}, registered.json()[
+        "actor_id"
+    ]
 
 
 async def _target(
