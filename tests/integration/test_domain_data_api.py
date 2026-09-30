@@ -255,6 +255,29 @@ async def test_domain_crud_round_trip_and_shared_workspace_scope() -> None:
         project_id = created_project.json()["project_id"]
         assert created_project.json()["workspace_id"] == "workspace_it"
 
+        for method, path, payload in (
+            (
+                "POST",
+                "/api/v1/domains/shared/work_approvals",
+                {"subject_type": "PROJECT", "subject_id": project_id, "status": "APPROVED"},
+            ),
+            (
+                "PATCH",
+                "/api/v1/domains/shared/work_approvals/approval_123",
+                {"decision": "APPROVED", "decided_at": "2026-09-30T00:00:00Z"},
+            ),
+            ("DELETE", "/api/v1/domains/shared/work_approvals/approval_123", None),
+        ):
+            rejected = await client.request(method, path, headers=headers, json=payload)
+            assert rejected.status_code == 409, rejected.text
+            assert rejected.json()["code"] == "APPROVAL_LIFECYCLE_REQUIRES_DEDICATED_API"
+
+        postgres = await asyncpg.connect(postgres_url)
+        try:
+            assert await postgres.fetchval("SELECT count(*) FROM core.work_approvals") == 0
+        finally:
+            await postgres.close()
+
         hr_headers = await _register_and_login(
             client,
             email="domain-crud-hr@andara.local",
