@@ -30,8 +30,11 @@ def upgrade() -> None:
                 """
             SELECT actor_id, workspace_id, roles::text AS roles
             FROM core.workspace_memberships
-            WHERE jsonb_typeof(roles::jsonb) IS DISTINCT FROM 'array'
-               OR jsonb_array_length(roles::jsonb) > 1
+            WHERE CASE
+                WHEN jsonb_typeof(roles::jsonb) = 'array'
+                THEN jsonb_array_length(roles::jsonb) <> 1
+                ELSE true
+            END
             ORDER BY actor_id, workspace_id
             """
             )
@@ -46,16 +49,14 @@ def upgrade() -> None:
         )
         raise RuntimeError(f"identity migration requires one role per membership: {details}")
 
-    obsolete_active = (
+    obsolete_memberships = (
         connection.execute(
             sa.text(
                 """
-            SELECT actor_id, workspace_id, role
+            SELECT actor_id, workspace_id, role, membership.active, membership.revoked_at
             FROM core.workspace_memberships AS membership
             CROSS JOIN LATERAL jsonb_array_elements_text(membership.roles::jsonb) AS legacy(role)
-            WHERE membership.active IS TRUE
-              AND membership.revoked_at IS NULL
-              AND legacy.role = ANY(:roles)
+            WHERE legacy.role = ANY(:roles)
             ORDER BY legacy.role, actor_id, workspace_id
             """
             ),
@@ -64,10 +65,11 @@ def upgrade() -> None:
         .mappings()
         .all()
     )
-    if obsolete_active:
+    if obsolete_memberships:
         details = ", ".join(
-            f"role={row['role']} actor_id={row['actor_id']} workspace_id={row['workspace_id']}"
-            for row in obsolete_active
+            f"role={row['role']} actor_id={row['actor_id']} workspace_id={row['workspace_id']} "
+            f"active={row['active']} revoked_at={row['revoked_at']}"
+            for row in obsolete_memberships
         )
         raise RuntimeError(
             f"identity roles require governed remediation before migration: {details}"
@@ -146,22 +148,15 @@ def upgrade() -> None:
         sa.text(
             """
             UPDATE core.workspace_memberships AS membership
-            SET roles = CASE
-                WHEN EXISTS (
-                    SELECT 1
-                    FROM jsonb_array_elements_text(membership.roles::jsonb) AS legacy(role)
-                    WHERE legacy.role = ANY(:obsolete_roles)
-                ) THEN '[]'::json
-                ELSE jsonb_build_array(
-                    CASE membership.roles::jsonb ->> 0
-                        WHEN 'WORKSPACE_LEAD' THEN 'DIVISION_LEAD'
-                        WHEN 'WORKSPACE_MEMBER' THEN 'DIVISION_MEMBER'
-                        ELSE membership.roles::jsonb ->> 0
-                    END
-                )::json
-            END
+            SET roles = jsonb_build_array(
+                CASE membership.roles::jsonb ->> 0
+                    WHEN 'WORKSPACE_LEAD' THEN 'DIVISION_LEAD'
+                    WHEN 'WORKSPACE_MEMBER' THEN 'DIVISION_MEMBER'
+                END
+            )::json
+            WHERE membership.roles::jsonb ->> 0 IN ('WORKSPACE_LEAD', 'WORKSPACE_MEMBER')
             """
-        ).bindparams(obsolete_roles=list(NON_EQUIVALENT_ROLES))
+        )
     )
 
     op.add_column(

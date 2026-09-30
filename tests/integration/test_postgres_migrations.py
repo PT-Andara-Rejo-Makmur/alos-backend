@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -154,22 +155,47 @@ async def test_postgres_upgrade_matches_runtime_metadata(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("database_name", "roles", "message"),
+    ("database_name", "roles", "active", "revoked", "message"),
     (
         (
             "alos_role_multi_preflight",
             '["DIVISION_LEAD", "IT_ADMIN"]',
+            True,
+            False,
             "one role per membership",
         ),
         (
             "alos_role_review_preflight",
             '["BUSINESS_REVIEWER"]',
+            True,
+            False,
             "role=BUSINESS_REVIEWER actor_id=actor_preflight workspace_id=workspace_it",
+        ),
+        (
+            "alos_role_revoked_review_preflight",
+            '["BUSINESS_REVIEWER"]',
+            True,
+            True,
+            "role=BUSINESS_REVIEWER actor_id=actor_preflight workspace_id=workspace_it",
+        ),
+        (
+            "alos_role_inactive_ai_preflight",
+            '["AI_ADMIN"]',
+            False,
+            False,
+            "role=AI_ADMIN actor_id=actor_preflight workspace_id=workspace_it",
+        ),
+        (
+            "alos_role_empty_preflight",
+            '[]',
+            False,
+            True,
+            "one role per membership",
         ),
     ),
 )
 async def test_identity_migration_fails_closed_for_unremediated_memberships(
-    database_name: str, roles: str, message: str
+    database_name: str, roles: str, active: bool, revoked: bool, message: str
 ) -> None:
     await _recreate_database(database_name)
     url = _database_url(database_name)
@@ -190,10 +216,13 @@ async def test_identity_migration_fails_closed_for_unremediated_memberships(
             )
             VALUES (
                 'actor_preflight', 'workspace_it', 'tenant_default', 'org_default',
-                $1::json, '["it.read"]'::json, '[]'::json, 'WORKSPACE', true, now(), NULL
+                $1::json, '["it.read"]'::json, '[]'::json, 'WORKSPACE', $2, now(),
+                CASE WHEN $3 THEN now() ELSE NULL END
             )
             """,
             roles,
+            active,
+            revoked,
         )
     finally:
         await connection.close()
@@ -201,6 +230,13 @@ async def test_identity_migration_fails_closed_for_unremediated_memberships(
     result = _attempt_upgrade(url, "head")
     assert result.returncode != 0
     assert message in result.stderr
+    connection = await asyncpg.connect(_asyncpg_url(url))
+    try:
+        assert json.loads(await connection.fetchval(
+            "SELECT roles::text FROM core.workspace_memberships WHERE actor_id='actor_preflight'"
+        )) == json.loads(roles)
+    finally:
+        await connection.close()
 
 
 @pytest.mark.asyncio
@@ -227,6 +263,18 @@ async def test_identity_migration_maps_equivalent_roles_without_changing_authori
                 'actor_equivalent', 'workspace_it', 'tenant_default', 'org_default',
                 '["WORKSPACE_LEAD"]'::json, '["it.read"]'::json,
                 '["scope.it"]'::json, 'WORKSPACE', true, now(), NULL
+            )
+            """
+        )
+        await connection.execute(
+            """
+            INSERT INTO core.workspace_memberships (
+                actor_id, workspace_id, tenant_id, organization_id, roles,
+                permission_refs, scope_refs, data_scope, active, created_at, revoked_at
+            ) VALUES (
+                'actor_equivalent', 'workspace_finance', 'tenant_default', 'org_default',
+                '["WORKSPACE_MEMBER"]'::json, '["finance.read"]'::json,
+                '["scope.finance"]'::json, 'WORKSPACE', false, now(), now()
             )
             """
         )
@@ -262,10 +310,19 @@ async def test_identity_migration_maps_equivalent_roles_without_changing_authori
             WHERE tenant_id = 'tenant_default' AND organization_id = 'org_default'
             """
         )
+        memberships = await connection.fetch(
+            "SELECT roles::jsonb AS roles FROM core.workspace_memberships"
+        )
     finally:
         await connection.close()
 
     assert membership["roles"] == '["DIVISION_LEAD"]'
+    assert [
+        json.loads(row["roles"])
+        for row in memberships
+        if json.loads(row["roles"]) == ["DIVISION_MEMBER"]
+    ]
+    assert all(len(json.loads(row["roles"])) == 1 for row in memberships)
     assert membership["permissions"] == '["it.read"]'
     assert membership["scopes"] == '["scope.it"]'
     assert membership["data_scope"] == "WORKSPACE"
