@@ -17,6 +17,7 @@ class ReadinessResponse(BaseModel):
     status: Literal["ready"] = "ready"
     database_configured: bool
     genesis_configured: bool
+    email_configured: bool = False
 
 
 class SystemInfoResponse(BaseModel):

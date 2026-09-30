@@ -32,12 +32,36 @@ class Settings(BaseSettings):
     ENABLE_TEST_TOOLS: bool = False
     ENABLE_TEST_REGISTRATION: bool = False
     AUTH_SESSION_TTL_MINUTES: int = Field(default=480, ge=5, le=43200)
+    EMAIL_PROVIDER: Literal["smtp", "test", "sink", "memory"] = "smtp"
+    EMAIL_FROM: str = ""
+    EMAIL_FROM_NAME: str = "ALOS"
+    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_PORT: int = Field(default=587, ge=1, le=65535)
+    SMTP_USERNAME: str = ""
+    SMTP_APP_PASSWORD: SecretStr = SecretStr("")
+    SMTP_USE_TLS: bool = True
+    SMTP_TIMEOUT_SECONDS: float = Field(default=10.0, gt=0, le=120)
+    APP_PUBLIC_URL: str = "http://localhost:3000"
+    ACTIVATION_TTL_HOURS: int = Field(default=24, ge=1, le=168)
+    PASSWORD_RESET_TTL_MINUTES: int = Field(default=60, ge=5, le=1440)
     EGRESS_ALLOWED_PROTOCOLS: str = "https"
     EGRESS_ALLOWED_DOMAINS: str = ""
     EGRESS_TIMEOUT_SECONDS: float = Field(default=10.0, gt=0, le=120)
     EGRESS_MAX_RESPONSE_BYTES: int = Field(default=1_000_000, gt=0, le=50_000_000)
     EGRESS_ALLOWED_CONTENT_TYPES: str = "application/json,text/plain,text/html,application/xml"
     EGRESS_BLOCK_PRIVATE_NETWORKS: bool = True
+
+    @property
+    def is_email_configured(self) -> bool:
+        """Indicate whether email dispatch is available without exposing credentials."""
+        if self.EMAIL_PROVIDER in {"test", "sink", "memory"}:
+            return True
+        return bool(
+            self.EMAIL_FROM
+            and self.SMTP_HOST
+            and self.SMTP_USERNAME
+            and self.SMTP_APP_PASSWORD.get_secret_value()
+        )
 
     @field_validator("DATABASE_URL")
     @classmethod

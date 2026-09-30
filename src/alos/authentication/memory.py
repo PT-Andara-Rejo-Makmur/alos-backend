@@ -13,6 +13,7 @@ from alos.authentication.repository import (
     SessionState,
     WorkspaceState,
 )
+from alos.persistence.models import EmployeeRecord
 
 
 class InMemoryAuthRepository:
@@ -26,6 +27,7 @@ class InMemoryAuthRepository:
         self._sessions: dict[str, tuple[str, SessionState]] = {}
         self._employees: dict[str, dict[str, str | None]] = {}
         self._activation_challenges: dict[str, tuple[str, datetime]] = {}
+        self._password_reset_challenges: dict[str, tuple[str, datetime]] = {}
         self._membership_windows: dict[tuple[str, str], tuple[datetime, datetime | None]] = {}
         self._next_account_id = 1
 
@@ -201,12 +203,27 @@ class InMemoryAuthRepository:
                 ),
                 default=None,
             )
-            projected.append(
-                replace(account, activation_state="EXPIRED")
+            has_challenge = any(
+                aid == account.actor_id for _th, (aid, _) in self._activation_challenges.items()
+            )
+            delivered = (
+                True
+                if account.activation_state == "ACTIVATED"
+                else (True if has_challenge else account.email_delivered)
+            )
+            new_state = (
+                "EXPIRED"
                 if account.activation_state == "PENDING"
                 and expires_at is not None
                 and expires_at <= datetime.now(UTC)
-                else account
+                else account.activation_state
+            )
+            projected.append(
+                replace(
+                    account,
+                    activation_state=new_state,
+                    email_delivered=delivered,
+                )
             )
         return sorted(projected, key=lambda account: account.email)
 
@@ -449,6 +466,137 @@ class InMemoryAuthRepository:
         )
         self._accounts[account.email] = activated
         return activated
+
+    async def import_employee(self, employee: EmployeeRecord) -> EmployeeRecord:
+        workspace = self._workspaces.get(employee.workspace_id)
+        if (
+            workspace is None
+            or self._workspace_tenants.get(employee.workspace_id) != employee.tenant_id
+            or workspace.organization_id != employee.organization_id
+            or not workspace.active
+        ):
+            raise ValueError("workspace belongs to a different authority boundary")
+
+        for emp_id, emp in self._employees.items():
+            if (
+                emp_id != employee.employee_id
+                and emp.get("tenant_id") == employee.tenant_id
+                and emp.get("organization_id") == employee.organization_id
+            ):
+                if emp.get("employee_number") == employee.employee_number:
+                    raise ValueError("employee_number already exists")
+                if employee.email and emp.get("email") == employee.email:
+                    raise ValueError("employee email already exists")
+
+        self._employees[employee.employee_id] = {
+            "employee_id": employee.employee_id,
+            "tenant_id": employee.tenant_id,
+            "organization_id": employee.organization_id,
+            "workspace_id": employee.workspace_id,
+            "employee_number": employee.employee_number,
+            "full_name": employee.full_name,
+            "email": employee.email,
+            "department_code": employee.department_code,
+            "position_title": employee.position_title,
+            "employment_status": employee.employment_status,
+            "actor_id": None,
+        }
+        return employee
+
+    async def resend_activation_challenge(
+        self,
+        actor_id: str,
+        *,
+        tenant_id: str,
+        organization_id: str,
+        new_token_hash: str,
+        new_expires_at: datetime,
+    ) -> tuple[AccountState, str | None, str | None]:
+        account = self._bounded_account(actor_id, tenant_id, organization_id)
+        if account.activation_state == "ACTIVATED":
+            raise ValueError("account is already activated")
+
+        self._activation_challenges = {
+            k: v for k, v in self._activation_challenges.items() if v[0] != actor_id
+        }
+        self._activation_challenges[new_token_hash] = (actor_id, new_expires_at)
+
+        emp = next((v for v in self._employees.values() if v.get("actor_id") == actor_id), None)
+        workspace = self._workspaces.get(account.primary_workspace_id or "")
+        return (
+            account,
+            emp["full_name"] if emp else account.display_name,
+            workspace.workspace_name if workspace else None,
+        )
+
+    async def create_password_reset_challenge(
+        self,
+        email: str,
+        token_hash: str,
+        expires_at: datetime,
+    ) -> tuple[AccountState, str] | None:
+        account = self._accounts.get(email.strip().lower())
+        if (
+            account is None
+            or not account.active
+            or account.administrative_state != "ENABLED"
+            or account.activation_state != "ACTIVATED"
+        ):
+            return None
+        self._password_reset_challenges = {
+            k: v for k, v in self._password_reset_challenges.items() if v[0] != account.actor_id
+        }
+        self._password_reset_challenges[token_hash] = (account.actor_id, expires_at)
+        return account, account.display_name
+
+    async def confirm_password_reset(
+        self,
+        token_hash: str,
+        new_password_hash: str,
+        reset_at: datetime,
+    ) -> AccountState | None:
+        challenge = self._password_reset_challenges.pop(token_hash, None)
+        if challenge is None or challenge[1] <= reset_at:
+            return None
+        actor_id = challenge[0]
+        account = next(
+            (item for item in self._accounts.values() if item.actor_id == actor_id),
+            None,
+        )
+        if account is None or not account.active or account.administrative_state != "ENABLED":
+            return None
+        updated = AccountState(
+            account.account_id,
+            account.email,
+            new_password_hash,
+            account.actor_id,
+            account.tenant_id,
+            account.organization_id,
+            account.display_name,
+            account.active,
+            account.administrative_state,
+            account.activation_state,
+            account.primary_workspace_id,
+        )
+        self._accounts[account.email] = updated
+        self._sessions = {
+            k: v for k, v in self._sessions.items() if v[1].account.actor_id != actor_id
+        }
+        return updated
+
+    async def revoke_all_sessions(
+        self,
+        actor_id: str,
+        *,
+        tenant_id: str,
+        organization_id: str,
+        revoked_at: datetime,
+    ) -> None:
+        del revoked_at
+        self._bounded_account(actor_id, tenant_id, organization_id)
+        self._sessions = {
+            k: v for k, v in self._sessions.items() if v[1].account.actor_id != actor_id
+        }
 
     def _bounded_account(self, actor_id: str, tenant_id: str, organization_id: str) -> AccountState:
         account = next(

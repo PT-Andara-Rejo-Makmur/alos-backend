@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Protocol
@@ -16,6 +17,7 @@ from alos.persistence.models import (
     AuthSessionRecord,
     EmployeeRecord,
     OrganizationRecord,
+    PasswordResetChallengeRecord,
     TenantRecord,
     WorkspaceMembershipRecord,
     WorkspaceRecord,
@@ -42,6 +44,7 @@ class AccountState:
     employment_status: str | None = None
     created_at: datetime | None = None
     last_login_at: datetime | None = None
+    email_delivered: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +207,41 @@ class AuthRepository(Protocol):
         self,
         actor_id: str,
         session_id: str,
+        *,
+        tenant_id: str,
+        organization_id: str,
+        revoked_at: datetime,
+    ) -> None: ...
+
+    async def import_employee(self, employee: EmployeeRecord) -> EmployeeRecord: ...
+
+    async def resend_activation_challenge(
+        self,
+        actor_id: str,
+        *,
+        tenant_id: str,
+        organization_id: str,
+        new_token_hash: str,
+        new_expires_at: datetime,
+    ) -> tuple[AccountState, str | None, str | None]: ...
+
+    async def create_password_reset_challenge(
+        self,
+        email: str,
+        token_hash: str,
+        expires_at: datetime,
+    ) -> tuple[AccountState, str] | None: ...
+
+    async def confirm_password_reset(
+        self,
+        token_hash: str,
+        new_password_hash: str,
+        reset_at: datetime,
+    ) -> AccountState | None: ...
+
+    async def revoke_all_sessions(
+        self,
+        actor_id: str,
         *,
         tenant_id: str,
         organization_id: str,
@@ -812,8 +850,273 @@ class SqlAuthRepository:
                 or record.actor_id != actor_id
             ):
                 raise ValueError("session is outside the authority boundary")
-            record.active = False
-            record.revoked_at = revoked_at
+
+    async def import_employee(self, employee: EmployeeRecord) -> EmployeeRecord:
+        now = datetime.now(UTC)
+        async with self._session_factory() as session, session.begin():
+            tenant = await session.get(TenantRecord, employee.tenant_id)
+            org = await session.get(OrganizationRecord, employee.organization_id)
+            workspace = await session.get(WorkspaceRecord, employee.workspace_id)
+            if (
+                tenant is None
+                or org is None
+                or workspace is None
+                or not tenant.active
+                or not org.active
+                or not workspace.active
+            ):
+                raise ValueError("tenant, organization, or workspace does not exist or is inactive")
+            if (
+                workspace.tenant_id != employee.tenant_id
+                or workspace.organization_id != employee.organization_id
+            ):
+                raise ValueError("workspace belongs to a different authority boundary")
+
+            existing_by_id = await session.get(EmployeeRecord, employee.employee_id)
+            if existing_by_id is not None:
+                if (
+                    existing_by_id.tenant_id != employee.tenant_id
+                    or existing_by_id.organization_id != employee.organization_id
+                ):
+                    raise ValueError("employee exists in a different tenant or organization")
+                conflict = await session.scalar(
+                    select(EmployeeRecord).where(
+                        EmployeeRecord.tenant_id == employee.tenant_id,
+                        EmployeeRecord.organization_id == employee.organization_id,
+                        EmployeeRecord.employee_number == employee.employee_number,
+                        EmployeeRecord.employee_id != employee.employee_id,
+                    )
+                )
+                if conflict is not None:
+                    raise ValueError("employee_number already exists for another employee")
+                if employee.email:
+                    email_conflict = await session.scalar(
+                        select(EmployeeRecord).where(
+                            EmployeeRecord.tenant_id == employee.tenant_id,
+                            EmployeeRecord.organization_id == employee.organization_id,
+                            EmployeeRecord.email == employee.email,
+                            EmployeeRecord.employee_id != employee.employee_id,
+                        )
+                    )
+                    if email_conflict is not None:
+                        raise ValueError("email already exists for another employee")
+                existing_by_id.employee_number = employee.employee_number
+                existing_by_id.full_name = employee.full_name
+                existing_by_id.email = employee.email
+                existing_by_id.workspace_id = employee.workspace_id
+                existing_by_id.department_code = employee.department_code
+                existing_by_id.position_title = employee.position_title
+                existing_by_id.employment_status = employee.employment_status
+                existing_by_id.join_date = employee.join_date
+                existing_by_id.end_date = employee.end_date
+                existing_by_id.updated_at = now
+                await session.flush()
+                return existing_by_id
+
+            num_conflict = await session.scalar(
+                select(EmployeeRecord).where(
+                    EmployeeRecord.tenant_id == employee.tenant_id,
+                    EmployeeRecord.organization_id == employee.organization_id,
+                    EmployeeRecord.employee_number == employee.employee_number,
+                )
+            )
+            if num_conflict is not None:
+                raise ValueError("employee_number already exists")
+            if employee.email:
+                email_conflict = await session.scalar(
+                    select(EmployeeRecord).where(
+                        EmployeeRecord.tenant_id == employee.tenant_id,
+                        EmployeeRecord.organization_id == employee.organization_id,
+                        EmployeeRecord.email == employee.email,
+                    )
+                )
+                if email_conflict is not None:
+                    raise ValueError("email already exists for another employee")
+            employee.created_at = now
+            employee.updated_at = now
+            session.add(employee)
+            await session.flush()
+            return employee
+
+    async def resend_activation_challenge(
+        self,
+        actor_id: str,
+        *,
+        tenant_id: str,
+        organization_id: str,
+        new_token_hash: str,
+        new_expires_at: datetime,
+    ) -> tuple[AccountState, str | None, str | None]:
+        now = datetime.now(UTC)
+        async with self._session_factory() as session, session.begin():
+            actor = await session.get(ActorRecord, actor_id)
+            account = await session.scalar(
+                select(AuthAccountRecord)
+                .where(
+                    AuthAccountRecord.actor_id == actor_id,
+                    AuthAccountRecord.tenant_id == tenant_id,
+                    AuthAccountRecord.organization_id == organization_id,
+                )
+                .with_for_update()
+            )
+            if actor is None or account is None or not actor.active or not account.active:
+                raise ValueError("account is not found or inactive")
+            if account.activation_state == "ACTIVATED":
+                raise ValueError("account is already activated")
+
+            challenges = (
+                await session.scalars(
+                    select(ActivationChallengeRecord).where(
+                        ActivationChallengeRecord.account_id == account.account_id,
+                        ActivationChallengeRecord.consumed_at.is_(None),
+                    )
+                )
+            ).all()
+            for challenge in challenges:
+                challenge.consumed_at = now
+
+            challenge_id = f"activation_{actor_id}_{uuid.uuid4().hex[:8]}"
+            new_challenge = ActivationChallengeRecord(
+                challenge_id=challenge_id,
+                account_id=account.account_id,
+                token_hash=new_token_hash,
+                created_at=now,
+                expires_at=new_expires_at,
+                consumed_at=None,
+            )
+            session.add(new_challenge)
+            account.updated_at = now
+            await session.flush()
+
+            employee = await session.scalar(
+                select(EmployeeRecord).where(EmployeeRecord.actor_id == actor_id)
+            )
+            workspace = None
+            if account.primary_workspace_id:
+                workspace = await session.get(WorkspaceRecord, account.primary_workspace_id)
+
+            return (
+                _account_state(account),
+                employee.full_name if employee else account.display_name,
+                workspace.name if workspace else None,
+            )
+
+    async def create_password_reset_challenge(
+        self,
+        email: str,
+        token_hash: str,
+        expires_at: datetime,
+    ) -> tuple[AccountState, str] | None:
+        now = datetime.now(UTC)
+        async with self._session_factory() as session, session.begin():
+            account = await session.scalar(
+                select(AuthAccountRecord)
+                .where(
+                    AuthAccountRecord.email == email.strip().lower(),
+                    AuthAccountRecord.active.is_(True),
+                    AuthAccountRecord.administrative_state == "ENABLED",
+                    AuthAccountRecord.activation_state == "ACTIVATED",
+                )
+                .with_for_update()
+            )
+            if account is None:
+                return None
+            actor = await session.get(ActorRecord, account.actor_id)
+            if actor is None or not actor.active:
+                return None
+
+            challenges = (
+                await session.scalars(
+                    select(PasswordResetChallengeRecord).where(
+                        PasswordResetChallengeRecord.account_id == account.account_id,
+                        PasswordResetChallengeRecord.consumed_at.is_(None),
+                    )
+                )
+            ).all()
+            for ch in challenges:
+                ch.consumed_at = now
+
+            session.add(
+                PasswordResetChallengeRecord(
+                    challenge_id=f"reset_{account.actor_id}_{uuid.uuid4().hex[:8]}",
+                    account_id=account.account_id,
+                    token_hash=token_hash,
+                    created_at=now,
+                    expires_at=expires_at,
+                    consumed_at=None,
+                )
+            )
+            await session.flush()
+            return _account_state(account), account.display_name
+
+    async def confirm_password_reset(
+        self,
+        token_hash: str,
+        new_password_hash: str,
+        reset_at: datetime,
+    ) -> AccountState | None:
+        async with self._session_factory() as session, session.begin():
+            challenge = await session.scalar(
+                select(PasswordResetChallengeRecord)
+                .where(
+                    PasswordResetChallengeRecord.token_hash == token_hash,
+                    PasswordResetChallengeRecord.consumed_at.is_(None),
+                    PasswordResetChallengeRecord.expires_at > reset_at,
+                )
+                .with_for_update()
+            )
+            if challenge is None:
+                return None
+            account = await session.get(AuthAccountRecord, challenge.account_id)
+            if account is None or not account.active or account.administrative_state != "ENABLED":
+                return None
+
+            account.password_hash = new_password_hash
+            account.updated_at = reset_at
+            challenge.consumed_at = reset_at
+
+            sessions = (
+                await session.scalars(
+                    select(AuthSessionRecord).where(
+                        AuthSessionRecord.account_id == account.account_id,
+                        AuthSessionRecord.active.is_(True),
+                    )
+                )
+            ).all()
+            for s in sessions:
+                s.active = False
+                s.revoked_at = reset_at
+
+            await session.flush()
+            return _account_state(account)
+
+    async def revoke_all_sessions(
+        self,
+        actor_id: str,
+        *,
+        tenant_id: str,
+        organization_id: str,
+        revoked_at: datetime,
+    ) -> None:
+        async with self._session_factory() as session, session.begin():
+            actor = await session.get(ActorRecord, actor_id)
+            if (
+                actor is None
+                or actor.tenant_id != tenant_id
+                or actor.organization_id != organization_id
+            ):
+                raise ValueError("actor is outside the authority boundary")
+            sessions = (
+                await session.scalars(
+                    select(AuthSessionRecord).where(
+                        AuthSessionRecord.actor_id == actor_id,
+                        AuthSessionRecord.active.is_(True),
+                    )
+                )
+            ).all()
+            for s in sessions:
+                s.active = False
+                s.revoked_at = revoked_at
 
     @staticmethod
     async def _membership_boundary(

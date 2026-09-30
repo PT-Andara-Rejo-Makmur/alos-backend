@@ -29,12 +29,14 @@ from alos.domains.shared_work import SharedWorkService
 from alos.domains.strategy import InMemoryStrategyRepository, SqlStrategyRepository, StrategyService
 from alos.evidence import EvidenceRegistry, SqlEvidenceRegistry
 from alos.integrations import ExternalRetrievalPolicy, ExternalRetrievalService
+from alos.notifications import InMemoryEmailAdapter, NotificationService, SmtpEmailAdapter
 from alos.observability.correlation import CorrelationIdMiddleware
 from alos.persistence.database import Database
 from alos.persistence.registry import SqlRegistryStore
 from alos.registry import InMemoryRegistryStore
 from alos.releases import GovernedAgentLifecycle, PersistentReleaseAuthority
 from alos.security.errors import install_error_handlers
+from alos.security.rate_limit import InMemoryRateLimiter
 from alos.skills.registry import SkillRegistry
 from alos.tools.executor.service import (
     InMemoryToolAuditSink,
@@ -91,10 +93,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.test_activation_sink[email] = token
 
         activation_sink = store_test_activation
+    email_adapter = (
+        InMemoryEmailAdapter()
+        if resolved.APP_ENV == "test" or resolved.EMAIL_PROVIDER == "test"
+        else SmtpEmailAdapter(resolved)
+    )
+    notification_service = NotificationService(
+        settings=resolved,
+        email_adapter=email_adapter,
+        app_public_url=resolved.APP_PUBLIC_URL,
+    )
+    app.state.email_adapter = email_adapter
+    app.state.notification_service = notification_service
+    app.state.rate_limiter = InMemoryRateLimiter()
+
     app.state.auth_service = AuthService(
         auth_repository,
         session_ttl_minutes=resolved.AUTH_SESSION_TTL_MINUTES,
         activation_sink=activation_sink,
+        notification_service=notification_service,
+        activation_ttl_hours=resolved.ACTIVATION_TTL_HOURS,
+        password_reset_ttl_minutes=resolved.PASSWORD_RESET_TTL_MINUTES,
     )
     app.state.identity_audit = (
         InMemoryAuditRepository()
@@ -232,6 +251,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return ReadinessResponse(
             database_configured=current.DATABASE_URL.startswith("postgresql+asyncpg://"),
             genesis_configured=bool(current.GENESIS_BASE_URL),
+            email_configured=current.is_email_configured,
         )
 
     app.include_router(public_router)

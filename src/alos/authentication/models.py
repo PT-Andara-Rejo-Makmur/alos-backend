@@ -183,6 +183,7 @@ class IdentityAccountProjection(BaseModel):
     employment_status: str | None = None
     created_at: datetime | None = None
     last_login_at: datetime | None = None
+    email_delivered: bool | None = None
     workspace_access: list[WorkspaceAccessProjection]
 
 
@@ -212,3 +213,38 @@ class IdentityAuditProjection(BaseModel):
     workspace_id: str | None
     actor_id: str
     outcome: str
+
+
+class ResendActivationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class ResendActivationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    actor_id: str
+    activation_state: Literal["PENDING"] = "PENDING"
+    email_delivered: bool
+    expires_at: datetime
+
+
+class PasswordResetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    email: str = Field(min_length=3, max_length=255)
+
+
+class PasswordResetResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    message: str
+
+
+class PasswordResetConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    token: str = Field(min_length=20, max_length=256)
+    password: str = Field(min_length=8, max_length=256)
+    password_confirmation: str = Field(min_length=8, max_length=256)
+
+
+class PasswordResetConfirmResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    message: str

@@ -626,6 +626,20 @@ class ActivationChallengeRecord(Base):
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class PasswordResetChallengeRecord(Base):
+    __tablename__ = "password_reset_challenges"
+    __table_args__ = {"schema": "core"}  # noqa: RUF012
+
+    challenge_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("core.auth_accounts.account_id", name="fk_password_reset_challenge_account")
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class EmployeeRecord(Base):
     __tablename__ = "employees"
     __table_args__ = (

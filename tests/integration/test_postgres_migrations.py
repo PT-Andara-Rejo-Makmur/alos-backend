@@ -187,7 +187,7 @@ async def test_postgres_upgrade_matches_runtime_metadata(
         ),
         (
             "alos_role_empty_preflight",
-            '[]',
+            "[]",
             False,
             True,
             "one role per membership",
@@ -232,9 +232,10 @@ async def test_identity_migration_fails_closed_for_unremediated_memberships(
     assert message in result.stderr
     connection = await asyncpg.connect(_asyncpg_url(url))
     try:
-        assert json.loads(await connection.fetchval(
+        query = (
             "SELECT roles::text FROM core.workspace_memberships WHERE actor_id='actor_preflight'"
-        )) == json.loads(roles)
+        )
+        assert json.loads(await connection.fetchval(query)) == json.loads(roles)
     finally:
         await connection.close()
 

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import secrets
 import uuid
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
-from typing import Any
+from datetime import UTC, date, datetime, timedelta
+from typing import TYPE_CHECKING, Any
 
 from alos.authentication.repository import (
     AccessState,
@@ -18,7 +19,13 @@ from alos.authentication.repository import (
     SessionState,
     WorkspaceState,
 )
+from alos.persistence.models import EmployeeRecord
 from alos.security.errors import PlatformError
+
+if TYPE_CHECKING:
+    from alos.notifications.service import NotificationService
+
+logger = logging.getLogger(__name__)
 
 CANONICAL_ROLES = frozenset(
     {
@@ -143,10 +150,16 @@ class AuthService:
         *,
         session_ttl_minutes: int = 480,
         activation_sink: Callable[[str, str], None] | None = None,
+        notification_service: NotificationService | None = None,
+        activation_ttl_hours: int = 24,
+        password_reset_ttl_minutes: int = 60,
     ) -> None:
         self._repository = repository
         self._session_ttl = timedelta(minutes=session_ttl_minutes)
         self._activation_sink = activation_sink
+        self._notification_service = notification_service
+        self._activation_ttl = timedelta(hours=activation_ttl_hours)
+        self._password_reset_ttl = timedelta(minutes=password_reset_ttl_minutes)
 
     async def register_for_test(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Bootstrap synthetic identity only when the application explicitly enables it."""
@@ -184,6 +197,12 @@ class AuthService:
                 "password confirmation does not match",
                 status_code=422,
             )
+        if len(password) < 8:
+            raise PlatformError(
+                "WEAK_PASSWORD",
+                "password must be at least 8 characters long",
+                status_code=400,
+            )
         activated = await self._repository.activate_account(
             self._token_hash(token), self._hash_password(password), datetime.now(UTC)
         )
@@ -193,12 +212,211 @@ class AuthService:
                 "activation challenge is invalid, expired, or already used",
                 status_code=422,
             )
+        if self._notification_service is not None:
+            try:
+                await self._notification_service.send_activation_success(
+                    to_email=activated.email,
+                    employee_name=activated.display_name or activated.email,
+                )
+            except Exception:
+                logger.debug("Failed sending activation success", exc_info=True)
         return {
             "actor_id": activated.actor_id,
             "activation_state": activated.activation_state,
             "tenant_id": activated.tenant_id,
             "organization_id": activated.organization_id,
             "workspace_id": activated.primary_workspace_id or "",
+        }
+
+    async def resend_activation(
+        self, actor_id: str, *, tenant_id: str, organization_id: str
+    ) -> dict[str, Any]:
+        new_token = secrets.token_urlsafe(40)
+        token_hash = self._token_hash(new_token)
+        expires_at = datetime.now(UTC) + self._activation_ttl
+        try:
+            (
+                account,
+                employee_name,
+                workspace_name,
+            ) = await self._repository.resend_activation_challenge(
+                actor_id,
+                tenant_id=tenant_id,
+                organization_id=organization_id,
+                new_token_hash=token_hash,
+                new_expires_at=expires_at,
+            )
+        except ValueError as exc:
+            status = 404 if "not found" in str(exc).lower() else 409
+            raise PlatformError("ACTIVATION_RESEND_FAILED", str(exc), status_code=status) from exc
+
+        accesses = await self._repository.active_access(actor_id)
+        role_name = accesses[0].role_refs[0] if accesses and accesses[0].role_refs else "Anggota"
+        email_delivered = False
+        if self._notification_service is not None:
+            try:
+                delivery = await self._notification_service.send_activation_invitation(
+                    to_email=account.email,
+                    employee_name=employee_name or account.display_name or account.email,
+                    workspace_name=workspace_name or "ALOS",
+                    role_name=role_name,
+                    activation_token=new_token,
+                )
+                email_delivered = delivery.success
+            except Exception:
+                email_delivered = False
+        if self._activation_sink is not None:
+            self._activation_sink(account.email, new_token)
+        return {
+            "actor_id": actor_id,
+            "activation_state": "PENDING",
+            "email_delivered": email_delivered,
+            "expires_at": expires_at.isoformat().replace("+00:00", "Z"),
+        }
+
+    async def request_password_reset(self, email: str) -> dict[str, str]:
+        cleaned_email = str(email or "").strip().lower()
+        generic_message = "Jika email terdaftar, instruksi pemulihan telah dikirim."
+        if not cleaned_email or "@" not in cleaned_email:
+            return {"message": generic_message}
+
+        reset_token = secrets.token_urlsafe(40)
+        token_hash = self._token_hash(reset_token)
+        expires_at = datetime.now(UTC) + self._password_reset_ttl
+
+        result = await self._repository.create_password_reset_challenge(
+            email=cleaned_email,
+            token_hash=token_hash,
+            expires_at=expires_at,
+        )
+        if result is not None:
+            account, display_name = result
+            if self._notification_service is not None:
+                try:
+                    await self._notification_service.send_password_reset(
+                        to_email=account.email,
+                        employee_name=display_name or account.email,
+                        reset_token=reset_token,
+                    )
+                except Exception:
+                    logger.debug("Failed sending password reset email", exc_info=True)
+            if self._activation_sink is not None:
+                self._activation_sink(account.email, reset_token)
+        return {"message": generic_message}
+
+    async def confirm_password_reset(
+        self, token: str, password: str, password_confirmation: str
+    ) -> dict[str, str]:
+        if password != password_confirmation:
+            raise PlatformError(
+                "PASSWORD_CONFIRMATION_MISMATCH",
+                "Kata sandi konfirmasi tidak sesuai",
+                status_code=422,
+            )
+        if len(password) < 8:
+            raise PlatformError(
+                "WEAK_PASSWORD",
+                "Kata sandi harus minimal 8 karakter",
+                status_code=400,
+            )
+        token_hash = self._token_hash(token)
+        password_hash = self._hash_password(password)
+        account = await self._repository.confirm_password_reset(
+            token_hash, password_hash, datetime.now(UTC)
+        )
+        if account is None:
+            raise PlatformError(
+                "RESET_TOKEN_INVALID",
+                "Tautan pemulihan kata sandi tidak valid atau telah kedaluwarsa",
+                status_code=422,
+            )
+        if self._notification_service is not None:
+            try:
+                await self._notification_service.send_password_changed(
+                    to_email=account.email,
+                    employee_name=account.display_name or account.email,
+                )
+            except Exception:
+                logger.debug("Failed sending password changed email", exc_info=True)
+        return {
+            "message": (
+                "Kata sandi berhasil diperbarui. Silakan masuk menggunakan kata sandi baru Anda."
+            )
+        }
+
+    async def import_employee(self, payload: dict[str, Any]) -> dict[str, Any]:
+        employee_id = str(payload.get("employee_id") or "").strip()
+        employee_number = str(payload.get("employee_number") or "").strip()
+        full_name = str(payload.get("full_name") or "").strip()
+        email = str(payload.get("email") or "").strip().lower() or None
+        tenant_id = str(payload.get("tenant_id") or "").strip()
+        organization_id = str(payload.get("organization_id") or "").strip()
+        workspace_id = str(payload.get("workspace_id") or "").strip()
+        department_code = _optional(payload.get("department_code"))
+        position_title = _optional(payload.get("position_title"))
+        employment_status = str(payload.get("employment_status") or "ACTIVE").strip().upper()
+        join_date_raw = payload.get("join_date")
+        end_date_raw = payload.get("end_date")
+
+        if not all(
+            (employee_id, employee_number, full_name, tenant_id, organization_id, workspace_id)
+        ):
+            raise PlatformError(
+                "INVALID_EMPLOYEE_PAYLOAD",
+                (
+                    "employee_id, employee_number, full_name, tenant_id, "
+                    "organization_id, and workspace_id are required"
+                ),
+                status_code=400,
+            )
+        parsed_join = (
+            date.fromisoformat(str(join_date_raw))
+            if join_date_raw and not isinstance(join_date_raw, date)
+            else join_date_raw
+        )
+        parsed_end = (
+            date.fromisoformat(str(end_date_raw))
+            if end_date_raw and not isinstance(end_date_raw, date)
+            else end_date_raw
+        )
+
+        rec = EmployeeRecord(
+            employee_id=employee_id,
+            tenant_id=tenant_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            actor_id=None,
+            employee_number=employee_number,
+            full_name=full_name,
+            email=email,
+            employment_status=employment_status,
+            join_date=parsed_join,
+            end_date=parsed_end,
+            department_code=department_code,
+            position_title=position_title,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+        try:
+            saved = await self._repository.import_employee(rec)
+        except ValueError as exc:
+            code = (
+                "EMPLOYEE_CONFLICT"
+                if "already exists" in str(exc)
+                else "AUTHORITY_BOUNDARY_CONFLICT"
+            )
+            raise PlatformError(
+                code, str(exc), status_code=409 if code == "EMPLOYEE_CONFLICT" else 403
+            ) from exc
+        return {
+            "employee_id": saved.employee_id,
+            "employee_number": saved.employee_number,
+            "full_name": saved.full_name,
+            "email": saved.email,
+            "employment_status": saved.employment_status,
+            "tenant_id": saved.tenant_id,
+            "organization_id": saved.organization_id,
+            "workspace_id": saved.workspace_id,
         }
 
     async def provisioning_candidates(
@@ -268,8 +486,10 @@ class AuthService:
             bootstrap_key = workspace_key.lower()
             division_code = next(
                 (
-                    name.upper() for name in DEFAULT_DOMAIN_PERMISSIONS
-                    if bootstrap_key == name or bootstrap_key.startswith(f"{name}_")
+                    name.upper()
+                    for name in DEFAULT_DOMAIN_PERMISSIONS
+                    if bootstrap_key == name
+                    or bootstrap_key.startswith(f"{name}_")
                     or bootstrap_key.endswith(f"_{name}")
                 ),
                 None,
@@ -283,7 +503,7 @@ class AuthService:
                 status_code=422,
             )
         activation_token = secrets.token_urlsafe(40) if not bootstrap else None
-        activation_expires_at = datetime.now(UTC) + timedelta(hours=24)
+        activation_expires_at = datetime.now(UTC) + self._activation_ttl
         command = ProvisionAccount(
             actor_id=f"actor_{uuid.uuid4().hex}",
             email=email,
@@ -366,8 +586,23 @@ class AuthService:
                 ) from exc
             code = "USER_ALREADY_EXISTS" if "already exists" in message else "IDENTITY_CONFLICT"
             raise PlatformError(code, message, status_code=409) from exc
-        if activation_token is not None and self._activation_sink is not None:
-            self._activation_sink(email, activation_token)
+        email_delivered: bool | None = None
+        if not bootstrap and activation_token is not None:
+            email_delivered = False
+            if self._notification_service is not None:
+                try:
+                    delivery = await self._notification_service.send_activation_invitation(
+                        to_email=account.email,
+                        employee_name=account.display_name or account.email,
+                        workspace_name=command.workspace_name,
+                        role_name=role_refs[0],
+                        activation_token=activation_token,
+                    )
+                    email_delivered = delivery.success
+                except Exception:
+                    email_delivered = False
+            if self._activation_sink is not None:
+                self._activation_sink(email, activation_token)
         accesses = await self._repository.active_access(account.actor_id)
         return {
             "actor_id": account.actor_id,
@@ -391,6 +626,7 @@ class AuthService:
             "employment_status": account.employment_status,
             "created_at": account.created_at.isoformat() if account.created_at else None,
             "last_login_at": account.last_login_at.isoformat() if account.last_login_at else None,
+            "email_delivered": email_delivered if not bootstrap else None,
             "workspace_access": [self._access_projection(access) for access in accesses],
         }
 
@@ -537,6 +773,7 @@ class AuthService:
                     "last_login_at": account.last_login_at.isoformat()
                     if account.last_login_at
                     else None,
+                    "email_delivered": account.email_delivered,
                     "workspace_access": [self._access_projection(access) for access in accesses],
                 }
             )
@@ -614,6 +851,21 @@ class AuthService:
             )
         except ValueError as exc:
             raise PlatformError("IDENTITY_NOT_FOUND", str(exc), status_code=404) from exc
+
+        if self._notification_service is not None:
+            try:
+                if not active:
+                    await self._notification_service.send_account_suspended(
+                        to_email=account.email,
+                        employee_name=account.display_name or account.email,
+                    )
+                else:
+                    await self._notification_service.send_account_reactivated(
+                        to_email=account.email,
+                        employee_name=account.display_name or account.email,
+                    )
+            except Exception:
+                logger.debug("Failed sending account state notification", exc_info=True)
         return {"actor_id": account.actor_id, "active": account.active}
 
     async def _resolve_session(self, token: str) -> tuple[SessionState, list[AccessState]]:

@@ -24,9 +24,15 @@ from alos.authentication.models import (
     LoginRequest,
     MembershipMutationRequest,
     MembershipRevokeRequest,
+    PasswordResetConfirmRequest,
+    PasswordResetConfirmResponse,
+    PasswordResetRequest,
+    PasswordResetResponse,
     ProvisionAccountRequest,
     ProvisioningCandidateProjection,
     RegisterRequest,
+    ResendActivationRequest,
+    ResendActivationResponse,
     WorkspaceAccessProjection,
     WorkspaceProjection,
 )
@@ -1438,6 +1444,46 @@ async def suspend_account(
     )
 
 
+@router.post(
+    "/identity/actors/{actor_id}/activation/resend",
+    response_model=ResendActivationResponse,
+    tags=["identity"],
+)
+async def resend_activation(
+    request: Request,
+    actor_id: str,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+    payload: ResendActivationRequest | None = None,
+) -> ResendActivationResponse:
+    correlation_id = await _require_identity_permission(
+        authorization, principal, "identity.accounts.manage", "identity.activation.resend"
+    )
+    if "IT_ADMIN" not in principal.roles:
+        raise PlatformError(
+            "AUTHORIZATION_DENIED", "an active IT_ADMIN membership is required", status_code=403
+        )
+    limiter = getattr(request.app.state, "rate_limiter", None)
+    if limiter is not None:
+        await limiter.check(f"resend_activation:{actor_id}", max_requests=5, window_seconds=60.0)
+
+    result = await request.app.state.auth_service.resend_activation(
+        actor_id,
+        tenant_id=principal.tenant_id,
+        organization_id=principal.organization_id,
+    )
+    await _record_identity_change(
+        request,
+        principal,
+        correlation_id,
+        event_type="identity.activation.resent",
+        actor_id=actor_id,
+        workspace_id=principal.workspace_id,
+        reason=payload.note if payload else "Activation invitation resent",
+    )
+    return ResendActivationResponse.model_validate(result)
+
+
 async def _change_account_state(
     request: Request,
     actor_id: str,
@@ -1518,6 +1564,12 @@ async def _record_identity_change(
 
 @router.post("/auth/login", response_model=AuthTokenResponse)
 async def login(request: Request, payload: LoginRequest) -> AuthTokenResponse:
+    limiter = getattr(request.app.state, "rate_limiter", None)
+    if limiter is not None:
+        client_ip = request.client.host if request.client else "unknown"
+        await limiter.check(
+            f"login:{client_ip}:{payload.email.lower()}", max_requests=10, window_seconds=60.0
+        )
     service = request.app.state.auth_service
     response = await service.login(payload.email, payload.password)
     return AuthTokenResponse.model_validate(response)
@@ -1527,6 +1579,10 @@ async def login(request: Request, payload: LoginRequest) -> AuthTokenResponse:
 async def activate_identity_account(
     request: Request, payload: ActivateAccountRequest
 ) -> dict[str, str]:
+    limiter = getattr(request.app.state, "rate_limiter", None)
+    if limiter is not None:
+        client_ip = request.client.host if request.client else "unknown"
+        await limiter.check(f"activate:{client_ip}", max_requests=10, window_seconds=60.0)
     result: dict[str, str] = await request.app.state.auth_service.activate(
         payload.token, payload.password, payload.password_confirmation
     )
@@ -1547,6 +1603,62 @@ async def activate_identity_account(
     )
     result = {key: result[key] for key in ("actor_id", "activation_state")}
     return result
+
+
+@router.post("/auth/password-reset/request", response_model=PasswordResetResponse)
+async def request_password_reset(
+    request: Request, payload: PasswordResetRequest
+) -> PasswordResetResponse:
+    limiter = getattr(request.app.state, "rate_limiter", None)
+    if limiter is not None:
+        client_ip = request.client.host if request.client else "unknown"
+        await limiter.check(f"reset_req:{client_ip}", max_requests=5, window_seconds=60.0)
+    result = await request.app.state.auth_service.request_password_reset(payload.email)
+    await request.app.state.identity_audit.append(
+        AuditEvent(
+            event_type="identity.password_reset.requested",
+            entity_type="account",
+            entity_id=payload.email,
+            tenant_id="SYSTEM",
+            organization_id="SYSTEM",
+            workspace_id="SYSTEM",
+            actor_id="anonymous",
+            correlation_id=current_correlation_id(),
+            outcome="SUCCEEDED",
+            occurred_at=datetime.now(UTC),
+            reason="Password reset requested",
+        )
+    )
+    return PasswordResetResponse.model_validate(result)
+
+
+@router.post("/auth/password-reset/confirm", response_model=PasswordResetConfirmResponse)
+async def confirm_password_reset(
+    request: Request, payload: PasswordResetConfirmRequest
+) -> PasswordResetConfirmResponse:
+    limiter = getattr(request.app.state, "rate_limiter", None)
+    if limiter is not None:
+        client_ip = request.client.host if request.client else "unknown"
+        await limiter.check(f"reset_confirm:{client_ip}", max_requests=5, window_seconds=60.0)
+    result = await request.app.state.auth_service.confirm_password_reset(
+        payload.token, payload.password, payload.password_confirmation
+    )
+    await request.app.state.identity_audit.append(
+        AuditEvent(
+            event_type="identity.password_reset.completed",
+            entity_type="account",
+            entity_id="reset_token",
+            tenant_id="SYSTEM",
+            organization_id="SYSTEM",
+            workspace_id="SYSTEM",
+            actor_id="anonymous",
+            correlation_id=current_correlation_id(),
+            outcome="SUCCEEDED",
+            occurred_at=datetime.now(UTC),
+            reason="Password reset confirmed",
+        )
+    )
+    return PasswordResetConfirmResponse.model_validate(result)
 
 
 @router.get("/auth/whoami", response_model=AuthenticatedPrincipalProjection)
