@@ -708,3 +708,152 @@ async def complete_task(
             request, principal, correlation_id, entity="task", record_id=task_id, action="completed"
         )
     return projection
+
+
+@router.get("/work/reports/results")
+async def list_report_results(
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+    contracts: ContractCatalogDependency,
+    status: str | None = Query(default=None),
+    report_type: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+) -> list[dict[str, Any]]:
+    await _authorize(
+        authorization,
+        principal,
+        permission="report.read",
+        legacy_permission="work.read",
+        command="report.read",
+    )
+    status = _filter(contracts, "ReportStatus", status)
+    rows = await _service(request).list_reports(
+        principal, status=status, report_type=report_type, search=search
+    )
+    return [_validate(contracts, "ReportProjection", row) for row in rows]
+
+
+@router.post("/work/reports/results", status_code=201)
+async def create_report_result(
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+    contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    correlation_id = await _authorize(
+        authorization,
+        principal,
+        permission="report.create",
+        legacy_permission="work.write",
+        command="report.create",
+    )
+    payload = _validate(contracts, "ReportCreateRequest", await request.json())
+    row = await _run(_service(request).create_report(principal, payload))
+    projection = _validate(contracts, "ReportProjection", row)
+    await _record_mutation(
+        request,
+        principal,
+        correlation_id,
+        entity="report",
+        record_id=projection["report_id"],
+        action="created",
+    )
+    return projection
+
+
+@router.get("/work/reports/results/{report_id}")
+async def get_report_result(
+    report_id: str,
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+    contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    await _authorize(
+        authorization,
+        principal,
+        permission="report.read",
+        legacy_permission="work.read",
+        command="report.read",
+    )
+    row = await _service(request).get_report(principal, report_id)
+    return _validate(contracts, "ReportProjection", row)
+
+
+@router.get("/work/findings")
+async def list_findings(
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+    contracts: ContractCatalogDependency,
+    status: str | None = Query(default=None),
+    severity: str | None = Query(default=None),
+    source_type: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+) -> list[dict[str, Any]]:
+    await _authorize(
+        authorization,
+        principal,
+        permission="finding.read",
+        legacy_permission="work.read",
+        command="finding.read",
+    )
+    status = _filter(contracts, "FindingStatus", status)
+    severity = _filter(contracts, "FindingSeverity", severity)
+    rows = await _service(request).list_findings(
+        principal,
+        status=status,
+        severity=severity,
+        source_type=source_type,
+        search=search,
+    )
+    return [_validate(contracts, "FindingProjection", row) for row in rows]
+
+
+@router.post("/work/findings", status_code=201)
+async def create_finding(
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+    contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    correlation_id = await _authorize(
+        authorization,
+        principal,
+        permission="finding.create",
+        legacy_permission="work.write",
+        command="finding.create",
+    )
+    payload = _validate(contracts, "FindingCreateRequest", await request.json())
+    row = await _run(_service(request).create_finding(principal, payload))
+    projection = _validate(contracts, "FindingProjection", row)
+    await _record_mutation(
+        request,
+        principal,
+        correlation_id,
+        entity="finding",
+        record_id=projection["finding_id"],
+        action="created",
+    )
+    return projection
+
+
+@router.get("/work/findings/{finding_id}")
+async def get_finding(
+    finding_id: str,
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+    contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    await _authorize(
+        authorization,
+        principal,
+        permission="finding.read",
+        legacy_permission="work.read",
+        command="finding.read",
+    )
+    row = await _service(request).get_finding(principal, finding_id)
+    return _validate(contracts, "FindingProjection", row)
+

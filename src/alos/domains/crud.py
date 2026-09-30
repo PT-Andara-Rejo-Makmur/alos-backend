@@ -827,6 +827,18 @@ class DomainCrudService:
                 "Project and task changes require their dedicated authorization boundary.",
                 status_code=409,
             )
+        if resource.domain == "shared" and resource.table == "work_reports":
+            raise PlatformError(
+                "REPORT_MUTATION_REQUIRES_DEDICATED_API",
+                "Report changes require their dedicated authorization boundary.",
+                status_code=409,
+            )
+        if resource.domain == "shared" and resource.table == "work_findings":
+            raise PlatformError(
+                "FINDING_MUTATION_REQUIRES_DEDICATED_API",
+                "Finding changes require their dedicated authorization boundary.",
+                status_code=409,
+            )
 
     @staticmethod
     def _authority_values(table: Table, principal: Principal) -> dict[str, Any]:

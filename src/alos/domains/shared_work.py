@@ -971,3 +971,199 @@ class SharedWorkService:
             )
             return self._document_projection(dict(updated)), True
 
+    async def list_reports(
+        self,
+        principal: Principal,
+        *,
+        status: str | None,
+        report_type: str | None,
+        search: str | None,
+    ) -> list[dict[str, Any]]:
+        async with self._session_factory() as session:
+            reports = await self._table(session, "work_reports")
+            links = await self._table(session, "work_report_workspaces")
+            predicates = list(self._visible(reports, links, "report_id", principal))
+            if status:
+                predicates.append(reports.c.status == status)
+            if report_type:
+                predicates.append(reports.c.report_type == report_type)
+            if search:
+                pattern = f"%{search}%"
+                predicates.append(
+                    or_(reports.c.title.ilike(pattern), reports.c.report_type.ilike(pattern))
+                )
+            rows = (
+                (
+                    await session.execute(
+                        select(reports)
+                        .where(*predicates)
+                        .order_by(reports.c.created_at.desc(), reports.c.report_id)
+                        .limit(200)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            return [self._projection(dict(row), principal) for row in rows]
+
+    async def get_report(self, principal: Principal, report_id: str) -> dict[str, Any]:
+        async with self._session_factory() as session:
+            reports = await self._table(session, "work_reports")
+            links = await self._table(session, "work_report_workspaces")
+            row = (
+                (
+                    await session.execute(
+                        select(reports).where(
+                            reports.c.report_id == report_id,
+                            *self._visible(reports, links, "report_id", principal),
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise self._not_found()
+            return self._projection(dict(row), principal)
+
+    async def create_report(
+        self, principal: Principal, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        async with self._session_factory() as session, session.begin():
+            await self._verify_workspace(session, principal)
+            reports = await self._table(session, "work_reports")
+            links = await self._table(session, "work_report_workspaces")
+            report_id = uuid4().hex
+            now = datetime.now(UTC)
+            row = (
+                (
+                    await session.execute(
+                        insert(reports)
+                        .values(
+                            report_id=report_id,
+                            tenant_id=principal.tenant_id,
+                            organization_id=principal.organization_id,
+                            title=payload["title"],
+                            report_type=payload["report_type"],
+                            status="DRAFT",
+                            owner_actor_id=principal.actor_id,
+                            created_at=now,
+                            updated_at=now,
+                        )
+                        .returning(reports)
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            await session.execute(
+                insert(links).values(
+                    report_id=report_id,
+                    workspace_id=principal.workspace_id,
+                )
+            )
+            return self._projection(dict(row), principal)
+
+    async def list_findings(
+        self,
+        principal: Principal,
+        *,
+        status: str | None,
+        severity: str | None,
+        source_type: str | None,
+        search: str | None,
+    ) -> list[dict[str, Any]]:
+        async with self._session_factory() as session:
+            findings = await self._table(session, "work_findings")
+            links = await self._table(session, "work_finding_workspaces")
+            predicates = list(self._visible(findings, links, "finding_id", principal))
+            if status:
+                predicates.append(findings.c.status == status)
+            if severity:
+                predicates.append(findings.c.severity == severity)
+            if source_type:
+                predicates.append(findings.c.source_type == source_type)
+            if search:
+                pattern = f"%{search}%"
+                predicates.append(
+                    or_(
+                        findings.c.title.ilike(pattern),
+                        findings.c.description.ilike(pattern),
+                        findings.c.source_type.ilike(pattern),
+                    )
+                )
+            rows = (
+                (
+                    await session.execute(
+                        select(findings)
+                        .where(*predicates)
+                        .order_by(findings.c.created_at.desc(), findings.c.finding_id)
+                        .limit(200)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            return [self._projection(dict(row), principal) for row in rows]
+
+    async def get_finding(self, principal: Principal, finding_id: str) -> dict[str, Any]:
+        async with self._session_factory() as session:
+            findings = await self._table(session, "work_findings")
+            links = await self._table(session, "work_finding_workspaces")
+            row = (
+                (
+                    await session.execute(
+                        select(findings).where(
+                            findings.c.finding_id == finding_id,
+                            *self._visible(findings, links, "finding_id", principal),
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise self._not_found()
+            return self._projection(dict(row), principal)
+
+    async def create_finding(
+        self, principal: Principal, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        async with self._session_factory() as session, session.begin():
+            await self._verify_workspace(session, principal)
+            findings = await self._table(session, "work_findings")
+            links = await self._table(session, "work_finding_workspaces")
+            finding_id = uuid4().hex
+            now = datetime.now(UTC)
+            row = (
+                (
+                    await session.execute(
+                        insert(findings)
+                        .values(
+                            finding_id=finding_id,
+                            tenant_id=principal.tenant_id,
+                            organization_id=principal.organization_id,
+                            title=payload["title"],
+                            description=payload.get("description"),
+                            severity=payload.get("severity", "MEDIUM"),
+                            status="OPEN",
+                            source_type="MANUAL",
+                            owner_actor_id=principal.actor_id,
+                            created_at=now,
+                            updated_at=now,
+                        )
+                        .returning(findings)
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            await session.execute(
+                insert(links).values(
+                    finding_id=finding_id,
+                    workspace_id=principal.workspace_id,
+                )
+            )
+            return self._projection(dict(row), principal)
+
+
