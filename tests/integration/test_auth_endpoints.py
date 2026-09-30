@@ -1,5 +1,15 @@
+import hashlib
+import os
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
 import httpx
 import pytest
+
+from alos.contracts import CanonicalContractCatalog
+
+DEFAULT_CONTRACTS_ROOT = Path(__file__).resolve().parents[3] / "alos-contracts"
+CONTRACTS_ROOT = Path(os.environ.get("ALOS_CONTRACTS_PATH", str(DEFAULT_CONTRACTS_ROOT)))
 
 
 async def _register_identity(
@@ -304,7 +314,75 @@ async def test_employee_activation_owns_password_setup(client: httpx.AsyncClient
 
     app = client._transport.app  # type: ignore[attr-defined]
     token = app.state.test_activation_sink["new-employee@andara.local"]
+    activation_payload = {
+        "token": token,
+        "password": "EmployeePass!123",
+        "password_confirmation": "EmployeePass!123",
+    }
+    invalid = await client.post(
+        "/api/v1/identity/activate",
+        json={**activation_payload, "token": "unrecognized-activation-credential"},
+    )
+    assert invalid.status_code == 422
+    assert invalid.json()["code"] == "ACTIVATION_CHALLENGE_INVALID"
+    assert token not in invalid.text
     activation = await client.post(
+        "/api/v1/identity/activate",
+        json=activation_payload,
+    )
+    assert activation.status_code == 200
+    assert activation.json() == {
+        "actor_id": provisioned.json()["actor_id"],
+        "activation_state": "ACTIVATED",
+    }
+    assert CanonicalContractCatalog(CONTRACTS_ROOT).validate(
+        "https://schemas.alos.dev/v1/identity/activate-account-response.schema.json",
+        activation.json(),
+    ) == activation.json()
+    reused = await client.post("/api/v1/identity/activate", json=activation_payload)
+    assert reused.status_code == 422
+    assert reused.json()["code"] == "ACTIVATION_CHALLENGE_INVALID"
+    assert token not in reused.text
+    login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "new-employee@andara.local", "password": "EmployeePass!123"},
+    )
+    assert login.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_expired_activation_credential_fails_safely(client: httpx.AsyncClient) -> None:
+    await _register_identity(
+        client,
+        email="expiry-admin@andara.local",
+        tenant_id="tenant_expiry",
+        organization_id="org_expiry",
+        workspace_id="workspace_expiry",
+        permissions=["identity.accounts.manage"],
+    )
+    payload = _provision_payload(
+        workspace_id="workspace_expiry", email="expiry-employee@andara.local"
+    )
+    _seed_test_employee(
+        client,
+        payload["employee_id"],
+        tenant_id="tenant_expiry",
+        organization_id="org_expiry",
+    )
+    provisioned = await client.post(
+        "/api/v1/identity/accounts",
+        headers=await _login_headers(client, "expiry-admin@andara.local"),
+        json=payload,
+    )
+    assert provisioned.status_code == 201
+    app = client._transport.app  # type: ignore[attr-defined]
+    token = app.state.test_activation_sink["expiry-employee@andara.local"]
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    app.state.auth_service._repository._activation_challenges[token_hash] = (
+        provisioned.json()["actor_id"],
+        datetime.now(UTC) - timedelta(seconds=1),
+    )
+    expired = await client.post(
         "/api/v1/identity/activate",
         json={
             "token": token,
@@ -312,13 +390,9 @@ async def test_employee_activation_owns_password_setup(client: httpx.AsyncClient
             "password_confirmation": "EmployeePass!123",
         },
     )
-    assert activation.status_code == 200
-    assert activation.json()["activation_state"] == "ACTIVATED"
-    login = await client.post(
-        "/api/v1/auth/login",
-        json={"email": "new-employee@andara.local", "password": "EmployeePass!123"},
-    )
-    assert login.status_code == 200
+    assert expired.status_code == 422
+    assert expired.json()["code"] == "ACTIVATION_CHALLENGE_INVALID"
+    assert token not in expired.text
 
 
 @pytest.mark.asyncio

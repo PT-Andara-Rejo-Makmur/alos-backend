@@ -163,6 +163,20 @@ async def test_employee_provision_activation_and_workspace_lifecycle_on_postgres
                 },
             )
             assert activated.status_code == 200
+            assert activated.json() == {
+                "actor_id": actor_id,
+                "activation_state": "ACTIVATED",
+            }
+            reused = await client.post(
+                "/api/v1/identity/activate",
+                json={
+                    "token": activation_tokens[employee_email],
+                    "password": "EmployeePass!123",
+                    "password_confirmation": "EmployeePass!123",
+                },
+            )
+            assert reused.status_code == 422
+            assert reused.json()["code"] == "ACTIVATION_CHALLENGE_INVALID"
             employee_login = await client.post(
                 "/api/v1/auth/login",
                 json={"email": employee_email, "password": "EmployeePass!123"},
