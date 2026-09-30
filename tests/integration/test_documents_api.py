@@ -76,6 +76,8 @@ async def _source(
     postgres: asyncpg.Connection, *, source_id: str, workspace_id: str,
     tenant_id: str = "tenant_default", organization_id: str = "org_default",
     document_id: str | None = None,
+    status: str = "VERIFIED",
+    source_version: str = "1",
 ) -> None:
     await postgres.execute(
         "INSERT INTO core.sources "
@@ -89,9 +91,9 @@ async def _source(
         "INSERT INTO core.source_versions "
         "(source_id, source_version, tenant_id, organization_id, workspace_id, "
         "storage_uri, content_hash, status, created_by, created_at) "
-        "VALUES ($1, '1', $2, $3, $4, $5, $6, 'VERIFIED', 'actor_source', now())",
-        source_id, tenant_id, organization_id, workspace_id,
-        f"urn:alos:source:{source_id}:1", "sha256:" + "a" * 64,
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'actor_source', now())",
+        source_id, source_version, tenant_id, organization_id, workspace_id,
+        f"urn:alos:source:{source_id}:{source_version}", "sha256:" + "a" * 64, status,
     )
 
 
@@ -253,6 +255,14 @@ async def test_documents_metadata_and_immutable_versions_use_postgres() -> None:
                     postgres, source_id="source_other_document", workspace_id="workspace_property",
                     document_id=remote.json()["document_id"],
                 )
+                await _source(
+                    postgres, source_id="source_received", workspace_id="workspace_property",
+                    status="RECEIVED",
+                )
+                await _source(
+                    postgres, source_id="source_retired", workspace_id="workspace_property",
+                    status="RETIRED",
+                )
             finally:
                 await postgres.close()
 
@@ -276,6 +286,7 @@ async def test_documents_metadata_and_immutable_versions_use_postgres() -> None:
                 "missing", "source_remote", "source_version_remote",
                 "source_tenant", "source_organization",
                 "source_other_document",
+                "source_received", "source_retired",
             ):
                 rejected = await client.post(
                     f"/api/v1/documents/{document_id}/versions", headers=versioner,
@@ -294,6 +305,15 @@ async def test_documents_metadata_and_immutable_versions_use_postgres() -> None:
                     json={**version_payload, injected: "arbitrary"},
                 )
                 assert rejected.status_code == 422, rejected.text
+
+            postgres = await asyncpg.connect(database_url.replace("+asyncpg", ""))
+            try:
+                assert await postgres.fetchval(
+                    "SELECT count(*) FROM core.document_versions WHERE document_id=$1", document_id
+                ) == 0
+            finally:
+                await postgres.close()
+
             version = await client.post(
                 f"/api/v1/documents/{document_id}/versions", headers=versioner,
                 json=version_payload,
@@ -346,3 +366,186 @@ async def test_documents_metadata_and_immutable_versions_use_postgres() -> None:
         if app is not None:
             await app.state.database.dispose()
         await _database(database_name, create=False)
+
+
+@pytest.mark.asyncio
+async def test_document_version_requires_verified_source_version() -> None:
+    database_name = f"alos_doc_ver_{uuid.uuid4().hex[:12]}"
+    await _database(database_name, create=True)
+    database_url = _database_url(database_name)
+    app = None
+    try:
+        await asyncio.to_thread(
+            subprocess.run,
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            cwd=BACKEND_ROOT,
+            env={**os.environ, "DATABASE_URL": database_url},
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        app = create_app(
+            Settings(
+                _env_file=None,
+                APP_ENV="test",
+                DATABASE_URL=database_url,
+                ALOS_CONTRACTS_PATH=CONTRACTS_ROOT,
+                GENESIS_BASE_URL="http://genesis.test",
+                GENESIS_INTERNAL_TOKEN="document-test-token",  # noqa: S106
+            )
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            writer, writer_actor_id = await _login(
+                client,
+                email="doc-writer@andara.local",
+                permissions=["document.read", "document.version", "work.write"],
+            )
+            created = await client.post(
+                "/api/v1/documents",
+                headers=writer,
+                json={
+                    "title": "Verified Provenance Doc",
+                    "category": "Policy",
+                    "data_classification": "INTERNAL",
+                },
+            )
+            assert created.status_code == 201, created.text
+            document_id = created.json()["document_id"]
+
+            postgres = await asyncpg.connect(database_url.replace("+asyncpg", ""))
+            try:
+                # 1. Source with RECEIVED status
+                await _source(
+                    postgres,
+                    source_id="source_received",
+                    workspace_id="workspace_property",
+                    status="RECEIVED",
+                    source_version="v-rec",
+                )
+                # 2. Source with RETIRED status
+                await _source(
+                    postgres,
+                    source_id="source_retired",
+                    workspace_id="workspace_property",
+                    status="RETIRED",
+                    source_version="v-ret",
+                )
+                # 3. Source with VERIFIED status
+                await _source(
+                    postgres,
+                    source_id="source_verified",
+                    workspace_id="workspace_property",
+                    status="VERIFIED",
+                    source_version="v-ver",
+                )
+                assert await postgres.fetchval(
+                    "SELECT count(*) FROM core.document_versions WHERE document_id=$1",
+                    document_id,
+                ) == 0
+            finally:
+                await postgres.close()
+
+            # Attempt creation from RECEIVED SourceVersion -> rejected (404)
+            resp_received = await client.post(
+                f"/api/v1/documents/{document_id}/versions",
+                headers=writer,
+                json={"version": "1.0", "source_id": "source_received", "source_version": "v-rec"},
+            )
+            assert resp_received.status_code == 404, resp_received.text
+
+            # Verify no rows created in core.document_versions after RECEIVED rejection
+            postgres = await asyncpg.connect(database_url.replace("+asyncpg", ""))
+            try:
+                assert await postgres.fetchval(
+                    "SELECT count(*) FROM core.document_versions WHERE document_id=$1",
+                    document_id,
+                ) == 0
+            finally:
+                await postgres.close()
+
+            # Attempt creation from RETIRED SourceVersion -> rejected (404)
+            resp_retired = await client.post(
+                f"/api/v1/documents/{document_id}/versions",
+                headers=writer,
+                json={"version": "1.0", "source_id": "source_retired", "source_version": "v-ret"},
+            )
+            assert resp_retired.status_code == 404, resp_retired.text
+
+            # Verify no rows created in core.document_versions after RETIRED rejection
+            postgres = await asyncpg.connect(database_url.replace("+asyncpg", ""))
+            try:
+                assert await postgres.fetchval(
+                    "SELECT count(*) FROM core.document_versions WHERE document_id=$1",
+                    document_id,
+                ) == 0
+            finally:
+                await postgres.close()
+
+            # Attempt creation from VERIFIED SourceVersion -> succeeded (201)
+            resp_verified = await client.post(
+                f"/api/v1/documents/{document_id}/versions",
+                headers=writer,
+                json={"version": "1.0", "source_id": "source_verified", "source_version": "v-ver"},
+            )
+            assert resp_verified.status_code == 201, resp_verified.text
+            version_data = resp_verified.json()
+            assert version_data["storage_uri"] == "urn:alos:source:source_verified:v-ver"
+            assert version_data["content_hash"] == "sha256:" + "a" * 64
+            assert version_data["created_by"] == writer_actor_id
+
+            # Verify authoritative row in core.document_versions
+            postgres = await asyncpg.connect(database_url.replace("+asyncpg", ""))
+            try:
+                assert await postgres.fetchval(
+                    "SELECT count(*) FROM core.document_versions WHERE document_id=$1",
+                    document_id,
+                ) == 1
+                row = await postgres.fetchrow(
+                    "SELECT storage_uri, content_hash, created_by FROM core.document_versions "
+                    "WHERE document_id=$1 AND version='1.0'",
+                    document_id,
+                )
+                assert row["storage_uri"] == "urn:alos:source:source_verified:v-ver"
+                assert row["content_hash"] == "sha256:" + "a" * 64
+                assert row["created_by"] == writer_actor_id
+            finally:
+                await postgres.close()
+
+            # Immutability: cannot overwrite or modify
+            conflict = await client.post(
+                f"/api/v1/documents/{document_id}/versions",
+                headers=writer,
+                json={"version": "1.0", "source_id": "source_verified", "source_version": "v-ver"},
+            )
+            assert conflict.status_code == 409
+            method_not_allowed = await client.patch(
+                f"/api/v1/documents/{document_id}/versions",
+                headers=writer,
+                json={"content_hash": "overwritten"},
+            )
+            assert method_not_allowed.status_code == 405
+
+            # Immutability: verify count is still 1 and row unchanged
+            postgres = await asyncpg.connect(database_url.replace("+asyncpg", ""))
+            try:
+                assert await postgres.fetchval(
+                    "SELECT count(*) FROM core.document_versions WHERE document_id=$1",
+                    document_id,
+                ) == 1
+                row = await postgres.fetchrow(
+                    "SELECT storage_uri, content_hash, created_by FROM core.document_versions "
+                    "WHERE document_id=$1 AND version='1.0'",
+                    document_id,
+                )
+                assert row["storage_uri"] == "urn:alos:source:source_verified:v-ver"
+                assert row["content_hash"] == "sha256:" + "a" * 64
+                assert row["created_by"] == writer_actor_id
+            finally:
+                await postgres.close()
+    finally:
+        if app is not None:
+            await app.state.database.dispose()
+        await _database(database_name, create=False)
+

@@ -789,6 +789,7 @@ class SharedWorkService:
                         select(source_versions).where(
                             source_versions.c.source_id == payload["source_id"],
                             source_versions.c.source_version == payload["source_version"],
+                            source_versions.c.status == "VERIFIED",
                             *self._document_scope(source_versions, principal),
                         )
                     )
