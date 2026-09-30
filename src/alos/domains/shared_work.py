@@ -647,3 +647,192 @@ class SharedWorkService:
                 .one()
             )
             return self._projection(dict(updated), principal), True
+
+    @staticmethod
+    def _document_projection(row: dict[str, Any]) -> dict[str, Any]:
+        return {key: value for key, value in jsonable_encoder(row).items() if key != "record_id"}
+
+    @staticmethod
+    def _document_scope(table: Table, principal: Principal) -> tuple[Any, ...]:
+        return (
+            table.c.tenant_id == principal.tenant_id,
+            table.c.organization_id == principal.organization_id,
+            table.c.workspace_id == principal.workspace_id,
+        )
+
+    async def _document_row(
+        self, session: AsyncSession, principal: Principal, document_id: str, *, lock: bool = False
+    ) -> dict[str, Any]:
+        documents = await self._table(session, "documents")
+        statement = select(documents).where(
+            documents.c.document_id == document_id, *self._document_scope(documents, principal)
+        )
+        if lock:
+            statement = statement.with_for_update()
+        row = (await session.execute(statement)).mappings().first()
+        if row is None:
+            raise self._not_found()
+        return dict(row)
+
+    async def list_documents(
+        self, principal: Principal, *, status: str | None, classification: str | None,
+        category: str | None, search: str | None,
+    ) -> list[dict[str, Any]]:
+        async with self._session_factory() as session:
+            documents = await self._table(session, "documents")
+            predicates = list(self._document_scope(documents, principal))
+            if status:
+                predicates.append(documents.c.status == status)
+            if classification:
+                predicates.append(documents.c.data_classification == classification)
+            if category:
+                predicates.append(documents.c.category == category)
+            if search:
+                pattern = f"%{search}%"
+                predicates.append(
+                    or_(documents.c.title.ilike(pattern), documents.c.category.ilike(pattern))
+                )
+            rows = (
+                (
+                    await session.execute(
+                        select(documents)
+                        .where(*predicates)
+                        .order_by(documents.c.created_at.desc(), documents.c.document_id)
+                        .limit(200)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            return [self._document_projection(dict(row)) for row in rows]
+
+    async def get_document(self, principal: Principal, document_id: str) -> dict[str, Any]:
+        async with self._session_factory() as session:
+            return self._document_projection(
+                await self._document_row(session, principal, document_id)
+            )
+
+    async def create_document(
+        self, principal: Principal, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        async with self._session_factory() as session, session.begin():
+            await self._verify_workspace(session, principal)
+            documents = await self._table(session, "documents")
+            row = (
+                (
+                    await session.execute(
+                        insert(documents)
+                        .values(
+                            **payload,
+                            document_id=uuid4().hex,
+                            tenant_id=principal.tenant_id,
+                            organization_id=principal.organization_id,
+                            workspace_id=principal.workspace_id,
+                            owner_actor_id=principal.actor_id,
+                            status="DRAFT",
+                            created_at=datetime.now(UTC),
+                        )
+                        .returning(documents)
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            return self._document_projection(dict(row))
+
+    async def list_document_versions(
+        self, principal: Principal, document_id: str
+    ) -> list[dict[str, Any]]:
+        async with self._session_factory() as session:
+            await self._document_row(session, principal, document_id)
+            versions = await self._table(session, "document_versions")
+            rows = (
+                (
+                    await session.execute(
+                        select(versions)
+                        .where(
+                            versions.c.document_id == document_id,
+                            *self._document_scope(versions, principal),
+                        )
+                        .order_by(versions.c.created_at.desc(), versions.c.version.desc())
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            return [self._document_projection(dict(row)) for row in rows]
+
+    async def create_document_version(
+        self, principal: Principal, document_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        async with self._session_factory() as session, session.begin():
+            await self._document_row(session, principal, document_id, lock=True)
+            sources = await self._table(session, "sources")
+            source_versions = await self._table(session, "source_versions")
+            source = (
+                (
+                    await session.execute(
+                        select(sources).where(
+                            sources.c.source_id == payload["source_id"],
+                            *self._document_scope(sources, principal),
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if source is None or source["document_id"] not in (None, document_id):
+                raise self._not_found()
+            source_version = (
+                (
+                    await session.execute(
+                        select(source_versions).where(
+                            source_versions.c.source_id == payload["source_id"],
+                            source_versions.c.source_version == payload["source_version"],
+                            *self._document_scope(source_versions, principal),
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if source_version is None:
+                raise self._not_found()
+            versions = await self._table(session, "document_versions")
+            existing = await session.execute(
+                select(versions.c.record_id).where(
+                    versions.c.document_id == document_id,
+                    versions.c.version == payload["version"],
+                    *self._document_scope(versions, principal),
+                )
+            )
+            if existing.scalar_one_or_none() is not None:
+                raise PlatformError(
+                    "DOCUMENT_VERSION_EXISTS",
+                    "Document version already exists and cannot be replaced.",
+                    status_code=409,
+                )
+            row = (
+                (
+                    await session.execute(
+                        insert(versions)
+                        .values(
+                            tenant_id=principal.tenant_id,
+                            organization_id=principal.organization_id,
+                            workspace_id=principal.workspace_id,
+                            document_id=document_id,
+                            version=payload["version"],
+                            source_id=payload["source_id"],
+                            source_version=payload["source_version"],
+                            storage_uri=source_version["storage_uri"],
+                            content_hash=source_version["content_hash"],
+                            created_by=principal.actor_id,
+                            created_at=datetime.now(UTC),
+                        )
+                        .returning(versions)
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            return self._document_projection(dict(row))

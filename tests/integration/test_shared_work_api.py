@@ -574,6 +574,7 @@ async def test_approvals_use_scoped_subjects_and_separate_decision_authority() -
                 assert outcome.json()["decision"] == expected_decision
             events = app.state.identity_audit.list_events(tenant_id="tenant_default")
             assert sum(event.event_type == "approval.requested" for event in events) == 4
+            assert sum(event.event_type == "approval.approve" for event in events) == 1
             assert sum(event.event_type == "approval.return" for event in events) == 1
             assert sum(event.event_type == "approval.reject" for event in events) == 1
             assert sum(event.event_type == "approval.hold" for event in events) == 1

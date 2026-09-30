@@ -48,7 +48,11 @@ class CanonicalContractCatalog:
         schema = self._documents.get(schema_id)
         if schema is None:
             raise ValueError(f"Canonical schema is not available: {schema_id}")
-        values = schema.get("$defs", {}).get(definition, {}).get("enum")
+        values = (
+            schema.get("enum")
+            if not definition
+            else schema.get("$defs", {}).get(definition, {}).get("enum")
+        )
         if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
             raise ValueError(f"Canonical enum is not available: {definition}")
         return tuple(values)

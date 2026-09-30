@@ -25,6 +25,7 @@ from alos.security.errors import PlatformError
 router = APIRouter(prefix="/api/v1", tags=["shared-work"])
 SCHEMA = "https://schemas.alos.dev/v1/shared-work/shared-work.schema.json#/$defs/"
 SCHEMA_DOCUMENT = SCHEMA.split("#", maxsplit=1)[0]
+CLASSIFICATION_SCHEMA = "https://schemas.alos.dev/v1/common/data-classification.schema.json"
 
 
 def _service(request: Request) -> SharedWorkService:
@@ -121,6 +122,98 @@ async def _record_mutation(
             reason=f"{action.capitalize()} workspace-visible {entity}",
         )
     )
+
+
+@router.get("/documents")
+async def list_documents(
+    request: Request, principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency, contracts: ContractCatalogDependency,
+    status: str | None = Query(default=None),
+    classification: str | None = Query(default=None),
+    category: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+) -> list[dict[str, Any]]:
+    await _authorize(
+        authorization, principal, permission="document.read",
+        legacy_permission="work.read", command="document.list",
+    )
+    if classification is not None and classification not in contracts.enum_values(
+        CLASSIFICATION_SCHEMA, ""
+    ):
+        raise PlatformError(
+            "WORK_FILTER_INVALID", "Filter value is outside the canonical vocabulary.",
+            status_code=422,
+        )
+    rows = await _run(_service(request).list_documents(
+        principal, status=_filter(contracts, "DocumentStatus", status),
+        classification=classification, category=category, search=search,
+    ))
+    return [_validate(contracts, "DocumentProjection", row) for row in rows]
+
+
+@router.post("/documents", status_code=201)
+async def create_document(
+    payload: dict[str, Any], request: Request, principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency, contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    correlation_id = await _authorize(
+        authorization, principal, permission="document.create",
+        legacy_permission="work.write", command="document.create",
+    )
+    values = _validate(contracts, "DocumentCreateRequest", payload)
+    row = await _run(_service(request).create_document(principal, values))
+    projection = _validate(contracts, "DocumentProjection", row)
+    await _record_mutation(
+        request, principal, correlation_id, entity="document",
+        record_id=str(row["document_id"]), action="created",
+    )
+    return projection
+
+
+@router.get("/documents/{document_id}")
+async def get_document(
+    document_id: str, request: Request, principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency, contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    await _authorize(
+        authorization, principal, permission="document.read",
+        legacy_permission="work.read", command="document.get",
+    )
+    row = await _run(_service(request).get_document(principal, document_id))
+    return _validate(contracts, "DocumentProjection", row)
+
+
+@router.get("/documents/{document_id}/versions")
+async def list_document_versions(
+    document_id: str, request: Request, principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency, contracts: ContractCatalogDependency,
+) -> list[dict[str, Any]]:
+    await _authorize(
+        authorization, principal, permission="document.read",
+        legacy_permission="work.read", command="document.version.list",
+    )
+    rows = await _run(_service(request).list_document_versions(principal, document_id))
+    return [_validate(contracts, "DocumentVersionProjection", row) for row in rows]
+
+
+@router.post("/documents/{document_id}/versions", status_code=201)
+async def create_document_version(
+    document_id: str, payload: dict[str, Any], request: Request,
+    principal: CurrentPrincipalDependency, authorization: AuthorizationEnforcerDependency,
+    contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    correlation_id = await _authorize(
+        authorization, principal, permission="document.version",
+        legacy_permission=None, command="document.version.create",
+    )
+    values = _validate(contracts, "DocumentVersionCreateRequest", payload)
+    row = await _run(_service(request).create_document_version(principal, document_id, values))
+    projection = _validate(contracts, "DocumentVersionProjection", row)
+    await _record_mutation(
+        request, principal, correlation_id, entity="document",
+        record_id=document_id, action="versioned",
+    )
+    return projection
 
 
 @router.get("/approvals")
