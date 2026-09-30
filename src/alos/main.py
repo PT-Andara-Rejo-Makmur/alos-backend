@@ -15,6 +15,7 @@ from alos.api.public.domain_routes import router as domain_data_router
 from alos.api.public.domain_routes import workspace_navigation_router
 from alos.api.public.release_routes import router as release_router
 from alos.api.public.routes import router as public_router
+from alos.api.public.shared_work_routes import router as shared_work_router
 from alos.api.public.strategy_routes import router as strategy_router
 from alos.audit import InMemoryAuditRepository, SqlAuditRepository, SqlToolAuditSink
 from alos.authentication.memory import InMemoryAuthRepository
@@ -24,6 +25,7 @@ from alos.capabilities.registry import CapabilityRegistry
 from alos.config import Settings, get_settings
 from alos.contracts import CanonicalContractCatalog
 from alos.domains.crud import DomainCrudService
+from alos.domains.shared_work import SharedWorkService
 from alos.domains.strategy import InMemoryStrategyRepository, SqlStrategyRepository, StrategyService
 from alos.evidence import EvidenceRegistry, SqlEvidenceRegistry
 from alos.integrations import ExternalRetrievalPolicy, ExternalRetrievalService
@@ -71,6 +73,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.started = False
     app.state.database = Database(resolved.DATABASE_URL)
     app.state.domain_crud_service = DomainCrudService(app.state.database.session_factory)
+    app.state.shared_work_service = SharedWorkService(app.state.database.session_factory)
     app.state.release_authority = PersistentReleaseAuthority(
         app.state.database.session_factory,
         registry_governed=True,
@@ -233,6 +236,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(public_router)
     app.include_router(domain_data_router)
+    app.include_router(shared_work_router)
     app.include_router(workspace_navigation_router)
     app.include_router(release_router)
     app.include_router(strategy_router)

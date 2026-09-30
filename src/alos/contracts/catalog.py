@@ -45,11 +45,12 @@ class CanonicalContractCatalog:
         return schema_id in self._documents
 
     def validate(self, schema_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
-        schema = self._documents.get(schema_id)
+        document_id, separator, _fragment = schema_id.partition("#")
+        schema = self._documents.get(document_id)
         if schema is None:
             raise ValueError(f"Canonical schema is not available: {schema_id}")
         validator = Draft202012Validator(
-            schema,
+            {"$ref": schema_id} if separator else schema,
             registry=self._registry,
             format_checker=FormatChecker(),
         )

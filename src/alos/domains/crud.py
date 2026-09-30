@@ -362,7 +362,7 @@ class DomainCrudService:
         principal: Principal,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        self._reject_generic_approval_mutation(resource)
+        self._reject_generic_shared_mutation(resource)
         async with self._session_factory() as session, session.begin():
             table = await self._table(session, resource)
             values = self._writable_values(resource, table, payload)
@@ -391,7 +391,7 @@ class DomainCrudService:
         record_id: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        self._reject_generic_approval_mutation(resource)
+        self._reject_generic_shared_mutation(resource)
         async with self._session_factory() as session, session.begin():
             table = await self._table(session, resource)
             values = self._writable_values(resource, table, payload, allow_primary_key=False)
@@ -420,7 +420,7 @@ class DomainCrudService:
     async def delete_record(
         self, resource: DomainResource, principal: Principal, record_id: str
     ) -> None:
-        self._reject_generic_approval_mutation(resource)
+        self._reject_generic_shared_mutation(resource)
         async with self._session_factory() as session, session.begin():
             table = await self._table(session, resource)
             predicates = await self._scope(session, resource, table, principal)
@@ -814,11 +814,17 @@ class DomainCrudService:
         return {key: self._coerce(table.c[key].type, value) for key, value in payload.items()}
 
     @staticmethod
-    def _reject_generic_approval_mutation(resource: DomainResource) -> None:
+    def _reject_generic_shared_mutation(resource: DomainResource) -> None:
         if resource.domain == "shared" and resource.table == "work_approvals":
             raise PlatformError(
                 "APPROVAL_LIFECYCLE_REQUIRES_DEDICATED_API",
                 "Approval changes require a dedicated authorization boundary.",
+                status_code=409,
+            )
+        if resource.domain == "shared" and resource.table in {"projects", "tasks"}:
+            raise PlatformError(
+                "WORK_MUTATION_REQUIRES_DEDICATED_API",
+                "Project and task changes require their dedicated authorization boundary.",
                 status_code=409,
             )
 

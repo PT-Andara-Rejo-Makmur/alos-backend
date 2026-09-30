@@ -16,6 +16,7 @@ from alos.domains.crud import DOMAIN_RESOURCES
 from alos.main import create_app
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
+CONTRACTS_ROOT = BACKEND_ROOT.parent / "alos-contracts"
 
 
 def _database_url(name: str) -> str:
@@ -178,6 +179,7 @@ async def test_domain_crud_round_trip_and_shared_workspace_scope() -> None:
             _env_file=None,
             APP_ENV="test",
             DATABASE_URL=database_url,
+            ALOS_CONTRACTS_PATH=CONTRACTS_ROOT,
             GENESIS_BASE_URL="http://genesis.test",
             GENESIS_INTERNAL_TOKEN="domain-crud-test-token",  # noqa: S106
         )
@@ -247,13 +249,13 @@ async def test_domain_crud_round_trip_and_shared_workspace_scope() -> None:
         assert updated.json()["bank_name"] == "Updated Bank"
 
         created_project = await client.post(
-            "/api/v1/domains/shared/projects",
+            "/api/v1/projects",
             headers=headers,
             json={"code": "API-PROJECT", "name": "API Project"},
         )
         assert created_project.status_code == 201, created_project.text
         project_id = created_project.json()["project_id"]
-        assert created_project.json()["workspace_id"] == "workspace_it"
+        assert created_project.json()["workspace_ids"] == ["workspace_it"]
 
         for method, path, payload in (
             (
@@ -353,11 +355,12 @@ async def test_domain_crud_round_trip_and_shared_workspace_scope() -> None:
         deleted_project = await client.delete(
             f"/api/v1/domains/shared/projects/{project_id}", headers=headers
         )
-        assert deleted_project.status_code == 204
-        missing_project = await client.get(
-            f"/api/v1/domains/shared/projects/{project_id}", headers=headers
+        assert deleted_project.status_code == 409
+        assert deleted_project.json()["code"] == "WORK_MUTATION_REQUIRES_DEDICATED_API"
+        retained_project = await client.get(
+            f"/api/v1/projects/{project_id}", headers=headers
         )
-        assert missing_project.status_code == 404
+        assert retained_project.status_code == 200
 
         deleted_account = await client.delete(
             f"/api/v1/domains/finance/bank_accounts/{account['bank_account_id']}",
