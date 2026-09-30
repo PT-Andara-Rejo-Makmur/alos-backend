@@ -45,6 +45,8 @@ async def _login(
     *,
     email: str,
     permissions: list[str],
+    tenant_id: str = "tenant_default",
+    organization_id: str = "org_default",
     workspace_id: str = "workspace_property",
     workspace_key: str = "property",
 ) -> tuple[dict[str, str], str]:
@@ -54,8 +56,8 @@ async def _login(
             "email": email,
             "password": "StrongPass!123",
             "display_name": "Report Finding Test",
-            "tenant_id": "tenant_default",
-            "organization_id": "org_default",
+            "tenant_id": tenant_id,
+            "organization_id": organization_id,
             "workspace_id": workspace_id,
             "workspace_key": workspace_key,
             "workspace_name": "Test Workspace",
@@ -126,6 +128,23 @@ async def test_reports_and_findings_authoritative_endpoints_and_generic_guards()
                 permissions=["report.read", "report.create", "finding.read", "finding.create"],
                 workspace_id="workspace_finance",
                 workspace_key="finance",
+            )
+            other_org_user, _ = await _login(
+                client,
+                email="rf-otherorg@andara.local",
+                permissions=["report.read", "report.create", "finding.read", "finding.create"],
+                organization_id="org_second",
+                workspace_id="workspace_second_org",
+                workspace_key="second_org",
+            )
+            other_tenant_user, _ = await _login(
+                client,
+                email="rf-othertenant@other.local",
+                permissions=["report.read", "report.create", "finding.read", "finding.create"],
+                tenant_id="tenant_other",
+                organization_id="org_other",
+                workspace_id="workspace_other_tenant",
+                workspace_key="other_tenant",
             )
 
             # --- REPORTS TESTS ---
@@ -206,13 +225,20 @@ async def test_reports_and_findings_authoritative_endpoints_and_generic_guards()
             )
             assert get_legacy_read.status_code == 200
 
-            # Cross-workspace isolation -> 404
-            assert (
-                await client.get(
+            # Cross-scope isolation: workspace, org, tenant -> 404 on detail, invisible in list
+            for unauthorized_user in (other_ws_user, other_org_user, other_tenant_user):
+                res_detail = await client.get(
                     f"/api/v1/work/reports/results/{report_id}",
-                    headers=other_ws_user,
+                    headers=unauthorized_user,
                 )
-            ).status_code == 404
+                assert res_detail.status_code == 404
+
+                res_list = await client.get(
+                    "/api/v1/work/reports/results",
+                    headers=unauthorized_user,
+                )
+                assert res_list.status_code == 200
+                assert not any(r["report_id"] == report_id for r in res_list.json())
 
             # List reports with filters
             list_all = await client.get(
@@ -319,13 +345,20 @@ async def test_reports_and_findings_authoritative_endpoints_and_generic_guards()
             assert get_finding_res.status_code == 200
             assert get_finding_res.json() == finding
 
-            # Cross-workspace isolation -> 404
-            assert (
-                await client.get(
+            # Cross-scope isolation: workspace, org, tenant -> 404 on detail, invisible in list
+            for unauthorized_user in (other_ws_user, other_org_user, other_tenant_user):
+                res_detail = await client.get(
                     f"/api/v1/work/findings/{finding_id}",
-                    headers=other_ws_user,
+                    headers=unauthorized_user,
                 )
-            ).status_code == 404
+                assert res_detail.status_code == 404
+
+                res_list = await client.get(
+                    "/api/v1/work/findings",
+                    headers=unauthorized_user,
+                )
+                assert res_list.status_code == 200
+                assert not any(f["finding_id"] == finding_id for f in res_list.json())
 
             # List findings with filters
             list_findings_res = await client.get(
