@@ -857,3 +857,120 @@ async def get_finding(
     row = await _service(request).get_finding(principal, finding_id)
     return _validate(contracts, "FindingProjection", row)
 
+
+@router.patch("/work/findings/{finding_id}")
+async def update_finding(
+    finding_id: str,
+    payload: dict[str, Any],
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+    contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    correlation_id = await _authorize(
+        authorization, principal, permission="finding.update",
+        legacy_permission=None, command="finding.update",
+    )
+    values = _validate(contracts, "FindingUpdateRequest", payload)
+    row = await _run(_service(request).update_finding(principal, finding_id, values))
+    projection = _validate(contracts, "FindingProjection", row)
+    await _record_mutation(
+        request, principal, correlation_id, entity="finding", record_id=finding_id,
+        action="updated",
+    )
+    return projection
+
+
+@router.post("/work/findings/{finding_id}/assign")
+async def assign_finding(
+    finding_id: str,
+    payload: dict[str, Any],
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+    contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    correlation_id = await _authorize(
+        authorization, principal, permission="finding.assign",
+        legacy_permission=None, command="finding.assign",
+    )
+    values = _validate(contracts, "FindingAssignmentRequest", payload)
+    row, changed = await _run(
+        _service(request).assign_finding(principal, finding_id, str(values["owner_actor_id"]))
+    )
+    projection = _validate(contracts, "FindingProjection", row)
+    if changed:
+        await _record_mutation(
+            request, principal, correlation_id, entity="finding", record_id=finding_id,
+            action="assigned",
+        )
+    return projection
+
+
+async def _finding_transition(
+    finding_id: str,
+    action: str,
+    request: Request,
+    principal: Principal,
+    authorization: AuthorizationEnforcer,
+    contracts: CanonicalContractCatalog,
+) -> dict[str, Any]:
+    permission, audit_action = {
+        "start": ("finding.update", "started"),
+        "submit_verification": ("finding.update", "verification_requested"),
+        "verify": ("finding.verify", "verified"),
+        "close": ("finding.close", "closed"),
+    }[action]
+    correlation_id = await _authorize(
+        authorization, principal, permission=permission,
+        legacy_permission=None, command=f"finding.{action}",
+    )
+    row, changed = await _run(_service(request).transition_finding(principal, finding_id, action))
+    projection = _validate(contracts, "FindingProjection", row)
+    if changed:
+        await _record_mutation(
+            request, principal, correlation_id, entity="finding", record_id=finding_id,
+            action=audit_action,
+        )
+    return projection
+
+
+@router.post("/work/findings/{finding_id}/start")
+async def start_finding(
+    finding_id: str, request: Request, principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency, contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    return await _finding_transition(
+        finding_id, "start", request, principal, authorization, contracts
+    )
+
+
+@router.post("/work/findings/{finding_id}/submit-verification")
+async def submit_finding_verification(
+    finding_id: str, request: Request, principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency, contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    return await _finding_transition(
+        finding_id, "submit_verification", request, principal, authorization, contracts
+    )
+
+
+@router.post("/work/findings/{finding_id}/verify")
+async def verify_finding(
+    finding_id: str, request: Request, principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency, contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    return await _finding_transition(
+        finding_id, "verify", request, principal, authorization, contracts
+    )
+
+
+@router.post("/work/findings/{finding_id}/close")
+async def close_finding(
+    finding_id: str, request: Request, principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency, contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    return await _finding_transition(
+        finding_id, "close", request, principal, authorization, contracts
+    )
+

@@ -1166,4 +1166,140 @@ class SharedWorkService:
             )
             return self._projection(dict(row), principal)
 
+    async def update_finding(
+        self, principal: Principal, finding_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        async with self._session_factory() as session, session.begin():
+            findings = await self._table(session, "work_findings")
+            links = await self._table(session, "work_finding_workspaces")
+            current = await self._locked_record(
+                session, findings, links, "finding_id", finding_id, principal
+            )
+            if current["status"] not in {"OPEN", "ASSIGNED", "IN_PROGRESS"}:
+                raise PlatformError(
+                    "FINDING_CONTENT_FROZEN", "Finding content is frozen.", status_code=409
+                )
+            row = (
+                (
+                    await session.execute(
+                        update(findings)
+                        .where(findings.c.finding_id == finding_id)
+                        .values(**payload, updated_at=datetime.now(UTC))
+                        .returning(findings)
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            return self._projection(dict(row), principal)
+
+    async def assign_finding(
+        self, principal: Principal, finding_id: str, owner_actor_id: str
+    ) -> tuple[dict[str, Any], bool]:
+        async with self._session_factory() as session, session.begin():
+            findings = await self._table(session, "work_findings")
+            links = await self._table(session, "work_finding_workspaces")
+            current = await self._locked_record(
+                session, findings, links, "finding_id", finding_id, principal
+            )
+            if current["status"] not in {"OPEN", "ASSIGNED"}:
+                raise PlatformError(
+                    "FINDING_TRANSITION_INVALID", "Finding cannot be assigned in this state.",
+                    status_code=409,
+                )
+            actors = await self._table(session, "actors")
+            memberships = await self._table(session, "workspace_memberships")
+            workspaces = await self._table(session, "workspaces")
+            now = datetime.now(UTC)
+            eligible = await session.execute(
+                select(memberships.c.permission_refs)
+                .join(memberships, memberships.c.actor_id == actors.c.actor_id)
+                .join(workspaces, workspaces.c.workspace_id == memberships.c.workspace_id)
+                .where(
+                    actors.c.actor_id == owner_actor_id,
+                    actors.c.tenant_id == principal.tenant_id,
+                    actors.c.organization_id == principal.organization_id,
+                    actors.c.active.is_(True),
+                    memberships.c.workspace_id == principal.workspace_id,
+                    memberships.c.tenant_id == principal.tenant_id,
+                    memberships.c.organization_id == principal.organization_id,
+                    memberships.c.active.is_(True),
+                    memberships.c.revoked_at.is_(None),
+                    memberships.c.effective_at <= now,
+                    or_(memberships.c.expires_at.is_(None), memberships.c.expires_at > now),
+                    workspaces.c.tenant_id == principal.tenant_id,
+                    workspaces.c.organization_id == principal.organization_id,
+                    workspaces.c.active.is_(True),
+                )
+            )
+            permission_refs = eligible.scalar_one_or_none()
+            readable = isinstance(permission_refs, list) and bool(
+                {"finding.read", "work.read"}.intersection(permission_refs)
+            )
+            if not readable:
+                raise self._not_found()
+            if current["status"] == "ASSIGNED" and current["owner_actor_id"] == owner_actor_id:
+                return self._projection(current, principal), False
+            row = (
+                (
+                    await session.execute(
+                        update(findings)
+                        .where(findings.c.finding_id == finding_id)
+                        .values(owner_actor_id=owner_actor_id, status="ASSIGNED", updated_at=now)
+                        .returning(findings)
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            return self._projection(dict(row), principal), True
+
+    async def transition_finding(
+        self, principal: Principal, finding_id: str, action: str
+    ) -> tuple[dict[str, Any], bool]:
+        transitions = {
+            "start": ({"OPEN", "ASSIGNED"}, "IN_PROGRESS"),
+            "submit_verification": ({"IN_PROGRESS"}, "PENDING_VERIFICATION"),
+            "verify": ({"PENDING_VERIFICATION"}, "VERIFIED"),
+            "close": ({"VERIFIED"}, "CLOSED"),
+        }
+        allowed, target = transitions[action]
+        async with self._session_factory() as session, session.begin():
+            findings = await self._table(session, "work_findings")
+            links = await self._table(session, "work_finding_workspaces")
+            current = await self._locked_record(
+                session, findings, links, "finding_id", finding_id, principal
+            )
+            if current["status"] not in allowed and current["status"] != target:
+                raise PlatformError(
+                    "FINDING_TRANSITION_INVALID", "Finding transition is invalid.",
+                    status_code=409,
+                )
+            if action in {"start", "submit_verification"} and (
+                current["owner_actor_id"] != principal.actor_id
+            ):
+                raise PlatformError(
+                    "FINDING_OWNER_REQUIRED", "Finding ownership is required.", status_code=403
+                )
+            if action == "verify" and current["owner_actor_id"] == principal.actor_id:
+                raise PlatformError(
+                    "FINDING_SELF_VERIFICATION_DENIED",
+                    "The finding owner cannot verify this finding.", status_code=403,
+                )
+            if current["status"] == target:
+                return self._projection(current, principal), False
+            row = (
+                (
+                    await session.execute(
+                        update(findings)
+                        .where(findings.c.finding_id == finding_id)
+                        .values(status=target, updated_at=datetime.now(UTC))
+                        .returning(findings)
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            return self._projection(dict(row), principal), True
+
 
