@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import Any, ClassVar
 from uuid import uuid4
 
 from fastapi.encoders import jsonable_encoder
@@ -16,6 +16,10 @@ from alos.security.errors import PlatformError
 
 
 class SharedWorkService:
+    _approval_subjects: ClassVar[dict[str, tuple[str, str, str]]] = {
+        "PROJECT": ("projects", "project_workspaces", "project_id"),
+        "TASK": ("tasks", "task_workspaces", "task_id"),
+    }
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
         self._metadata = MetaData()
@@ -464,3 +468,182 @@ class SharedWorkService:
                 .one()
             )
             return self._projection(dict(row), principal), True
+
+    async def _visible_approval_subject(
+        self, session: AsyncSession, principal: Principal, subject_type: str, subject_id: str
+    ) -> None:
+        subject = self._approval_subjects.get(subject_type)
+        if subject is None:
+            raise PlatformError(
+                "APPROVAL_SUBJECT_UNSUPPORTED", "Approval subject is unsupported.", status_code=422
+            )
+        table_name, link_name, identifier = subject
+        table = await self._table(session, table_name)
+        link = await self._table(session, link_name)
+        found = await session.execute(
+            select(table.c[identifier]).where(
+                table.c[identifier] == subject_id,
+                *self._visible(table, link, identifier, principal),
+            )
+        )
+        if found.scalar_one_or_none() is None:
+            raise self._not_found()
+
+    async def list_approvals(
+        self,
+        principal: Principal,
+        *,
+        status: str | None,
+        subject_type: str | None,
+        search: str | None,
+    ) -> list[dict[str, Any]]:
+        async with self._session_factory() as session:
+            approvals = await self._table(session, "work_approvals")
+            links = await self._table(session, "work_approval_workspaces")
+            predicates = list(self._visible(approvals, links, "approval_id", principal))
+            predicates.append(approvals.c.subject_type.in_(self._approval_subjects))
+            if status:
+                predicates.append(approvals.c.status == status)
+            if subject_type:
+                predicates.append(approvals.c.subject_type == subject_type)
+            if search:
+                pattern = f"%{search}%"
+                predicates.append(
+                    or_(approvals.c.subject_id.ilike(pattern), approvals.c.reason.ilike(pattern))
+                )
+            rows = (
+                (
+                    await session.execute(
+                        select(approvals)
+                        .where(*predicates)
+                        .order_by(approvals.c.requested_at.desc(), approvals.c.approval_id)
+                        .limit(200)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            return [self._projection(dict(row), principal) for row in rows]
+
+    async def get_approval(self, principal: Principal, approval_id: str) -> dict[str, Any]:
+        async with self._session_factory() as session:
+            approvals = await self._table(session, "work_approvals")
+            links = await self._table(session, "work_approval_workspaces")
+            row = (
+                (
+                    await session.execute(
+                        select(approvals).where(
+                            approvals.c.approval_id == approval_id,
+                            approvals.c.subject_type.in_(self._approval_subjects),
+                            *self._visible(approvals, links, "approval_id", principal),
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise self._not_found()
+            return self._projection(dict(row), principal)
+
+    async def request_approval(
+        self, principal: Principal, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        async with self._session_factory() as session, session.begin():
+            await self._verify_workspace(session, principal)
+            await self._visible_approval_subject(
+                session, principal, payload["subject_type"], payload["subject_id"]
+            )
+            approvals = await self._table(session, "work_approvals")
+            links = await self._table(session, "work_approval_workspaces")
+            approval_id = uuid4().hex
+            row = (
+                (
+                    await session.execute(
+                        insert(approvals)
+                        .values(
+                            approval_id=approval_id,
+                            tenant_id=principal.tenant_id,
+                            organization_id=principal.organization_id,
+                            subject_type=payload["subject_type"],
+                            subject_id=payload["subject_id"],
+                            requested_by=principal.actor_id,
+                            approver_actor_id=None,
+                            status="PENDING",
+                            decision=None,
+                            reason=payload.get("reason"),
+                            decision_reason=None,
+                            requested_at=datetime.now(UTC),
+                            decided_at=None,
+                        )
+                        .returning(approvals)
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            await session.execute(
+                insert(links).values(approval_id=approval_id, workspace_id=principal.workspace_id)
+            )
+            return self._projection(dict(row), principal)
+
+    async def decide_approval(
+        self,
+        principal: Principal,
+        approval_id: str,
+        *,
+        status: str,
+        decision: str,
+        decision_reason: str | None,
+    ) -> tuple[dict[str, Any], bool]:
+        async with self._session_factory() as session, session.begin():
+            approvals = await self._table(session, "work_approvals")
+            links = await self._table(session, "work_approval_workspaces")
+            row = await self._locked_record(
+                session, approvals, links, "approval_id", approval_id, principal
+            )
+            if row["subject_type"] not in self._approval_subjects:
+                raise self._not_found()
+            if row["requested_by"] == principal.actor_id:
+                raise PlatformError(
+                    "APPROVAL_SELF_DECISION_DENIED",
+                    "Requester cannot decide their own approval.",
+                    status_code=403,
+                )
+            normalized_reason = decision_reason.strip() if decision_reason is not None else None
+            if not normalized_reason:
+                normalized_reason = None
+            if status != "APPROVED" and normalized_reason is None:
+                raise PlatformError(
+                    "APPROVAL_REASON_REQUIRED", "Decision reason is required.", status_code=422
+                )
+            if row["status"] != "PENDING":
+                if (
+                    row["status"] == status
+                    and row["decision"] == decision
+                    and row["approver_actor_id"] == principal.actor_id
+                    and row["decision_reason"] == normalized_reason
+                ):
+                    return self._projection(row, principal), False
+                raise PlatformError(
+                    "APPROVAL_ALREADY_DECIDED", "Approval is already decided.", status_code=409
+                )
+            updated = (
+                (
+                    await session.execute(
+                        update(approvals)
+                        .where(approvals.c.approval_id == approval_id)
+                        .values(
+                            status=status,
+                            decision=decision,
+                            approver_actor_id=principal.actor_id,
+                            decision_reason=normalized_reason,
+                            decided_at=datetime.now(UTC),
+                        )
+                        .returning(approvals)
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            return self._projection(dict(updated), principal), True

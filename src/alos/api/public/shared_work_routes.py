@@ -1,4 +1,4 @@
-"""Dedicated public Projects and Tasks boundary."""
+"""Dedicated public Shared Work boundary."""
 
 from __future__ import annotations
 
@@ -120,6 +120,135 @@ async def _record_mutation(
             occurred_at=datetime.now(UTC),
             reason=f"{action.capitalize()} workspace-visible {entity}",
         )
+    )
+
+
+@router.get("/approvals")
+async def list_approvals(
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+    contracts: ContractCatalogDependency,
+    status: str | None = Query(default=None),
+    subject_type: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+) -> list[dict[str, Any]]:
+    await _authorize(
+        authorization, principal, permission="approval.read",
+        legacy_permission="work.read", command="approval.list",
+    )
+    rows = await _run(_service(request).list_approvals(
+        principal,
+        status=_filter(contracts, "ApprovalStatus", status),
+        subject_type=_filter(contracts, "ApprovalSubjectType", subject_type),
+        search=search,
+    ))
+    return [_validate(contracts, "ApprovalProjection", row) for row in rows]
+
+
+@router.post("/approvals", status_code=201)
+async def request_approval(
+    payload: dict[str, Any], request: Request, principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency, contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    correlation_id = await _authorize(
+        authorization, principal, permission="approval.request",
+        legacy_permission="work.write", command="approval.request",
+    )
+    values = _validate(contracts, "ApprovalRequest", payload)
+    row = await _run(_service(request).request_approval(principal, values))
+    projection = _validate(contracts, "ApprovalProjection", row)
+    await _record_mutation(
+        request, principal, correlation_id, entity="approval",
+        record_id=str(row["approval_id"]), action="requested",
+    )
+    return projection
+
+
+@router.get("/approvals/{approval_id}")
+async def get_approval(
+    approval_id: str, request: Request, principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency, contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    await _authorize(
+        authorization, principal, permission="approval.read",
+        legacy_permission="work.read", command="approval.get",
+    )
+    row = await _run(_service(request).get_approval(principal, approval_id))
+    return _validate(contracts, "ApprovalProjection", row)
+
+
+async def _decide_approval(
+    action: str, approval_id: str, payload: dict[str, Any], request: Request,
+    principal: Principal, authorization: AuthorizationEnforcer,
+    contracts: CanonicalContractCatalog,
+) -> dict[str, Any]:
+    transitions = {
+        "approve": ("APPROVED", "APPROVED"),
+        "return": ("RETURNED", "RETURNED"),
+        "reject": ("REJECTED", "REJECTED"),
+        "hold": ("HELD", "HOLD"),
+    }
+    status, decision = transitions[action]
+    correlation_id = await _authorize(
+        authorization, principal, permission=f"approval.{action}",
+        legacy_permission=None, command=f"approval.{action}",
+    )
+    values = _validate(contracts, "ApprovalDecisionRequest", payload)
+    row, changed = await _run(_service(request).decide_approval(
+        principal, approval_id, status=status, decision=decision,
+        decision_reason=values.get("decision_reason"),
+    ))
+    projection = _validate(contracts, "ApprovalProjection", row)
+    if changed:
+        await _record_mutation(
+            request, principal, correlation_id, entity="approval",
+            record_id=approval_id, action=action,
+        )
+    return projection
+
+
+@router.post("/approvals/{approval_id}/approve")
+async def approve_approval(
+    approval_id: str, payload: dict[str, Any], request: Request,
+    principal: CurrentPrincipalDependency, authorization: AuthorizationEnforcerDependency,
+    contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    return await _decide_approval(
+        "approve", approval_id, payload, request, principal, authorization, contracts
+    )
+
+
+@router.post("/approvals/{approval_id}/return")
+async def return_approval(
+    approval_id: str, payload: dict[str, Any], request: Request,
+    principal: CurrentPrincipalDependency, authorization: AuthorizationEnforcerDependency,
+    contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    return await _decide_approval(
+        "return", approval_id, payload, request, principal, authorization, contracts
+    )
+
+
+@router.post("/approvals/{approval_id}/reject")
+async def reject_approval(
+    approval_id: str, payload: dict[str, Any], request: Request,
+    principal: CurrentPrincipalDependency, authorization: AuthorizationEnforcerDependency,
+    contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    return await _decide_approval(
+        "reject", approval_id, payload, request, principal, authorization, contracts
+    )
+
+
+@router.post("/approvals/{approval_id}/hold")
+async def hold_approval(
+    approval_id: str, payload: dict[str, Any], request: Request,
+    principal: CurrentPrincipalDependency, authorization: AuthorizationEnforcerDependency,
+    contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    return await _decide_approval(
+        "hold", approval_id, payload, request, principal, authorization, contracts
     )
 
 

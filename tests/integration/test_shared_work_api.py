@@ -336,6 +336,254 @@ async def test_projects_and_tasks_are_workspace_scoped_and_permission_bounded() 
 
 
 @pytest.mark.asyncio
+async def test_approvals_use_scoped_subjects_and_separate_decision_authority() -> None:
+    database_name = f"alos_approval_{uuid.uuid4().hex[:12]}"
+    await _create_database(database_name)
+    database_url = _database_url(database_name)
+    app = None
+    try:
+        await asyncio.to_thread(
+            subprocess.run,
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            cwd=BACKEND_ROOT,
+            env={**os.environ, "DATABASE_URL": database_url},
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        app = create_app(
+            Settings(
+                _env_file=None,
+                APP_ENV="test",
+                DATABASE_URL=database_url,
+                ALOS_CONTRACTS_PATH=CONTRACTS_ROOT,
+                GENESIS_BASE_URL="http://genesis.test",
+                GENESIS_INTERNAL_TOKEN="approval-test-token",  # noqa: S106
+            )
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            for path in ("/api/v1/approvals", "/api/v1/approvals/missing"):
+                assert (await client.get(path)).status_code == 401
+            assert (await client.post("/api/v1/approvals", json={})).status_code == 401
+
+            denied = await _login(client, email="approval-denied@andara.local", permissions=[])
+            legacy = await _login(
+                client, email="approval-requester@andara.local",
+                permissions=[
+                    "work.read", "work.write", "approval.approve", "approval.return",
+                    "approval.reject", "approval.hold",
+                ],
+            )
+            decision_permissions = [
+                "approval.read", "approval.approve", "approval.return",
+                "approval.reject", "approval.hold",
+            ]
+            decider = await _login(
+                client, email="approval-decider@andara.local", permissions=decision_permissions
+            )
+            approver_only = await _login(
+                client, email="approval-approve-only@andara.local",
+                permissions=["approval.read", "approval.approve"],
+            )
+            legacy_decider = await _login(
+                client, email="approval-legacy-decider@andara.local",
+                permissions=["work.read", "work.write"],
+            )
+            other_workspace = await _login(
+                client,
+                email="approval-other@andara.local",
+                permissions=["work.read", "work.write"],
+                workspace_id="workspace_hr", workspace_key="hr",
+            )
+            for path in ("/api/v1/approvals", "/api/v1/approvals/missing"):
+                assert (await client.get(path, headers=denied)).status_code == 403
+            assert (
+                await client.post("/api/v1/approvals", headers=denied, json={})
+            ).status_code == 403
+
+            project = await client.post(
+                "/api/v1/projects",
+                headers=legacy,
+                json={"code": "AP-1", "name": "Approval Project"},
+            )
+            assert project.status_code == 201, project.text
+            project_id = project.json()["project_id"]
+            task = await client.post(
+                "/api/v1/tasks", headers=legacy,
+                json={"title": "Approval Task", "project_id": project_id},
+            )
+            assert task.status_code == 201, task.text
+            task_id = task.json()["task_id"]
+            remote_project = await client.post(
+                "/api/v1/projects", headers=other_workspace,
+                json={"code": "AP-HR", "name": "Remote"},
+            )
+            assert remote_project.status_code == 201, remote_project.text
+            postgres = await asyncpg.connect(database_url.replace("+asyncpg", ""))
+            try:
+                for suffix, tenant, organization in (
+                    ("tenant", "another_tenant", "org_default"),
+                    ("organization", "tenant_default", "another_organization"),
+                ):
+                    foreign_id = f"approval_foreign_{suffix}"
+                    await postgres.execute(
+                        "INSERT INTO core.projects "
+                        "(project_id, tenant_id, organization_id, code, name, "
+                        "created_at, updated_at) "
+                        "VALUES ($1, $2, $3, $4, $5, now(), now())",
+                        foreign_id, tenant, organization, f"FOREIGN-{suffix}", "Foreign project",
+                    )
+                    await postgres.execute(
+                        "INSERT INTO core.project_workspaces (project_id, workspace_id) "
+                        "VALUES ($1, $2)",
+                        foreign_id, "workspace_property",
+                    )
+            finally:
+                await postgres.close()
+            for payload, expected in (
+                ({"subject_type": "BUDGET", "subject_id": project_id}, 422),
+                ({"subject_type": "PROJECT", "subject_id": "missing"}, 404),
+                (
+                    {"subject_type": "PROJECT", "subject_id": remote_project.json()["project_id"]},
+                    404,
+                ),
+                ({"subject_type": "PROJECT", "subject_id": "approval_foreign_tenant"}, 404),
+                ({"subject_type": "PROJECT", "subject_id": "approval_foreign_organization"}, 404),
+                ({"subject_type": "PROJECT", "subject_id": project_id, "status": "APPROVED"}, 422),
+                ({"subject_type": "TASK", "subject_id": task_id, "requested_by": "other"}, 422),
+            ):
+                result = await client.post("/api/v1/approvals", headers=legacy, json=payload)
+                assert result.status_code == expected, result.text
+
+            approvals: list[str] = []
+            for subject_type, subject_id in (("PROJECT", project_id), ("TASK", task_id)):
+                created = await client.post(
+                    "/api/v1/approvals", headers=legacy,
+                    json={
+                        "subject_type": subject_type,
+                        "subject_id": subject_id,
+                        "reason": "Request reason",
+                    },
+                )
+                assert created.status_code == 201, created.text
+                data = created.json()
+                approvals.append(data["approval_id"])
+                assert data["status"] == "PENDING"
+                assert data["requested_by"] == task.json()["created_by"]
+                assert data["workspace_ids"] == ["workspace_property"]
+                assert data["tenant_id"] == "tenant_default"
+                assert data["organization_id"] == "org_default"
+                assert data["decision"] is None and data["approver_actor_id"] is None
+                assert data["decided_at"] is None and data["decision_reason"] is None
+            assert len((await client.get("/api/v1/approvals", headers=legacy)).json()) == 2
+            assert (
+                await client.get(f"/api/v1/approvals/{approvals[0]}", headers=other_workspace)
+            ).status_code == 404
+            assert (
+                await client.get("/api/v1/approvals?subject_type=BUDGET", headers=legacy)
+            ).status_code == 422
+
+            for action in ("approve", "return", "reject", "hold"):
+                assert (
+                    await client.post(
+                        f"/api/v1/approvals/{approvals[0]}/{action}",
+                        headers=legacy, json={"decision_reason": "Self"},
+                    )
+                ).status_code == 403
+                assert (
+                    await client.post(
+                        f"/api/v1/approvals/{approvals[0]}/{action}",
+                        headers=legacy_decider, json={"decision_reason": "No decision grant"},
+                    )
+                ).status_code == 403
+            for action in ("return", "reject", "hold"):
+                assert (
+                    await client.post(
+                        f"/api/v1/approvals/{approvals[0]}/{action}",
+                        headers=approver_only, json={"decision_reason": "Reason"},
+                    )
+                ).status_code == 403
+            approved = await client.post(
+                f"/api/v1/approvals/{approvals[0]}/approve", headers=approver_only, json={}
+            )
+            assert approved.status_code == 200, approved.text
+            assert approved.json()["status"] == approved.json()["decision"] == "APPROVED"
+            assert (
+                await client.post(
+                    f"/api/v1/approvals/{approvals[1]}/return", headers=decider, json={}
+                )
+            ).status_code == 422
+            returned = await client.post(
+                f"/api/v1/approvals/{approvals[1]}/return", headers=decider,
+                json={"decision_reason": "Needs changes"},
+            )
+            assert returned.status_code == 200, returned.text
+            assert returned.json()["status"] == "RETURNED"
+            assert returned.json()["decision"] == "RETURNED"
+            assert returned.json()["reason"] == "Request reason"
+            assert returned.json()["decision_reason"] == "Needs changes"
+            assert returned.json()["decided_at"] is not None
+            assert returned.json()["approver_actor_id"] != returned.json()["requested_by"]
+            repeated = await client.post(
+                f"/api/v1/approvals/{approvals[1]}/return", headers=decider,
+                json={"decision_reason": "Needs changes"},
+            )
+            assert repeated.status_code == 200 and repeated.json() == returned.json()
+            assert (
+                await client.post(
+                    f"/api/v1/approvals/{approvals[1]}/reject", headers=decider,
+                    json={"decision_reason": "Different decision"},
+                )
+            ).status_code == 409
+            assert (
+                await client.post(
+                    f"/api/v1/approvals/{approvals[1]}/return", headers=decider,
+                    json={"decision_reason": "Changed reason"},
+                )
+            ).status_code == 409
+            assert (
+                await client.patch(
+                    f"/api/v1/domains/shared/work_approvals/{approvals[1]}",
+                    headers=legacy, json={"decision": "APPROVED"},
+                )
+            ).status_code == 409
+            for action, expected_status, expected_decision in (
+                ("reject", "REJECTED", "REJECTED"),
+                ("hold", "HELD", "HOLD"),
+            ):
+                created = await client.post(
+                    "/api/v1/approvals", headers=legacy,
+                    json={"subject_type": "PROJECT", "subject_id": project_id},
+                )
+                assert created.status_code == 201, created.text
+                next_id = created.json()["approval_id"]
+                assert (
+                    await client.post(
+                        f"/api/v1/approvals/{next_id}/{action}",
+                        headers=decider, json={"decision_reason": "   "},
+                    )
+                ).status_code == 422
+                outcome = await client.post(
+                    f"/api/v1/approvals/{next_id}/{action}",
+                    headers=decider, json={"decision_reason": "Reviewed"},
+                )
+                assert outcome.status_code == 200, outcome.text
+                assert outcome.json()["status"] == expected_status
+                assert outcome.json()["decision"] == expected_decision
+            events = app.state.identity_audit.list_events(tenant_id="tenant_default")
+            assert sum(event.event_type == "approval.requested" for event in events) == 4
+            assert sum(event.event_type == "approval.return" for event in events) == 1
+            assert sum(event.event_type == "approval.reject" for event in events) == 1
+            assert sum(event.event_type == "approval.hold" for event in events) == 1
+    finally:
+        if app is not None:
+            await app.state.database.dispose()
+        await _drop_database(database_name)
+
+
+@pytest.mark.asyncio
 async def test_project_and_task_lifecycle_requires_scoped_authority() -> None:
     database_name = f"alos_work_lifecycle_{uuid.uuid4().hex[:10]}"
     await _create_database(database_name)
