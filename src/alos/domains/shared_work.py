@@ -8,7 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import MetaData, Table, exists, insert, or_, select
+from sqlalchemy import MetaData, Table, exists, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from alos.identity import Principal
@@ -63,6 +63,47 @@ class SharedWorkService:
     @staticmethod
     def _not_found() -> PlatformError:
         return PlatformError("WORK_RECORD_NOT_FOUND", "Work record was not found.", status_code=404)
+
+    async def _locked_record(
+        self,
+        session: AsyncSession,
+        table: Table,
+        link: Table,
+        identifier: str,
+        record_id: str,
+        principal: Principal,
+    ) -> dict[str, Any]:
+        row = (
+            (
+                await session.execute(
+                    select(table)
+                    .where(
+                        table.c[identifier] == record_id,
+                        *self._visible(table, link, identifier, principal),
+                    )
+                    .with_for_update()
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if row is None:
+            raise self._not_found()
+        return dict(row)
+
+    async def _visible_project_id(
+        self, session: AsyncSession, principal: Principal, project_id: str
+    ) -> None:
+        projects = await self._table(session, "projects")
+        links = await self._table(session, "project_workspaces")
+        visible = await session.execute(
+            select(projects.c.project_id).where(
+                projects.c.project_id == project_id,
+                *self._visible(projects, links, "project_id", principal),
+            )
+        )
+        if visible.scalar_one_or_none() is None:
+            raise self._not_found()
 
     async def _verify_workspace(self, session: AsyncSession, principal: Principal) -> None:
         workspaces = await self._table(session, "workspaces")
@@ -157,6 +198,62 @@ class SharedWorkService:
             )
             return self._projection(dict(row), principal)
 
+    async def update_project(
+        self, principal: Principal, project_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        async with self._session_factory() as session, session.begin():
+            projects = await self._table(session, "projects")
+            links = await self._table(session, "project_workspaces")
+            current = await self._locked_record(
+                session, projects, links, "project_id", project_id, principal
+            )
+            if current["status"] == "ARCHIVED":
+                raise PlatformError(
+                    "PROJECT_ARCHIVED", "Archived projects cannot be changed.", status_code=409
+                )
+            values = {**payload, "updated_at": datetime.now(UTC)}
+            for key in ("start_date", "target_end_date"):
+                if key in values and values[key] is not None:
+                    values[key] = date.fromisoformat(values[key])
+            row = (
+                (
+                    await session.execute(
+                        update(projects)
+                        .where(projects.c.project_id == project_id)
+                        .values(**values)
+                        .returning(projects)
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            return self._projection(dict(row), principal)
+
+    async def archive_project(
+        self, principal: Principal, project_id: str
+    ) -> tuple[dict[str, Any], bool]:
+        async with self._session_factory() as session, session.begin():
+            projects = await self._table(session, "projects")
+            links = await self._table(session, "project_workspaces")
+            current = await self._locked_record(
+                session, projects, links, "project_id", project_id, principal
+            )
+            if current["status"] == "ARCHIVED":
+                return self._projection(current, principal), False
+            row = (
+                (
+                    await session.execute(
+                        update(projects)
+                        .where(projects.c.project_id == project_id)
+                        .values(status="ARCHIVED", updated_at=datetime.now(UTC))
+                        .returning(projects)
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            return self._projection(dict(row), principal), True
+
     async def list_tasks(
         self,
         principal: Principal,
@@ -217,16 +314,7 @@ class SharedWorkService:
             await self._verify_workspace(session, principal)
             project_id = payload.get("project_id")
             if project_id is not None:
-                projects = await self._table(session, "projects")
-                project_links = await self._table(session, "project_workspaces")
-                visible = await session.execute(
-                    select(projects.c.project_id).where(
-                        projects.c.project_id == project_id,
-                        *self._visible(projects, project_links, "project_id", principal),
-                    )
-                )
-                if visible.scalar_one_or_none() is None:
-                    raise self._not_found()
+                await self._visible_project_id(session, principal, project_id)
             tasks = await self._table(session, "tasks")
             links = await self._table(session, "task_workspaces")
             task_id = uuid4().hex
@@ -254,3 +342,125 @@ class SharedWorkService:
                 insert(links).values(task_id=task_id, workspace_id=principal.workspace_id)
             )
             return self._projection(dict(row), principal)
+
+    async def update_task(
+        self, principal: Principal, task_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        async with self._session_factory() as session, session.begin():
+            tasks = await self._table(session, "tasks")
+            links = await self._table(session, "task_workspaces")
+            current = await self._locked_record(
+                session, tasks, links, "task_id", task_id, principal
+            )
+            if current["status"] in {"COMPLETED", "CANCELLED"}:
+                raise PlatformError(
+                    "TASK_CLOSED",
+                    "Completed or cancelled tasks cannot be changed.",
+                    status_code=409,
+                )
+            if payload.get("project_id") is not None:
+                await self._visible_project_id(session, principal, payload["project_id"])
+            values = {**payload, "updated_at": datetime.now(UTC)}
+            if values.get("due_at") is not None:
+                values["due_at"] = datetime.fromisoformat(values["due_at"].replace("Z", "+00:00"))
+            row = (
+                (
+                    await session.execute(
+                        update(tasks)
+                        .where(tasks.c.task_id == task_id)
+                        .values(**values)
+                        .returning(tasks)
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            return self._projection(dict(row), principal)
+
+    async def assign_task(
+        self, principal: Principal, task_id: str, owner_actor_id: str
+    ) -> dict[str, Any]:
+        async with self._session_factory() as session, session.begin():
+            tasks = await self._table(session, "tasks")
+            links = await self._table(session, "task_workspaces")
+            current = await self._locked_record(
+                session, tasks, links, "task_id", task_id, principal
+            )
+            if current["status"] in {"COMPLETED", "CANCELLED"}:
+                raise PlatformError(
+                    "TASK_CLOSED",
+                    "Completed or cancelled tasks cannot be assigned.",
+                    status_code=409,
+                )
+            actors = await self._table(session, "actors")
+            memberships = await self._table(session, "workspace_memberships")
+            workspaces = await self._table(session, "workspaces")
+            now = datetime.now(UTC)
+            eligible = await session.execute(
+                select(memberships.c.permission_refs)
+                .join(memberships, memberships.c.actor_id == actors.c.actor_id)
+                .join(workspaces, workspaces.c.workspace_id == memberships.c.workspace_id)
+                .where(
+                    actors.c.actor_id == owner_actor_id,
+                    actors.c.tenant_id == principal.tenant_id,
+                    actors.c.organization_id == principal.organization_id,
+                    actors.c.active.is_(True),
+                    memberships.c.workspace_id == principal.workspace_id,
+                    memberships.c.tenant_id == principal.tenant_id,
+                    memberships.c.organization_id == principal.organization_id,
+                    memberships.c.active.is_(True),
+                    memberships.c.revoked_at.is_(None),
+                    memberships.c.effective_at <= now,
+                    or_(memberships.c.expires_at.is_(None), memberships.c.expires_at > now),
+                    workspaces.c.tenant_id == principal.tenant_id,
+                    workspaces.c.organization_id == principal.organization_id,
+                    workspaces.c.active.is_(True),
+                )
+            )
+            permission_refs = eligible.scalar_one_or_none()
+            if not isinstance(permission_refs, list) or not {"task.read", "work.read"}.intersection(
+                permission_refs
+            ):
+                raise self._not_found()
+            row = (
+                (
+                    await session.execute(
+                        update(tasks)
+                        .where(tasks.c.task_id == task_id)
+                        .values(owner_actor_id=owner_actor_id, updated_at=now)
+                        .returning(tasks)
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            return self._projection(dict(row), principal)
+
+    async def complete_task(
+        self, principal: Principal, task_id: str
+    ) -> tuple[dict[str, Any], bool]:
+        async with self._session_factory() as session, session.begin():
+            tasks = await self._table(session, "tasks")
+            links = await self._table(session, "task_workspaces")
+            current = await self._locked_record(
+                session, tasks, links, "task_id", task_id, principal
+            )
+            if current["status"] == "COMPLETED":
+                return self._projection(current, principal), False
+            if current["status"] == "CANCELLED":
+                raise PlatformError(
+                    "TASK_CANCELLED", "Cancelled tasks cannot be completed.", status_code=409
+                )
+            row = (
+                (
+                    await session.execute(
+                        update(tasks)
+                        .where(tasks.c.task_id == task_id)
+                        .values(status="COMPLETED", updated_at=datetime.now(UTC))
+                        .returning(tasks)
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            return self._projection(dict(row), principal), True

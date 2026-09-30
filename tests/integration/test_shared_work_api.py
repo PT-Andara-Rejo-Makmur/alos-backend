@@ -46,7 +46,12 @@ async def _drop_database(name: str) -> None:
 
 
 async def _login(
-    client: httpx.AsyncClient, *, email: str, permissions: list[str]
+    client: httpx.AsyncClient,
+    *,
+    email: str,
+    permissions: list[str],
+    workspace_id: str = "workspace_property",
+    workspace_key: str = "property",
 ) -> dict[str, str]:
     registered = await client.post(
         "/api/v1/auth/register",
@@ -56,8 +61,8 @@ async def _login(
             "display_name": "Shared Work Test",
             "tenant_id": "tenant_default",
             "organization_id": "org_default",
-            "workspace_id": "workspace_property",
-            "workspace_key": "property",
+            "workspace_id": workspace_id,
+            "workspace_key": workspace_key,
             "workspace_name": "Property Workspace",
             "workspace_type": "BUSINESS",
             "division_code": "UNASSIGNED",
@@ -324,6 +329,305 @@ async def test_projects_and_tasks_are_workspace_scoped_and_permission_bounded() 
             assert any(
                 item.event_type == "task.created" and item.entity_id == task_id for item in events
             )
+    finally:
+        if app is not None:
+            await app.state.database.dispose()
+        await _drop_database(database_name)
+
+
+@pytest.mark.asyncio
+async def test_project_and_task_lifecycle_requires_scoped_authority() -> None:
+    database_name = f"alos_work_lifecycle_{uuid.uuid4().hex[:10]}"
+    await _create_database(database_name)
+    database_url = _database_url(database_name)
+    app = None
+    try:
+        await asyncio.to_thread(
+            subprocess.run,
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            cwd=BACKEND_ROOT,
+            env={**os.environ, "DATABASE_URL": database_url},
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        app = create_app(
+            Settings(
+                _env_file=None,
+                APP_ENV="test",
+                DATABASE_URL=database_url,
+                ALOS_CONTRACTS_PATH=CONTRACTS_ROOT,
+                GENESIS_BASE_URL="http://genesis.test",
+                GENESIS_INTERNAL_TOKEN="work-lifecycle-test-token",  # noqa: S106
+            )
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            legacy = await _login(
+                client,
+                email="lifecycle-legacy@andara.local",
+                permissions=["work.read", "work.write"],
+            )
+            authorized = await _login(
+                client,
+                email="lifecycle-authorized@andara.local",
+                permissions=[
+                    "project.read",
+                    "project.update",
+                    "project.archive",
+                    "task.read",
+                    "task.update",
+                    "task.assign",
+                    "task.complete",
+                ],
+            )
+            target = await _login(
+                client, email="lifecycle-target@andara.local", permissions=["work.read"]
+            )
+            target_actor = "actor_target"
+            other_actor = "actor_other"
+            unauthorized_actor = "actor_without_work_access"
+            postgres = await asyncpg.connect(database_url.replace("+asyncpg", ""))
+            try:
+                for actor_id, workspace_id, permission_refs in (
+                    (target_actor, "workspace_property", '["work.read"]'),
+                    (other_actor, "workspace_hr", '["work.read"]'),
+                    (unauthorized_actor, "workspace_property", "[]"),
+                ):
+                    await postgres.execute(
+                        "INSERT INTO core.actors "
+                        "(actor_id,tenant_id,organization_id,display_name,active) "
+                        "VALUES ($1,'tenant_default','org_default',$1,true)",
+                        actor_id,
+                    )
+                    await postgres.execute(
+                        "INSERT INTO core.workspace_memberships "
+                        "(actor_id,workspace_id,tenant_id,organization_id,roles,permission_refs,"
+                        "scope_refs,data_scope,active,created_at,effective_at,updated_at) "
+                        "VALUES ($1,$2,'tenant_default','org_default','[\"DIVISION_MEMBER\"]',"
+                        "$3::json,'[]','WORKSPACE',true,now(),now(),now())",
+                        actor_id,
+                        workspace_id,
+                        permission_refs,
+                    )
+            finally:
+                await postgres.close()
+
+            project = await client.post(
+                "/api/v1/projects",
+                headers=legacy,
+                json={"code": "LIFE-1", "name": "Lifecycle project"},
+            )
+            assert project.status_code == 201, project.text
+            project_id = project.json()["project_id"]
+            task = await client.post(
+                "/api/v1/tasks",
+                headers=legacy,
+                json={"title": "Lifecycle task", "project_id": project_id},
+            )
+            assert task.status_code == 201, task.text
+            task_id = task.json()["task_id"]
+
+            for path in (
+                "/api/v1/projects?status=UNKNOWN",
+                "/api/v1/tasks?status=UNKNOWN",
+                "/api/v1/tasks?priority=UNKNOWN",
+            ):
+                response = await client.get(path, headers=legacy)
+                assert response.status_code == 422
+                assert response.json()["code"] == "WORK_FILTER_INVALID"
+
+            project_update = await client.patch(
+                f"/api/v1/projects/{project_id}",
+                headers=authorized,
+                json={"name": "Updated project", "start_date": "2026-10-01"},
+            )
+            assert project_update.status_code == 200, project_update.text
+            assert project_update.json()["name"] == "Updated project"
+            assert project_update.json()["start_date"] == "2026-10-01"
+            task_update = await client.patch(
+                f"/api/v1/tasks/{task_id}",
+                headers=authorized,
+                json={
+                    "title": "Updated task",
+                    "priority": "HIGH",
+                    "due_at": "2026-10-10T12:00:00Z",
+                },
+            )
+            assert task_update.status_code == 200, task_update.text
+            assert task_update.json()["priority"] == "HIGH"
+            assert (
+                await client.patch(
+                    f"/api/v1/projects/{project_id}",
+                    headers=legacy,
+                    json={"description": "Legacy mutable edit"},
+                )
+            ).status_code == 200
+            assert (
+                await client.patch(
+                    f"/api/v1/tasks/{task_id}",
+                    headers=legacy,
+                    json={"description": "Legacy mutable edit"},
+                )
+            ).status_code == 200
+
+            postgres = await asyncpg.connect(database_url.replace("+asyncpg", ""))
+            try:
+                await postgres.execute(
+                    "INSERT INTO core.projects "
+                    "(project_id,tenant_id,organization_id,code,name,status,created_at,updated_at) "
+                    "VALUES ('project_hr','tenant_default','org_default','HR-1','HR project',"
+                    "'PLANNED',now(),now())"
+                )
+                await postgres.execute(
+                    "INSERT INTO core.project_workspaces (project_id,workspace_id) "
+                    "VALUES ('project_hr','workspace_hr')"
+                )
+            finally:
+                await postgres.close()
+            assert (
+                await client.patch(
+                    f"/api/v1/tasks/{task_id}",
+                    headers=authorized,
+                    json={"project_id": "project_hr"},
+                )
+            ).status_code == 404
+            assert (
+                await client.patch(
+                    "/api/v1/projects/project_hr",
+                    headers=authorized,
+                    json={"name": "Outside workspace"},
+                )
+            ).status_code == 404
+
+            for path, payload in (
+                (f"/api/v1/projects/{project_id}", {"status": "ARCHIVED"}),
+                (f"/api/v1/projects/{project_id}", {"tenant_id": "forged"}),
+                (f"/api/v1/tasks/{task_id}", {"status": "COMPLETED"}),
+                (f"/api/v1/tasks/{task_id}", {"owner_actor_id": target_actor}),
+                (f"/api/v1/tasks/{task_id}", {"workspace_ids": ["workspace_hr"]}),
+            ):
+                assert (
+                    await client.patch(path, headers=authorized, json=payload)
+                ).status_code == 422
+
+            for path in (
+                f"/api/v1/projects/{project_id}/archive",
+                f"/api/v1/tasks/{task_id}/complete",
+            ):
+                assert (await client.post(path, headers=legacy)).status_code == 403
+            assert (
+                await client.post(
+                    f"/api/v1/tasks/{task_id}/assign",
+                    headers=legacy,
+                    json={"owner_actor_id": target_actor},
+                )
+            ).status_code == 403
+            for path, method, payload in (
+                (f"/api/v1/projects/{project_id}", "PATCH", {"name": "No"}),
+                (f"/api/v1/tasks/{task_id}", "PATCH", {"title": "No"}),
+                (f"/api/v1/projects/{project_id}/archive", "POST", None),
+                (f"/api/v1/tasks/{task_id}/complete", "POST", None),
+            ):
+                assert (
+                    await client.request(method, path, headers=target, json=payload)
+                ).status_code == 403
+
+            other_assignment = await client.post(
+                f"/api/v1/tasks/{task_id}/assign",
+                headers=authorized,
+                json={"owner_actor_id": other_actor},
+            )
+            assert other_assignment.status_code == 404, other_assignment.text
+            assert (
+                await client.post(
+                    f"/api/v1/tasks/{task_id}/assign",
+                    headers=authorized,
+                    json={"owner_actor_id": unauthorized_actor},
+                )
+            ).status_code == 404
+            assert (
+                await client.post(
+                    f"/api/v1/tasks/{task_id}/assign",
+                    headers=authorized,
+                    json={"owner_actor_id": "unknown_actor"},
+                )
+            ).status_code == 404
+            assigned = await client.post(
+                f"/api/v1/tasks/{task_id}/assign",
+                headers=authorized,
+                json={"owner_actor_id": target_actor},
+            )
+            assert assigned.status_code == 200, assigned.text
+            assert assigned.json()["owner_actor_id"] == target_actor
+
+            postgres = await asyncpg.connect(database_url.replace("+asyncpg", ""))
+            try:
+                await postgres.execute(
+                    "UPDATE core.workspace_memberships SET revoked_at=now(), active=false "
+                    "WHERE actor_id=$1 AND workspace_id='workspace_property'",
+                    target_actor,
+                )
+            finally:
+                await postgres.close()
+            assert (
+                await client.post(
+                    f"/api/v1/tasks/{task_id}/assign",
+                    headers=authorized,
+                    json={"owner_actor_id": target_actor},
+                )
+            ).status_code == 404
+
+            completed = await client.post(f"/api/v1/tasks/{task_id}/complete", headers=authorized)
+            assert completed.status_code == 200, completed.text
+            assert completed.json()["status"] == "COMPLETED"
+            repeated = await client.post(f"/api/v1/tasks/{task_id}/complete", headers=authorized)
+            assert repeated.status_code == 200
+            assert repeated.json()["updated_at"] == completed.json()["updated_at"]
+            assert (
+                await client.patch(
+                    f"/api/v1/tasks/{task_id}",
+                    headers=authorized,
+                    json={"title": "Too late"},
+                )
+            ).status_code == 409
+            archived = await client.post(
+                f"/api/v1/projects/{project_id}/archive", headers=authorized
+            )
+            assert archived.status_code == 200, archived.text
+            assert archived.json()["status"] == "ARCHIVED"
+            repeated_archive = await client.post(
+                f"/api/v1/projects/{project_id}/archive", headers=authorized
+            )
+            assert repeated_archive.status_code == 200
+            assert repeated_archive.json()["updated_at"] == archived.json()["updated_at"]
+            assert (
+                await client.patch(
+                    f"/api/v1/projects/{project_id}",
+                    headers=authorized,
+                    json={"name": "Too late"},
+                )
+            ).status_code == 409
+            for collection, identifier in (("projects", project_id), ("tasks", task_id)):
+                response = await client.patch(
+                    f"/api/v1/domains/shared/{collection}/{identifier}",
+                    headers=legacy,
+                    json={"status": "COMPLETED"},
+                )
+                assert response.status_code == 409
+
+            events = app.state.identity_audit.list_events(tenant_id="tenant_default")
+            for event_type in (
+                "project.updated",
+                "project.archived",
+                "task.updated",
+                "task.assigned",
+                "task.completed",
+            ):
+                assert any(event.event_type == event_type for event in events)
+            assert sum(event.event_type == "project.archived" for event in events) == 1
+            assert sum(event.event_type == "task.completed" for event in events) == 1
     finally:
         if app is not None:
             await app.state.database.dispose()

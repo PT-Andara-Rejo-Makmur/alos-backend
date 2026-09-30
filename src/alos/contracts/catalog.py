@@ -44,6 +44,15 @@ class CanonicalContractCatalog:
     def has_schema(self, schema_id: str) -> bool:
         return schema_id in self._documents
 
+    def enum_values(self, schema_id: str, definition: str) -> tuple[str, ...]:
+        schema = self._documents.get(schema_id)
+        if schema is None:
+            raise ValueError(f"Canonical schema is not available: {schema_id}")
+        values = schema.get("$defs", {}).get(definition, {}).get("enum")
+        if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+            raise ValueError(f"Canonical enum is not available: {definition}")
+        return tuple(values)
+
     def validate(self, schema_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         document_id, separator, _fragment = schema_id.partition("#")
         schema = self._documents.get(document_id)

@@ -24,6 +24,7 @@ from alos.security.errors import PlatformError
 
 router = APIRouter(prefix="/api/v1", tags=["shared-work"])
 SCHEMA = "https://schemas.alos.dev/v1/shared-work/shared-work.schema.json#/$defs/"
+SCHEMA_DOCUMENT = SCHEMA.split("#", maxsplit=1)[0]
 
 
 def _service(request: Request) -> SharedWorkService:
@@ -39,8 +40,18 @@ def _validate(
         raise PlatformError(
             "WORK_CONTRACT_INVALID",
             "Work data does not satisfy its canonical contract.",
-            status_code=422 if name.endswith("CreateRequest") else 503,
+            status_code=422 if name.endswith("Request") else 503,
         ) from exc
+
+
+def _filter(contracts: CanonicalContractCatalog, name: str, value: str | None) -> str | None:
+    if value is not None and value not in contracts.enum_values(SCHEMA_DOCUMENT, name):
+        raise PlatformError(
+            "WORK_FILTER_INVALID",
+            "Filter value is outside the canonical vocabulary.",
+            status_code=422,
+        )
+    return value
 
 
 async def _authorize(
@@ -48,10 +59,14 @@ async def _authorize(
     principal: Principal,
     *,
     permission: str,
-    legacy_permission: str,
+    legacy_permission: str | None,
     command: str,
 ) -> str:
-    selected = permission if permission in principal.permissions else legacy_permission
+    selected = (
+        permission
+        if permission in principal.permissions or legacy_permission is None
+        else legacy_permission
+    )
     correlation_id = current_correlation_id()
     decision = await authorization.enforce(
         principal=principal,
@@ -82,17 +97,18 @@ async def _run[ResultT](awaitable: Awaitable[ResultT]) -> ResultT:
         ) from exc
 
 
-async def _record_creation(
+async def _record_mutation(
     request: Request,
     principal: Principal,
     correlation_id: str,
     *,
     entity: str,
     record_id: str,
+    action: str,
 ) -> None:
     await request.app.state.identity_audit.append(
         AuditEvent(
-            event_type=f"{entity}.created",
+            event_type=f"{entity}.{action}",
             entity_type=entity,
             entity_id=record_id,
             tenant_id=principal.tenant_id,
@@ -102,7 +118,7 @@ async def _record_creation(
             correlation_id=correlation_id,
             outcome="SUCCEEDED",
             occurred_at=datetime.now(UTC),
-            reason=f"Created workspace-visible {entity}",
+            reason=f"{action.capitalize()} workspace-visible {entity}",
         )
     )
 
@@ -123,7 +139,11 @@ async def list_projects(
         legacy_permission="work.read",
         command="project.list",
     )
-    rows = await _run(_service(request).list_projects(principal, status=status, search=search))
+    rows = await _run(
+        _service(request).list_projects(
+            principal, status=_filter(contracts, "ProjectStatus", status), search=search
+        )
+    )
     return [_validate(contracts, "ProjectProjection", row) for row in rows]
 
 
@@ -145,8 +165,13 @@ async def create_project(
     values = _validate(contracts, "ProjectCreateRequest", payload)
     row = await _run(_service(request).create_project(principal, values))
     projection = _validate(contracts, "ProjectProjection", row)
-    await _record_creation(
-        request, principal, correlation_id, entity="project", record_id=str(row["project_id"])
+    await _record_mutation(
+        request,
+        principal,
+        correlation_id,
+        entity="project",
+        record_id=str(row["project_id"]),
+        action="created",
     )
     return projection
 
@@ -170,6 +195,60 @@ async def get_project(
     return _validate(contracts, "ProjectProjection", row)
 
 
+@router.patch("/projects/{project_id}")
+async def update_project(
+    project_id: str,
+    payload: dict[str, Any],
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+    contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    correlation_id = await _authorize(
+        authorization,
+        principal,
+        permission="project.update",
+        legacy_permission="work.write",
+        command="project.update",
+    )
+    values = _validate(contracts, "ProjectUpdateRequest", payload)
+    row = await _run(_service(request).update_project(principal, project_id, values))
+    projection = _validate(contracts, "ProjectProjection", row)
+    await _record_mutation(
+        request, principal, correlation_id, entity="project", record_id=project_id, action="updated"
+    )
+    return projection
+
+
+@router.post("/projects/{project_id}/archive")
+async def archive_project(
+    project_id: str,
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+    contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    correlation_id = await _authorize(
+        authorization,
+        principal,
+        permission="project.archive",
+        legacy_permission=None,
+        command="project.archive",
+    )
+    row, changed = await _run(_service(request).archive_project(principal, project_id))
+    projection = _validate(contracts, "ProjectProjection", row)
+    if changed:
+        await _record_mutation(
+            request,
+            principal,
+            correlation_id,
+            entity="project",
+            record_id=project_id,
+            action="archived",
+        )
+    return projection
+
+
 @router.get("/tasks")
 async def list_tasks(
     request: Request,
@@ -188,7 +267,12 @@ async def list_tasks(
         command="task.list",
     )
     rows = await _run(
-        _service(request).list_tasks(principal, status=status, priority=priority, search=search)
+        _service(request).list_tasks(
+            principal,
+            status=_filter(contracts, "TaskStatus", status),
+            priority=_filter(contracts, "TaskPriority", priority),
+            search=search,
+        )
     )
     return [_validate(contracts, "TaskProjection", row) for row in rows]
 
@@ -211,8 +295,13 @@ async def create_task(
     values = _validate(contracts, "TaskCreateRequest", payload)
     row = await _run(_service(request).create_task(principal, values))
     projection = _validate(contracts, "TaskProjection", row)
-    await _record_creation(
-        request, principal, correlation_id, entity="task", record_id=str(row["task_id"])
+    await _record_mutation(
+        request,
+        principal,
+        correlation_id,
+        entity="task",
+        record_id=str(row["task_id"]),
+        action="created",
     )
     return projection
 
@@ -234,3 +323,79 @@ async def get_task(
     )
     row = await _run(_service(request).get_task(principal, task_id))
     return _validate(contracts, "TaskProjection", row)
+
+
+@router.patch("/tasks/{task_id}")
+async def update_task(
+    task_id: str,
+    payload: dict[str, Any],
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+    contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    correlation_id = await _authorize(
+        authorization,
+        principal,
+        permission="task.update",
+        legacy_permission="work.write",
+        command="task.update",
+    )
+    values = _validate(contracts, "TaskUpdateRequest", payload)
+    row = await _run(_service(request).update_task(principal, task_id, values))
+    projection = _validate(contracts, "TaskProjection", row)
+    await _record_mutation(
+        request, principal, correlation_id, entity="task", record_id=task_id, action="updated"
+    )
+    return projection
+
+
+@router.post("/tasks/{task_id}/assign")
+async def assign_task(
+    task_id: str,
+    payload: dict[str, Any],
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+    contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    correlation_id = await _authorize(
+        authorization,
+        principal,
+        permission="task.assign",
+        legacy_permission=None,
+        command="task.assign",
+    )
+    values = _validate(contracts, "TaskAssignRequest", payload)
+    row = await _run(
+        _service(request).assign_task(principal, task_id, str(values["owner_actor_id"]))
+    )
+    projection = _validate(contracts, "TaskProjection", row)
+    await _record_mutation(
+        request, principal, correlation_id, entity="task", record_id=task_id, action="assigned"
+    )
+    return projection
+
+
+@router.post("/tasks/{task_id}/complete")
+async def complete_task(
+    task_id: str,
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+    contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    correlation_id = await _authorize(
+        authorization,
+        principal,
+        permission="task.complete",
+        legacy_permission=None,
+        command="task.complete",
+    )
+    row, changed = await _run(_service(request).complete_task(principal, task_id))
+    projection = _validate(contracts, "TaskProjection", row)
+    if changed:
+        await _record_mutation(
+            request, principal, correlation_id, entity="task", record_id=task_id, action="completed"
+        )
+    return projection
