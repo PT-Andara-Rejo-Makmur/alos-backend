@@ -175,7 +175,8 @@ async def test_workspace_member_directory_is_scoped_and_filters_ineligible_accou
 
             work_owner, work_owner_id = await _register(
                 client, "work-owner@alos.test",
-                ["project.create", "project.read", "task.create", "task.read",
+                ["project.create", "project.read", "task.create", "task.read", "task.update",
+                 "task.complete",
                  "document.create", "document.read", "document.version", "document.review",
                  "report.create", "report.read",
                  "finding.create", "finding.read", "finding.update",
@@ -195,6 +196,68 @@ async def test_workspace_member_directory_is_scoped_and_filters_ineligible_accou
                       "start_date": "2026-09-30"},
             )
             assert task_created.status_code == 201, task_created.text
+            blocker_created = await client.post(
+                "/api/v1/tasks", headers=work_owner, json={"title": "Required Task"},
+            )
+            assert blocker_created.status_code == 201, blocker_created.text
+            blocker_id = blocker_created.json()["task_id"]
+            dependency_path = f"/api/v1/tasks/{task_created.json()['task_id']}/dependencies"
+            assert (await client.post(
+                dependency_path, headers=denied,
+                json={"blocked_by_task_id": blocker_id},
+            )).status_code == 403
+            added_dependency = await client.post(
+                dependency_path, headers=work_owner,
+                json={"blocked_by_task_id": blocker_id},
+            )
+            assert added_dependency.status_code == 200, added_dependency.text
+            assert added_dependency.json()["blocked_by"][0]["title"] == "Required Task"
+            assert (await client.post(
+                dependency_path, headers=work_owner,
+                json={"blocked_by_task_id": blocker_id},
+            )).status_code == 200
+            assert (await client.post(
+                f"/api/v1/tasks/{blocker_id}/dependencies", headers=work_owner,
+                json={"blocked_by_task_id": task_created.json()["task_id"]},
+            )).status_code == 409
+            assert (await client.post(
+                dependency_path, headers=work_owner,
+                json={"blocked_by_task_id": task_created.json()["task_id"]},
+            )).status_code == 409
+            legacy_writer, _ = await _register(
+                client, "legacy-writer@alos.test", ["task.read", "work.write"],
+            )
+            assert (await client.post(
+                dependency_path, headers=legacy_writer,
+                json={"blocked_by_task_id": blocker_id},
+            )).status_code == 403
+            remote_editor, _ = await _register(
+                client, "remote-editor@alos.test",
+                ["task.read", "task.update", "task.create"],
+                workspace_id="workspace_remote",
+            )
+            remote_task = await client.post(
+                "/api/v1/tasks", headers=remote_editor, json={"title": "Remote Task"},
+            )
+            assert remote_task.status_code == 201, remote_task.text
+            assert (await client.post(
+                dependency_path, headers=work_owner,
+                json={"blocked_by_task_id": remote_task.json()["task_id"]},
+            )).status_code == 404
+            assert (await client.post(
+                dependency_path, headers=remote_editor,
+                json={"blocked_by_task_id": blocker_id},
+            )).status_code == 404
+            dependency_activity = (await client.get(
+                f"/api/v1/work/TASK/{task_created.json()['task_id']}/activity",
+                headers=work_owner,
+            )).json()
+            assert sum(item["event_type"] == "task.dependency_added"
+                       for item in dependency_activity) == 1
+            assert (await client.post(
+                f"/api/v1/tasks/{task_created.json()['task_id']}/complete",
+                headers=work_owner,
+            )).status_code == 409
             document_created = await client.post(
                 "/api/v1/documents", headers=work_owner,
                 json={"title": "Related Document", "category": "POLICY",
@@ -215,9 +278,15 @@ async def test_workspace_member_directory_is_scoped_and_filters_ineligible_accou
             assert finding_created.status_code == 201, finding_created.text
             approval_created = await client.post(
                 "/api/v1/approvals", headers=work_owner,
-                json={"subject_type": "PROJECT", "subject_id": project_id},
+                json={"subject_type": "PROJECT", "subject_id": project_id,
+                      "materiality_value": 1250000.50},
             )
             assert approval_created.status_code == 201, approval_created.text
+            assert approval_created.json()["materiality_value"] == 1250000.50
+            assert (await client.get(
+                f"/api/v1/approvals/{approval_created.json()['approval_id']}",
+                headers=work_owner,
+            )).json()["materiality_value"] == 1250000.50
             document_id = document_created.json()["document_id"]
             task_id = task_created.json()["task_id"]
             approval_id = approval_created.json()["approval_id"]

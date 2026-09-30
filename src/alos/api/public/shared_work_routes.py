@@ -775,6 +775,51 @@ async def complete_task(
     return projection
 
 
+@router.post("/tasks/{task_id}/dependencies")
+async def add_task_dependency(
+    task_id: str, payload: dict[str, Any], request: Request,
+    principal: CurrentPrincipalDependency, authorization: AuthorizationEnforcerDependency,
+    contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    correlation_id = await _authorize(
+        authorization, principal, permission="task.update", legacy_permission=None,
+        command="task.dependency.add",
+    )
+    values = _validate(contracts, "TaskDependencyRequest", payload)
+    row, changed = await _run(_service(request).change_task_dependency(
+        principal, task_id, str(values["blocked_by_task_id"]), remove=False,
+    ))
+    projection = await _present(request, principal, contracts, "TASK", row)
+    if changed:
+        await _record_mutation(
+            request, principal, correlation_id, entity="task", record_id=task_id,
+            action="dependency_added",
+        )
+    return projection
+
+
+@router.delete("/tasks/{task_id}/dependencies/{blocked_by_task_id}")
+async def remove_task_dependency(
+    task_id: str, blocked_by_task_id: str, request: Request,
+    principal: CurrentPrincipalDependency, authorization: AuthorizationEnforcerDependency,
+    contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    correlation_id = await _authorize(
+        authorization, principal, permission="task.update", legacy_permission=None,
+        command="task.dependency.remove",
+    )
+    row, changed = await _run(_service(request).change_task_dependency(
+        principal, task_id, blocked_by_task_id, remove=True,
+    ))
+    projection = await _present(request, principal, contracts, "TASK", row)
+    if changed:
+        await _record_mutation(
+            request, principal, correlation_id, entity="task", record_id=task_id,
+            action="dependency_removed",
+        )
+    return projection
+
+
 @router.get("/work/reports/definitions")
 async def list_report_definitions(
     request: Request, principal: CurrentPrincipalDependency,

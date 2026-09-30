@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from typing import Any, ClassVar
 from uuid import uuid4
 
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import MetaData, Table, and_, exists, func, insert, or_, select, update
+from sqlalchemy import MetaData, Table, and_, delete, exists, func, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from alos.identity import Principal
@@ -253,7 +254,7 @@ class SharedWorkService:
                                    document_links.c.target_type)
                     )).all()
                     document_link_counts = {
-                        (str(document_id), str(target_type)): int(count)
+                        (str(document_id), str(target_type)): int(str(count))
                         for document_id, target_type, count in link_rows
                     }
                 else:
@@ -267,7 +268,7 @@ class SharedWorkService:
                         ).group_by(document_links.c.target_id)
                     )).all()
                     document_link_counts = {
-                        (str(target_id), "DOCUMENT"): int(count)
+                        (str(target_id), "DOCUMENT"): int(str(count))
                         for target_id, count in link_rows
                     }
             for row in rows:
@@ -534,7 +535,7 @@ class SharedWorkService:
                 ).all()
                 current: dict[str, str] = {}
                 for document_id, version in version_rows:
-                    current.setdefault(str(document_id), version)
+                    current.setdefault(str(document_id), str(version))
                 for row in rows:
                     row["current_version"] = current.get(str(row["document_id"]))
             if entity_type == "TASK":
@@ -547,8 +548,31 @@ class SharedWorkService:
                     )
                 )).all()
                 finding_counts = Counter(item[0] for item in linked_tasks)
+                dependencies = await self._table(session, "shared_work_task_dependencies")
+                blockers = await self._table(session, "tasks")
+                blocker_links = await self._table(session, "task_workspaces")
+                dependency_rows = (await session.execute(
+                    select(dependencies.c.task_id, dependencies.c.blocked_by_task_id,
+                           blockers.c.title, blockers.c.status, dependencies.c.linked_at)
+                    .join(blockers, blockers.c.task_id == dependencies.c.blocked_by_task_id)
+                    .where(
+                        dependencies.c.tenant_id == principal.tenant_id,
+                        dependencies.c.organization_id == principal.organization_id,
+                        dependencies.c.workspace_id == principal.workspace_id,
+                        dependencies.c.task_id.in_(ids),
+                        *self._visible(blockers, blocker_links, "task_id", principal),
+                    ).order_by(dependencies.c.linked_at, dependencies.c.dependency_id)
+                )).mappings().all()
+                by_task: dict[str, list[dict[str, Any]]] = {}
+                for item in dependency_rows:
+                    by_task.setdefault(str(item["task_id"]), []).append({
+                        "blocked_by_task_id": str(item["blocked_by_task_id"]),
+                        "title": item["title"], "status": item["status"],
+                        "linked_at": jsonable_encoder(item["linked_at"]),
+                    })
                 for row in rows:
                     row["findings_count"] = finding_counts[str(row["task_id"])]
+                    row["blocked_by"] = by_task.get(str(row["task_id"]), [])
             return rows
 
     @staticmethod
@@ -729,10 +753,12 @@ class SharedWorkService:
                     direct.append(("PROJECT", str(project_id)))
                 findings = await self._table(session, "work_findings")
                 finding_links = await self._table(session, "work_finding_workspaces")
-                finding_ids = (await session.execute(select(findings.c.finding_id).where(
-                    findings.c.corrective_action_task_id == entity_id,
-                    *self._visible(findings, finding_links, "finding_id", principal),
-                ))).scalars().all()
+                finding_ids: Sequence[object] = (
+                    await session.execute(select(findings.c.finding_id).where(
+                        findings.c.corrective_action_task_id == entity_id,
+                        *self._visible(findings, finding_links, "finding_id", principal),
+                    ))
+                ).scalars().all()
                 direct.extend(("FINDING", str(item)) for item in finding_ids)
             elif entity_type == "APPROVAL":
                 approvals = await self._table(session, "work_approvals")
@@ -1106,7 +1132,7 @@ class SharedWorkService:
             task_ids = [str(row["task_id"]) for row in task_rows]
             task_titles = {str(row["task_id"]): str(row["title"]) for row in task_rows}
             projects = await self._table(session, "projects")
-            project_title = (await session.execute(
+            project_title: object = (await session.execute(
                 select(projects.c.name).where(projects.c.project_id == project_id)
             )).scalar_one()
             for row in task_rows:
@@ -1471,6 +1497,24 @@ class SharedWorkService:
                 raise PlatformError(
                     "TASK_CANCELLED", "Cancelled tasks cannot be completed.", status_code=409
                 )
+            dependencies = await self._table(session, "shared_work_task_dependencies")
+            blockers = tasks.alias("blockers")
+            unresolved = (await session.execute(
+                select(dependencies.c.blocked_by_task_id)
+                .join(blockers, blockers.c.task_id == dependencies.c.blocked_by_task_id)
+                .where(
+                    dependencies.c.tenant_id == principal.tenant_id,
+                    dependencies.c.organization_id == principal.organization_id,
+                    dependencies.c.workspace_id == principal.workspace_id,
+                    dependencies.c.task_id == task_id,
+                    blockers.c.status != "COMPLETED",
+                ).limit(1)
+            )).scalar_one_or_none()
+            if unresolved is not None:
+                raise PlatformError(
+                    "TASK_DEPENDENCY_OPEN", "Blocking tasks must be completed first.",
+                    status_code=409,
+                )
             row = (
                 (
                     await session.execute(
@@ -1484,6 +1528,74 @@ class SharedWorkService:
                 .one()
             )
             return self._projection(dict(row), principal), True
+
+    async def change_task_dependency(
+        self, principal: Principal, task_id: str, blocked_by_task_id: str, *, remove: bool
+    ) -> tuple[dict[str, Any], bool]:
+        if task_id == blocked_by_task_id:
+            raise PlatformError(
+                "TASK_DEPENDENCY_SELF", "A task cannot block itself.", status_code=409
+            )
+        async with self._session_factory() as session, session.begin():
+            tasks = await self._table(session, "tasks")
+            task_links = await self._table(session, "task_workspaces")
+            locked = (await session.execute(select(tasks).where(
+                tasks.c.task_id.in_((task_id, blocked_by_task_id)),
+                *self._visible(tasks, task_links, "task_id", principal),
+            ).order_by(tasks.c.task_id).with_for_update())).mappings().all()
+            visible = {str(row["task_id"]): dict(row) for row in locked}
+            if len(visible) != 2:
+                raise self._not_found()
+            current = visible[task_id]
+            if current["status"] in {"COMPLETED", "CANCELLED"}:
+                raise PlatformError(
+                    "TASK_CLOSED", "Completed or cancelled tasks cannot be changed.",
+                    status_code=409,
+                )
+            table = await self._table(session, "shared_work_task_dependencies")
+            predicates = (
+                table.c.tenant_id == principal.tenant_id,
+                table.c.organization_id == principal.organization_id,
+                table.c.workspace_id == principal.workspace_id,
+                table.c.task_id == task_id,
+                table.c.blocked_by_task_id == blocked_by_task_id,
+            )
+            existing = (await session.execute(select(table.c.dependency_id).where(*predicates)))\
+                .scalar_one_or_none()
+            if remove:
+                if existing is None:
+                    return self._projection(current, principal), False
+                await session.execute(delete(table).where(*predicates))
+                return self._projection(current, principal), True
+            if existing is not None:
+                return self._projection(current, principal), False
+            edges = (await session.execute(select(
+                table.c.task_id, table.c.blocked_by_task_id,
+            ).where(table.c.tenant_id == principal.tenant_id,
+                    table.c.organization_id == principal.organization_id,
+                    table.c.workspace_id == principal.workspace_id))).all()
+            graph: dict[str, set[str]] = {}
+            for dependent, blocker in edges:
+                graph.setdefault(str(dependent), set()).add(str(blocker))
+            pending = [blocked_by_task_id]
+            visited: set[str] = set()
+            while pending:
+                candidate = pending.pop()
+                if candidate == task_id:
+                    raise PlatformError(
+                        "TASK_DEPENDENCY_CYCLE", "Task dependency would form a cycle.",
+                        status_code=409,
+                    )
+                if candidate not in visited:
+                    visited.add(candidate)
+                    pending.extend(graph.get(candidate, set()))
+            await session.execute(insert(table).values(
+                dependency_id=uuid4().hex, tenant_id=principal.tenant_id,
+                organization_id=principal.organization_id, workspace_id=principal.workspace_id,
+                task_id=task_id, blocked_by_task_id=blocked_by_task_id,
+                linked_by=principal.actor_id, linked_at=datetime.now(UTC),
+            ))
+            return self._projection(current, principal), True
 
     async def _visible_approval_subject(
         self, session: AsyncSession, principal: Principal, subject_type: str, subject_id: str
@@ -1589,6 +1701,7 @@ class SharedWorkService:
                             decision=None,
                             reason=payload.get("reason"),
                             decision_reason=None,
+                            materiality_value=payload.get("materiality_value"),
                             requested_at=datetime.now(UTC),
                             decided_at=None,
                         )
