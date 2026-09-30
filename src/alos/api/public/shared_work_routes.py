@@ -781,6 +781,74 @@ async def get_report_result(
     return _validate(contracts, "ReportProjection", row)
 
 
+async def _report_transition(
+    report_id: str,
+    action: str,
+    request: Request,
+    principal: Principal,
+    authorization: AuthorizationEnforcer,
+    contracts: CanonicalContractCatalog,
+) -> dict[str, Any]:
+    permission, audit_action = {
+        "submit_review": ("report.create", "review_requested"),
+        "review": ("report.review", "approved"),
+        "publish": ("report.publish", "published"),
+        "archive": ("report.archive", "archived"),
+    }[action]
+    correlation_id = await _authorize(
+        authorization, principal, permission=permission,
+        legacy_permission=None, command=f"report.{action}",
+    )
+    row, changed = await _run(_service(request).transition_report(principal, report_id, action))
+    projection = _validate(contracts, "ReportProjection", row)
+    if changed:
+        await _record_mutation(
+            request, principal, correlation_id, entity="report", record_id=report_id,
+            action=audit_action,
+        )
+    return projection
+
+
+@router.post("/work/reports/results/{report_id}/submit-review")
+async def submit_report_review(
+    report_id: str, request: Request, principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency, contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    return await _report_transition(
+        report_id, "submit_review", request, principal, authorization, contracts
+    )
+
+
+@router.post("/work/reports/results/{report_id}/review")
+async def review_report(
+    report_id: str, request: Request, principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency, contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    return await _report_transition(
+        report_id, "review", request, principal, authorization, contracts
+    )
+
+
+@router.post("/work/reports/results/{report_id}/publish")
+async def publish_report(
+    report_id: str, request: Request, principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency, contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    return await _report_transition(
+        report_id, "publish", request, principal, authorization, contracts
+    )
+
+
+@router.post("/work/reports/results/{report_id}/archive")
+async def archive_report(
+    report_id: str, request: Request, principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency, contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    return await _report_transition(
+        report_id, "archive", request, principal, authorization, contracts
+    )
+
+
 @router.get("/work/findings")
 async def list_findings(
     request: Request,

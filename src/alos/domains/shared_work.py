@@ -1064,6 +1064,51 @@ class SharedWorkService:
             )
             return self._projection(dict(row), principal)
 
+    async def transition_report(
+        self, principal: Principal, report_id: str, action: str
+    ) -> tuple[dict[str, Any], bool]:
+        transitions = {
+            "submit_review": ("DRAFT", "IN_REVIEW"),
+            "review": ("IN_REVIEW", "APPROVED"),
+            "publish": ("APPROVED", "PUBLISHED"),
+            "archive": ("PUBLISHED", "ARCHIVED"),
+        }
+        source, target = transitions[action]
+        async with self._session_factory() as session, session.begin():
+            reports = await self._table(session, "work_reports")
+            links = await self._table(session, "work_report_workspaces")
+            current = await self._locked_record(
+                session, reports, links, "report_id", report_id, principal
+            )
+            if current["status"] not in {source, target}:
+                raise PlatformError(
+                    "REPORT_TRANSITION_INVALID", "Report transition is invalid.", status_code=409
+                )
+            if action == "submit_review" and current["owner_actor_id"] != principal.actor_id:
+                raise PlatformError(
+                    "REPORT_OWNER_REQUIRED", "Report ownership is required.", status_code=403
+                )
+            if action == "review" and current["owner_actor_id"] == principal.actor_id:
+                raise PlatformError(
+                    "REPORT_SELF_REVIEW_DENIED",
+                    "The report owner cannot approve this report.", status_code=403,
+                )
+            if current["status"] == target:
+                return self._projection(current, principal), False
+            updated = (
+                (
+                    await session.execute(
+                        update(reports)
+                        .where(reports.c.report_id == report_id)
+                        .values(status=target, updated_at=datetime.now(UTC))
+                        .returning(reports)
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            return self._projection(dict(updated), principal), True
+
     async def list_findings(
         self,
         principal: Principal,

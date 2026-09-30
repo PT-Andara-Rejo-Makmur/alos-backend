@@ -105,7 +105,10 @@ async def test_reports_and_findings_authoritative_endpoints_and_generic_guards()
             report_creator, creator_actor_id = await _login(
                 client,
                 email="rf-creator@andara.local",
-                permissions=["report.create", "report.read", "finding.create", "finding.read"],
+                permissions=[
+                    "report.create", "report.read", "report.review",
+                    "finding.create", "finding.read",
+                ],
             )
             legacy_writer, _ = await _login(
                 client,
@@ -268,6 +271,70 @@ async def test_reports_and_findings_authoritative_endpoints_and_generic_guards()
                 headers=report_creator,
             )
             assert invalid_filter.status_code == 422
+
+            reviewer, _ = await _login(
+                client, email="rf-reviewer@andara.local", permissions=["report.review"],
+            )
+            publisher, _ = await _login(
+                client, email="rf-publisher@andara.local", permissions=["report.publish"],
+            )
+            archivist, _ = await _login(
+                client, email="rf-archivist@andara.local", permissions=["report.archive"],
+            )
+            report_path = f"/api/v1/work/reports/results/{report_id}"
+            for action in ("submit-review", "review", "publish", "archive"):
+                assert (await client.post(f"{report_path}/{action}")).status_code == 401
+                assert (
+                    await client.post(f"{report_path}/{action}", headers=legacy_writer)
+                ).status_code == 403
+            denied = (
+                ("submit-review", reviewer, 403),
+                ("submit-review", publisher, 403),
+                ("review", report_creator, 409),
+                ("publish", reviewer, 403),
+                ("archive", publisher, 403),
+                ("review", reviewer, 409),
+                ("archive", archivist, 409),
+            )
+            for action, actor, expected in denied:
+                response = await client.post(f"{report_path}/{action}", headers=actor)
+                assert response.status_code == expected, response.text
+            for scoped_user in (other_ws_user, other_org_user, other_tenant_user):
+                assert (
+                    await client.post(f"{report_path}/submit-review", headers=scoped_user)
+                ).status_code == 404
+            steps = (
+                ("submit-review", report_creator, "IN_REVIEW", "report.review_requested"),
+                ("review", reviewer, "APPROVED", "report.approved"),
+                ("publish", publisher, "PUBLISHED", "report.published"),
+                ("archive", archivist, "ARCHIVED", "report.archived"),
+            )
+            for action, actor, expected_status, event_type in steps:
+                if action == "submit-review":
+                    assert (
+                        await client.post(f"{report_path}/{action}", headers=read_only_user)
+                    ).status_code == 403
+                if action == "review":
+                    assert (
+                        await client.post(f"{report_path}/{action}", headers=report_creator)
+                    ).status_code == 403
+                first = await client.post(f"{report_path}/{action}", headers=actor)
+                assert first.status_code == 200, first.text
+                assert first.json()["status"] == expected_status
+                second = await client.post(f"{report_path}/{action}", headers=actor)
+                assert second.status_code == 200, second.text
+                assert second.json()["updated_at"] == first.json()["updated_at"]
+                events = app.state.identity_audit.list_events(tenant_id="tenant_default")
+                assert sum(
+                    e.event_type == event_type and e.entity_id == report_id for e in events
+                ) == 1
+            for action, actor in (
+                ("submit-review", report_creator), ("review", reviewer),
+                ("publish", publisher),
+            ):
+                assert (
+                    await client.post(f"{report_path}/{action}", headers=actor)
+                ).status_code == 409
 
             # --- FINDINGS TESTS ---
 
