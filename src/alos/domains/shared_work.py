@@ -766,7 +766,16 @@ class SharedWorkService:
         self, principal: Principal, document_id: str, payload: dict[str, Any]
     ) -> dict[str, Any]:
         async with self._session_factory() as session, session.begin():
-            await self._document_row(session, principal, document_id, lock=True)
+            document = await self._document_row(session, principal, document_id, lock=True)
+            if document["status"] != "DRAFT":
+                raise PlatformError(
+                    "DOCUMENT_VERSION_FROZEN",
+                    (
+                        "Document versions can only be created when document is in DRAFT status, "
+                        f"currently {document['status']}."
+                    ),
+                    status_code=409,
+                )
             sources = await self._table(session, "sources")
             source_versions = await self._table(session, "source_versions")
             source = (
@@ -837,3 +846,128 @@ class SharedWorkService:
                 .one()
             )
             return self._document_projection(dict(row))
+
+    async def review_document(
+        self, principal: Principal, document_id: str
+    ) -> tuple[dict[str, Any], bool]:
+        async with self._session_factory() as session, session.begin():
+            document = await self._document_row(session, principal, document_id, lock=True)
+            if document["status"] == "IN_REVIEW":
+                return self._document_projection(document), False
+            if document["status"] != "DRAFT":
+                raise PlatformError(
+                    "DOCUMENT_STATUS_CONFLICT",
+                    f"Document in status {document['status']} cannot transition to IN_REVIEW.",
+                    status_code=409,
+                )
+            versions = await self._table(session, "document_versions")
+            has_version = (
+                await session.execute(
+                    select(versions.c.record_id)
+                    .where(
+                        versions.c.document_id == document_id,
+                        *self._document_scope(versions, principal),
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none() is not None
+            if not has_version:
+                raise PlatformError(
+                    "DOCUMENT_VERSION_REQUIRED",
+                    "Document must have at least one version before review.",
+                    status_code=409,
+                )
+            documents = await self._table(session, "documents")
+            updated = (
+                (
+                    await session.execute(
+                        update(documents)
+                        .where(documents.c.document_id == document_id)
+                        .values(status="IN_REVIEW")
+                        .returning(documents)
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            return self._document_projection(dict(updated)), True
+
+    async def approve_document(
+        self, principal: Principal, document_id: str
+    ) -> tuple[dict[str, Any], bool]:
+        async with self._session_factory() as session, session.begin():
+            document = await self._document_row(session, principal, document_id, lock=True)
+            if document["owner_actor_id"] == principal.actor_id:
+                raise PlatformError(
+                    "DOCUMENT_SELF_APPROVAL_DENIED",
+                    "Document owner cannot approve their own document.",
+                    status_code=403,
+                )
+            if document["status"] == "APPROVED":
+                return self._document_projection(document), False
+            if document["status"] != "IN_REVIEW":
+                raise PlatformError(
+                    "DOCUMENT_STATUS_CONFLICT",
+                    f"Document in status {document['status']} cannot transition to APPROVED.",
+                    status_code=409,
+                )
+            versions = await self._table(session, "document_versions")
+            has_version = (
+                await session.execute(
+                    select(versions.c.record_id)
+                    .where(
+                        versions.c.document_id == document_id,
+                        *self._document_scope(versions, principal),
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none() is not None
+            if not has_version:
+                raise PlatformError(
+                    "DOCUMENT_VERSION_REQUIRED",
+                    "Document must have at least one immutable version before approval.",
+                    status_code=409,
+                )
+            documents = await self._table(session, "documents")
+            updated = (
+                (
+                    await session.execute(
+                        update(documents)
+                        .where(documents.c.document_id == document_id)
+                        .values(status="APPROVED")
+                        .returning(documents)
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            return self._document_projection(dict(updated)), True
+
+    async def retire_document(
+        self, principal: Principal, document_id: str
+    ) -> tuple[dict[str, Any], bool]:
+        async with self._session_factory() as session, session.begin():
+            document = await self._document_row(session, principal, document_id, lock=True)
+            if document["status"] == "RETIRED":
+                return self._document_projection(document), False
+            if document["status"] != "APPROVED":
+                raise PlatformError(
+                    "DOCUMENT_STATUS_CONFLICT",
+                    f"Document in status {document['status']} cannot transition to RETIRED.",
+                    status_code=409,
+                )
+            documents = await self._table(session, "documents")
+            updated = (
+                (
+                    await session.execute(
+                        update(documents)
+                        .where(documents.c.document_id == document_id)
+                        .values(status="RETIRED")
+                        .returning(documents)
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            return self._document_projection(dict(updated)), True
+

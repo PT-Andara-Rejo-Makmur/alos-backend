@@ -216,6 +216,93 @@ async def create_document_version(
     return projection
 
 
+@router.post("/documents/{document_id}/review")
+async def review_document(
+    document_id: str,
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+    contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    correlation_id = await _authorize(
+        authorization,
+        principal,
+        permission="document.review",
+        legacy_permission=None,
+        command="document.review",
+    )
+    row, changed = await _run(_service(request).review_document(principal, document_id))
+    projection = _validate(contracts, "DocumentProjection", row)
+    if changed:
+        await _record_mutation(
+            request,
+            principal,
+            correlation_id,
+            entity="document",
+            record_id=document_id,
+            action="reviewed",
+        )
+    return projection
+
+
+@router.post("/documents/{document_id}/approve")
+async def approve_document(
+    document_id: str,
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+    contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    correlation_id = await _authorize(
+        authorization,
+        principal,
+        permission="document.approve",
+        legacy_permission=None,
+        command="document.approve",
+    )
+    row, changed = await _run(_service(request).approve_document(principal, document_id))
+    projection = _validate(contracts, "DocumentProjection", row)
+    if changed:
+        await _record_mutation(
+            request,
+            principal,
+            correlation_id,
+            entity="document",
+            record_id=document_id,
+            action="approved",
+        )
+    return projection
+
+
+@router.post("/documents/{document_id}/retire")
+async def retire_document(
+    document_id: str,
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    authorization: AuthorizationEnforcerDependency,
+    contracts: ContractCatalogDependency,
+) -> dict[str, Any]:
+    correlation_id = await _authorize(
+        authorization,
+        principal,
+        permission="document.retire",
+        legacy_permission=None,
+        command="document.retire",
+    )
+    row, changed = await _run(_service(request).retire_document(principal, document_id))
+    projection = _validate(contracts, "DocumentProjection", row)
+    if changed:
+        await _record_mutation(
+            request,
+            principal,
+            correlation_id,
+            entity="document",
+            record_id=document_id,
+            action="retired",
+        )
+    return projection
+
+
 @router.get("/approvals")
 async def list_approvals(
     request: Request,

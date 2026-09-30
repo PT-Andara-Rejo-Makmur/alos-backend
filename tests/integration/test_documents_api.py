@@ -549,3 +549,285 @@ async def test_document_version_requires_verified_source_version() -> None:
             await app.state.database.dispose()
         await _database(database_name, create=False)
 
+
+@pytest.mark.asyncio
+async def test_document_lifecycle_canonical_transitions_and_rules() -> None:
+    database_name = f"alos_doc_lc_{uuid.uuid4().hex[:12]}"
+    await _database(database_name, create=True)
+    database_url = _database_url(database_name)
+    app = None
+    try:
+        await asyncio.to_thread(
+            subprocess.run,
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            cwd=BACKEND_ROOT,
+            env={**os.environ, "DATABASE_URL": database_url},
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        app = create_app(
+            Settings(
+                _env_file=None,
+                APP_ENV="test",
+                DATABASE_URL=database_url,
+                ALOS_CONTRACTS_PATH=CONTRACTS_ROOT,
+                GENESIS_BASE_URL="http://genesis.test",
+                GENESIS_INTERNAL_TOKEN="document-test-token",  # noqa: S106
+            )
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            owner, owner_actor_id = await _login(
+                client,
+                email="doc-owner@andara.local",
+                permissions=[
+                    "document.read", "document.create", "document.version",
+                    "document.review", "document.approve", "document.retire",
+                ],
+            )
+            legacy_writer, _ = await _login(
+                client,
+                email="doc-legacy-writer@andara.local",
+                permissions=["work.read", "work.write"],
+            )
+            reviewer, _ = await _login(
+                client,
+                email="doc-reviewer@andara.local",
+                permissions=["document.read", "document.review"],
+            )
+            approver, _ = await _login(
+                client,
+                email="doc-approver@andara.local",
+                permissions=["document.read", "document.approve"],
+            )
+            retirer, _ = await _login(
+                client,
+                email="doc-retirer@andara.local",
+                permissions=["document.read", "document.retire"],
+            )
+            other_workspace, _ = await _login(
+                client,
+                email="doc-other-ws@andara.local",
+                permissions=[
+                    "document.read", "document.review", "document.approve", "document.retire",
+                ],
+                workspace_id="workspace_hr",
+                workspace_key="hr",
+            )
+
+            # 1. Create document (starts in DRAFT)
+            created = await client.post(
+                "/api/v1/documents",
+                headers=owner,
+                json={
+                    "title": "Lifecycle Policy Document",
+                    "category": "Policy",
+                    "data_classification": "INTERNAL",
+                },
+            )
+            assert created.status_code == 201, created.text
+            doc_id = created.json()["document_id"]
+            assert created.json()["status"] == "DRAFT"
+            assert created.json()["owner_actor_id"] == owner_actor_id
+
+            # 2. Authorization checks: work.write cannot execute lifecycle
+            for action in ("review", "approve", "retire"):
+                denied_legacy = await client.post(
+                    f"/api/v1/documents/{doc_id}/{action}",
+                    headers=legacy_writer,
+                )
+                assert denied_legacy.status_code == 403
+
+            # document.review cannot approve or retire
+            assert (
+                await client.post(f"/api/v1/documents/{doc_id}/approve", headers=reviewer)
+            ).status_code == 403
+            assert (
+                await client.post(f"/api/v1/documents/{doc_id}/retire", headers=reviewer)
+            ).status_code == 403
+
+            # document.approve cannot retire
+            assert (
+                await client.post(f"/api/v1/documents/{doc_id}/retire", headers=approver)
+            ).status_code == 403
+
+            # Cross-workspace isolation
+            assert (
+                await client.post(f"/api/v1/documents/{doc_id}/review", headers=other_workspace)
+            ).status_code == 404
+
+            # 3. DRAFT without version cannot enter review
+            no_version_review = await client.post(
+                f"/api/v1/documents/{doc_id}/review",
+                headers=reviewer,
+            )
+            assert no_version_review.status_code == 409
+            assert "DOCUMENT_VERSION_REQUIRED" in no_version_review.text
+
+            # 4. Add authoritative VERIFIED source and version while in DRAFT
+            postgres = await asyncpg.connect(database_url.replace("+asyncpg", ""))
+            try:
+                await _source(
+                    postgres,
+                    source_id="src_lifecycle_01",
+                    workspace_id="workspace_property",
+                    status="VERIFIED",
+                    source_version="v1",
+                )
+            finally:
+                await postgres.close()
+
+            version_res = await client.post(
+                f"/api/v1/documents/{doc_id}/versions",
+                headers=owner,
+                json={"version": "1.0", "source_id": "src_lifecycle_01", "source_version": "v1"},
+            )
+            assert version_res.status_code == 201, version_res.text
+
+            # 5. Review transition: DRAFT -> IN_REVIEW
+            review_res = await client.post(
+                f"/api/v1/documents/{doc_id}/review",
+                headers=reviewer,
+            )
+            assert review_res.status_code == 200, review_res.text
+            assert review_res.json()["status"] == "IN_REVIEW"
+
+            # Idempotent review: does not raise error and produces no duplicate audit event
+            review_idempotent = await client.post(
+                f"/api/v1/documents/{doc_id}/review",
+                headers=reviewer,
+            )
+            assert review_idempotent.status_code == 200
+            assert review_idempotent.json()["status"] == "IN_REVIEW"
+
+            events = app.state.identity_audit.list_events(tenant_id="tenant_default")
+            assert sum(event.event_type == "document.reviewed" for event in events) == 1
+
+            # 6. Version freeze: cannot add version when IN_REVIEW
+            frozen_in_review = await client.post(
+                f"/api/v1/documents/{doc_id}/versions",
+                headers=owner,
+                json={"version": "2.0", "source_id": "src_lifecycle_01", "source_version": "v1"},
+            )
+            assert frozen_in_review.status_code == 409
+            assert "DOCUMENT_VERSION_FROZEN" in frozen_in_review.text
+
+            # 7. Invalid transition from IN_REVIEW: cannot retire directly
+            invalid_retire = await client.post(
+                f"/api/v1/documents/{doc_id}/retire",
+                headers=retirer,
+            )
+            assert invalid_retire.status_code == 409
+            assert "DOCUMENT_STATUS_CONFLICT" in invalid_retire.text
+
+            # 8. Separation of Duties: Document owner CANNOT self-approve
+            owner_self_approve = await client.post(
+                f"/api/v1/documents/{doc_id}/approve",
+                headers=owner,
+            )
+            assert owner_self_approve.status_code == 403
+            assert "DOCUMENT_SELF_APPROVAL_DENIED" in owner_self_approve.text
+
+            # Verify status still IN_REVIEW
+            owner_check = await client.get(f"/api/v1/documents/{doc_id}", headers=owner)
+            assert owner_check.json()["status"] == "IN_REVIEW"
+
+            # 9. Valid approve by different actor with document.approve
+            approve_res = await client.post(
+                f"/api/v1/documents/{doc_id}/approve",
+                headers=approver,
+            )
+            assert approve_res.status_code == 200, approve_res.text
+            assert approve_res.json()["status"] == "APPROVED"
+
+            # Idempotent approve by same or eligible approver
+            approve_idempotent = await client.post(
+                f"/api/v1/documents/{doc_id}/approve",
+                headers=approver,
+            )
+            assert approve_idempotent.status_code == 200
+            assert approve_idempotent.json()["status"] == "APPROVED"
+
+            events = app.state.identity_audit.list_events(tenant_id="tenant_default")
+            assert sum(event.event_type == "document.approved" for event in events) == 1
+
+            # Owner still cannot approve even after approved
+            assert (
+                await client.post(f"/api/v1/documents/{doc_id}/approve", headers=owner)
+            ).status_code == 403
+
+            # 10. Version freeze: cannot add version when APPROVED
+            frozen_approved = await client.post(
+                f"/api/v1/documents/{doc_id}/versions",
+                headers=owner,
+                json={"version": "2.0", "source_id": "src_lifecycle_01", "source_version": "v1"},
+            )
+            assert frozen_approved.status_code == 409
+            assert "DOCUMENT_VERSION_FROZEN" in frozen_approved.text
+
+            # 11. Invalid transition from APPROVED: cannot re-review
+            invalid_review = await client.post(
+                f"/api/v1/documents/{doc_id}/review",
+                headers=reviewer,
+            )
+            assert invalid_review.status_code == 409
+
+            # 12. Valid retire: APPROVED -> RETIRED
+            retire_res = await client.post(
+                f"/api/v1/documents/{doc_id}/retire",
+                headers=retirer,
+            )
+            assert retire_res.status_code == 200, retire_res.text
+            assert retire_res.json()["status"] == "RETIRED"
+
+            # Idempotent retire
+            retire_idempotent = await client.post(
+                f"/api/v1/documents/{doc_id}/retire",
+                headers=retirer,
+            )
+            assert retire_idempotent.status_code == 200
+            assert retire_idempotent.json()["status"] == "RETIRED"
+
+            events = app.state.identity_audit.list_events(tenant_id="tenant_default")
+            assert sum(event.event_type == "document.retired" for event in events) == 1
+
+            # 13. Version freeze: cannot add version when RETIRED
+            frozen_retired = await client.post(
+                f"/api/v1/documents/{doc_id}/versions",
+                headers=owner,
+                json={"version": "2.0", "source_id": "src_lifecycle_01", "source_version": "v1"},
+            )
+            assert frozen_retired.status_code == 409
+            assert "DOCUMENT_VERSION_FROZEN" in frozen_retired.text
+
+            # 14. Invalid transitions from RETIRED (RETIRED is final)
+            assert (
+                await client.post(f"/api/v1/documents/{doc_id}/review", headers=reviewer)
+            ).status_code == 409
+            assert (
+                await client.post(f"/api/v1/documents/{doc_id}/approve", headers=approver)
+            ).status_code == 409
+
+            # 15. Verify persistence in PostgreSQL: exactly 1 version row and final status RETIRED
+            postgres = await asyncpg.connect(database_url.replace("+asyncpg", ""))
+            try:
+                doc_row = await postgres.fetchrow(
+                    "SELECT status, owner_actor_id FROM core.documents WHERE document_id=$1",
+                    doc_id,
+                )
+                assert doc_row["status"] == "RETIRED"
+                assert doc_row["owner_actor_id"] == owner_actor_id
+                assert await postgres.fetchval(
+                    "SELECT count(*) FROM core.document_versions WHERE document_id=$1",
+                    doc_id,
+                ) == 1
+            finally:
+                await postgres.close()
+    finally:
+        if app is not None:
+            await app.state.database.dispose()
+        await _database(database_name, create=False)
+
+
