@@ -1,7 +1,7 @@
 import pytest
 
 from alos.authentication.memory import InMemoryAuthRepository
-from alos.authentication.service import AuthService
+from alos.authentication.service import AuthService, _resolve_default_permissions
 from alos.cli import build_parser
 from alos.security.errors import PlatformError
 
@@ -56,3 +56,52 @@ def test_bootstrap_cli_has_no_password_or_override_argument() -> None:
     }
     assert "password" not in options
     assert "override" not in options
+
+
+def test_workspace_metadata_limits_default_permissions() -> None:
+    it_admin = _resolve_default_permissions("IT", "IT_OPERATIONS", ("IT_ADMIN",))
+    assert "identity.accounts.manage" in it_admin
+    assert "finance.read" not in it_admin
+
+    finance_member = _resolve_default_permissions("FINANCE", "BUSINESS", ("DIVISION_MEMBER",))
+    assert "finance.read" in finance_member
+    assert "it.read" not in finance_member
+    assert "identity.accounts.manage" not in finance_member
+
+
+@pytest.mark.asyncio
+async def test_provision_uses_backend_workspace_division_for_arbitrary_key() -> None:
+    repository = InMemoryAuthRepository()
+    service = AuthService(repository)
+    await service.register_for_test(
+        {
+            "email": "workspace-owner@andara.local",
+            "password": "StrongPass!123",
+            "tenant_id": "tenant_01",
+            "organization_id": "org_01",
+            "workspace_id": "workspace_finance",
+            "workspace_key": "arbitrary-key",
+            "workspace_name": "Finance",
+            "workspace_type": "BUSINESS",
+            "division_code": "FINANCE",
+            "role_refs": ["DIVISION_LEAD"],
+        }
+    )
+    repository.add_test_employee(
+        "employee_01", tenant_id="tenant_01", organization_id="org_01", full_name="Employee"
+    )
+    account = await service.provision(
+        {
+            "email": "employee@andara.local",
+            "employee_id": "employee_01",
+            "tenant_id": "tenant_01",
+            "organization_id": "org_01",
+            "workspace_id": "workspace_finance",
+            "workspace_key": "it",
+            "division_code": "IT",
+            "role_refs": ["DIVISION_MEMBER"],
+        }
+    )
+    permissions = account["workspace_access"][0]["permission_refs"]
+    assert "finance.read" in permissions
+    assert "it.read" not in permissions

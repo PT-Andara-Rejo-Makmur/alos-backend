@@ -117,22 +117,16 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, tuple[str, ...]] = {
 
 
 def _resolve_default_permissions(
-    workspace_key: str | None,
+    division_code: str | None,
+    workspace_type: str | None,
     role_refs: tuple[str, ...],
     provided_permissions: list[str] | tuple[str, ...] | None = None,
 ) -> tuple[str, ...]:
     resolved = set(provided_permissions or [])
-    clean_key = (workspace_key or "").strip().lower()
+    domain = (division_code or "").strip().lower()
     if any(role in {"DIVISION_LEAD", "DIVISION_MEMBER"} for role in role_refs):
-        for domain, perms in DEFAULT_DOMAIN_PERMISSIONS.items():
-            matches_domain = (
-                clean_key == domain
-                or clean_key.startswith(f"{domain}_")
-                or clean_key.endswith(f"_{domain}")
-            )
-            if matches_domain:
-                resolved.update(perms)
-    if "IT_ADMIN" in role_refs and clean_key == "it":
+        resolved.update(DEFAULT_DOMAIN_PERMISSIONS.get(domain, ()))
+    if "IT_ADMIN" in role_refs and workspace_type == "IT_OPERATIONS":
         resolved.update(DEFAULT_DOMAIN_PERMISSIONS["it"])
     for role in role_refs:
         if role in ROLE_DEFAULT_PERMISSIONS:
@@ -259,6 +253,27 @@ class AuthService:
             if workspace is not None
             else str(payload.get("workspace_key") or workspace_id).strip().lower()
         )
+        division_code = (
+            workspace.division_code
+            if workspace is not None
+            else _optional(payload.get("division_code"))
+        )
+        workspace_type = (
+            workspace.workspace_type
+            if workspace is not None
+            else str(payload.get("workspace_type") or "BUSINESS")
+        )
+        if bootstrap and division_code is None:
+            # Synthetic registration retains legacy test/bootstrap key inference only.
+            bootstrap_key = workspace_key.lower()
+            division_code = next(
+                (
+                    name.upper() for name in DEFAULT_DOMAIN_PERMISSIONS
+                    if bootstrap_key == name or bootstrap_key.startswith(f"{name}_")
+                    or bootstrap_key.endswith(f"_{name}")
+                ),
+                None,
+            )
         effective_at = _as_utc(payload.get("effective_at")) or datetime.now(UTC)
         expires_at = _as_utc(payload.get("expires_at"))
         if expires_at is not None and expires_at <= effective_at:
@@ -285,24 +300,17 @@ class AuthService:
                 if workspace is not None
                 else str(payload.get("workspace_name") or workspace_id)
             ),
-            workspace_type=(
-                workspace.workspace_type
-                if workspace is not None
-                else str(payload.get("workspace_type") or "BUSINESS")
-            ),
+            workspace_type=workspace_type,
             organizational_unit_id=(
                 workspace.organizational_unit_id
                 if workspace is not None
                 else _optional(payload.get("organizational_unit_id"))
             ),
-            division_code=(
-                workspace.division_code
-                if workspace is not None
-                else _optional(payload.get("division_code"))
-            ),
+            division_code=division_code,
             role_refs=role_refs,
             permission_refs=_resolve_default_permissions(
-                workspace_key,
+                division_code,
+                workspace_type if not initial_authority else None,
                 role_refs,
                 (payload.get("permission_refs") or payload.get("permissions", []))
                 if bootstrap
@@ -542,7 +550,7 @@ class AuthService:
         tenant_id: str,
         organization_id: str,
     ) -> dict[str, Any]:
-        command = self._membership_command(
+        command = await self._membership_command(
             actor_id, payload, tenant_id=tenant_id, organization_id=organization_id
         )
         try:
@@ -560,7 +568,7 @@ class AuthService:
         tenant_id: str,
         organization_id: str,
     ) -> dict[str, Any]:
-        command = self._membership_command(
+        command = await self._membership_command(
             actor_id, payload, tenant_id=tenant_id, organization_id=organization_id
         )
         try:
@@ -676,8 +684,8 @@ class AuthService:
             "active": access.active,
         }
 
-    @staticmethod
-    def _membership_command(
+    async def _membership_command(
+        self,
         actor_id: str,
         payload: dict[str, Any],
         *,
@@ -691,14 +699,28 @@ class AuthService:
                 "role_refs must contain exactly one canonical authorization role",
                 status_code=400,
             )
+        workspace_id = str(payload.get("workspace_id") or "")
+        workspace = await self._repository.workspace(workspace_id)
+        if (
+            workspace is None
+            or not workspace.active
+            or workspace.tenant_id != tenant_id
+            or workspace.organization_id != organization_id
+        ):
+            raise PlatformError(
+                "AUTHORITY_BOUNDARY_CONFLICT",
+                "membership target is outside an active authority boundary",
+                status_code=403,
+            )
         return MembershipMutation(
             actor_id=actor_id,
-            workspace_id=str(payload.get("workspace_id") or ""),
+            workspace_id=workspace_id,
             tenant_id=tenant_id,
             organization_id=organization_id,
             role_refs=role_refs,
             permission_refs=_resolve_default_permissions(
-                str(payload.get("workspace_key") or payload.get("workspace_id") or ""),
+                workspace.division_code,
+                workspace.workspace_type,
                 role_refs,
                 None,
             ),
