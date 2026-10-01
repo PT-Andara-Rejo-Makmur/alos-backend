@@ -128,10 +128,13 @@ def _plan_projection(plan: Plan, principal: CurrentPrincipalDependency) -> dict[
         data.pop("strategic_plan_version", None)
     actions: list[str] = []
     company_authority = (
-        "EXECUTIVE" in principal.roles and "strategy.company.manage" in principal.permissions
+        plan.scope.type == "COMPANY"
+        and "EXECUTIVE" in principal.roles
+        and "strategy.company.manage" in principal.permissions
     )
     division_authority = (
-        "DIVISION_LEAD" in principal.roles
+        plan.scope.type != "COMPANY"
+        and "DIVISION_LEAD" in principal.roles
         and "strategy.division.manage" in principal.permissions
         and plan.owner_workspace_id == principal.workspace_id
     )

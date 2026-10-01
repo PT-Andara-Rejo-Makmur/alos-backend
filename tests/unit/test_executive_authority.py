@@ -6,11 +6,13 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 
+from alos.api.public.strategy_routes import _plan_projection
 from alos.authentication.memory import InMemoryAuthRepository
 from alos.authentication.service import AuthService, _resolve_default_permissions
 from alos.config import Settings
 from alos.dependencies import get_current_principal
 from alos.domains.strategy.authority import authorize
+from alos.domains.strategy.models import LifecycleState, Period, Plan, PlanType, ScopeRef
 from alos.identity import Principal
 from alos.main import create_app
 from alos.security.errors import PlatformError
@@ -215,3 +217,41 @@ async def test_executive_permissions_follow_active_membership_and_role_changes()
     )
     fresh = await service.whoami(token)
     assert "strategy.company.manage" not in fresh["active_workspace"]["permission_refs"]
+
+
+@pytest.mark.parametrize(
+    ("role", "permission", "scope", "actions"),
+    [
+        ("EXECUTIVE", "strategy.company.manage", "COMPANY", ["EDIT", "SUBMIT"]),
+        ("EXECUTIVE", "strategy.company.manage", "DIVISION", []),
+        ("DIVISION_LEAD", "strategy.division.manage", "COMPANY", []),
+        ("DIVISION_LEAD", "strategy.division.manage", "DIVISION", ["EDIT", "SUBMIT"]),
+    ],
+)
+def test_plan_action_projection_matches_company_and_division_mutation_scope(
+    role, permission, scope, actions
+):
+    actor = Principal(
+        "actor_01",
+        "tenant_01",
+        "org_01",
+        "workspace_01",
+        permissions=frozenset({permission}),
+        roles=frozenset({role}),
+    )
+    plan = Plan(
+        "plan_01",
+        1,
+        PlanType.OPERATING_PLAN,
+        "Planning evidence",
+        "tenant_01",
+        "org_01",
+        "workspace_01",
+        role,
+        Period("ANNUAL", "2027-01-01", "2027-12-31"),
+        ScopeRef(scope),
+        LifecycleState.DRAFT,
+        "actor_01",
+        "corr_01",
+    )
+    assert _plan_projection(plan, actor)["authorized_actions"] == actions
