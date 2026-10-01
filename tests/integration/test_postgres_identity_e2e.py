@@ -365,14 +365,26 @@ async def test_employee_provision_activation_and_workspace_lifecycle_on_postgres
             )
             assert forbidden.status_code == 403
 
+            revoke_commit_attempted = False
+
             def fail_session_commit(transaction: Session) -> None:
-                if any(isinstance(row, AuthSessionRecord) for row in transaction.dirty):
+                nonlocal revoke_commit_attempted
+                if any(
+                    isinstance(row, AuthSessionRecord)
+                    and row.session_id == session_id
+                    and not row.active
+                    and row.revoked_at is not None
+                    for row in transaction.dirty
+                ):
+                    transaction.flush()
+                    revoke_commit_attempted = True
                     raise RuntimeError("Simulated PostgreSQL commit failure")
 
             event.listen(Session, "before_commit", fail_session_commit)
             try:
                 failed = await client.delete(revoke_path, headers=admin_headers)
                 assert failed.status_code == 500
+                assert revoke_commit_attempted
             finally:
                 event.remove(Session, "before_commit", fail_session_commit)
             async with app.state.database.session_factory() as session:
