@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -93,7 +93,7 @@ async def test_initial_employee_master_import(
             "department_code": "FINANCE",
             "position_title": "Senior Accountant",
             "employment_status": "ACTIVE",
-            "join_date": date.today().isoformat(),
+            "join_date": datetime.now(UTC).date().isoformat(),
         }
     )
     assert imported["employee_id"] == "emp_001"
@@ -117,7 +117,7 @@ async def test_initial_employee_master_import(
                 "tenant_id": "tenant_andara",
                 "organization_id": "org_andara",
                 "workspace_id": "ws_finance",
-            "join_date": date.today().isoformat(),
+                "join_date": datetime.now(UTC).date().isoformat(),
             }
         )
     assert exc.value.code == "EMPLOYEE_CONFLICT"
@@ -133,7 +133,7 @@ async def test_initial_employee_master_import(
                 "tenant_id": "tenant_andara",
                 "organization_id": "org_andara",
                 "workspace_id": "ws_finance",
-            "join_date": date.today().isoformat(),
+                "join_date": datetime.now(UTC).date().isoformat(),
             }
         )
     assert exc.value.code == "EMPLOYEE_CONFLICT"
@@ -145,11 +145,11 @@ async def test_initial_employee_master_import(
                 "employee_id": "emp_004",
                 "employee_number": "ARM-2026-004",
                 "full_name": "Doni",
-            "email": "doni@example.test",
+                "email": "doni@example.test",
                 "tenant_id": "tenant_andara",
                 "organization_id": "org_andara",
                 "workspace_id": "ws_nonexistent",
-            "join_date": date.today().isoformat(),
+                "join_date": datetime.now(UTC).date().isoformat(),
             }
         )
     assert exc.value.status_code == 403
@@ -174,7 +174,7 @@ async def test_account_provisioning_and_branded_email(
             "department_code": "FINANCE",
             "position_title": "Financial Analyst",
             "employment_status": "ACTIVE",
-            "join_date": date.today().isoformat(),
+            "join_date": datetime.now(UTC).date().isoformat(),
         }
     )
 
@@ -229,7 +229,7 @@ async def test_activation_flow_and_login(
             "organization_id": "org_andara",
             "workspace_id": "ws_finance",
             "employment_status": "ACTIVE",
-            "join_date": date.today().isoformat(),
+            "join_date": datetime.now(UTC).date().isoformat(),
         }
     )
     await service.provision(
@@ -290,7 +290,7 @@ async def test_resend_activation_invalidates_previous_token(
             "organization_id": "org_andara",
             "workspace_id": "ws_finance",
             "employment_status": "ACTIVE",
-            "join_date": date.today().isoformat(),
+            "join_date": datetime.now(UTC).date().isoformat(),
         }
     )
     provisioned = await service.provision(
@@ -350,7 +350,7 @@ async def test_suspend_and_reactivate_account(
             "organization_id": "org_andara",
             "workspace_id": "ws_finance",
             "employment_status": "ACTIVE",
-            "join_date": date.today().isoformat(),
+            "join_date": datetime.now(UTC).date().isoformat(),
         }
     )
     provisioned = await service.provision(
@@ -426,7 +426,7 @@ async def test_password_reset_flow(
             "organization_id": "org_andara",
             "workspace_id": "ws_finance",
             "employment_status": "ACTIVE",
-            "join_date": date.today().isoformat(),
+            "join_date": datetime.now(UTC).date().isoformat(),
         }
     )
     await service.provision(
