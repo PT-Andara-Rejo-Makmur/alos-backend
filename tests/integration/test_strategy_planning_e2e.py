@@ -6,7 +6,7 @@ import asyncio
 import os
 import sys
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -17,14 +17,15 @@ import httpx
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
+from sqlalchemy.exc import DBAPIError
 
 from alos.config import Settings
 from alos.domains.strategy.models import Constraint
 from alos.identity import Principal
 from alos.main import create_app
 from alos.persistence.models import AuditRecord, WorkspaceMembershipRecord
-from alos.persistence.strategy_models import StrategyTargetRecord
+from alos.persistence.strategy_models import StrategyPlanRecord, StrategyTargetRecord
 from alos.security.errors import PlatformError
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
@@ -1019,6 +1020,99 @@ async def test_postgres_activation_failure_has_no_partial_active_targets(
         assert retained.json()["target"]["lifecycle_state"] == "DRAFT"
 
 
+@pytest.mark.parametrize("failure_point", ["audit_insert", "commit"])
+async def test_postgres_persistence_failure_rolls_back_strategy_and_audit(
+    strategy_context: StrategyContext, monkeypatch: pytest.MonkeyPatch, failure_point: str
+) -> None:
+    context = strategy_context
+    seed_id = f"plan.transaction.seed.{failure_point}"
+    response = await context.client.post(
+        "/api/v1/strategy/plans",
+        headers=context.executive_headers,
+        json=_plan_payload(seed_id),
+    )
+    assert response.status_code == 201, response.text
+    repository = context.app.state.strategy_repository
+    seed = await repository.get_plan(seed_id)
+    assert seed is not None
+    plan_id = "plan.transaction.failure"
+    plan = replace(seed, plan_id=plan_id, correlation_id=f"corr.transaction.{failure_point}")
+    sessions = context.app.state.database.session_factory
+    table = "audit.audit_records" if failure_point == "audit_insert" else "strategy.plans"
+    trigger_sql = (
+        "CREATE TRIGGER reject_test_write AFTER INSERT ON audit.audit_records "
+        "FOR EACH ROW WHEN (NEW.entity_id = 'plan.transaction.failure') "
+        "EXECUTE FUNCTION strategy.reject_test_write()"
+        if failure_point == "audit_insert"
+        else "CREATE CONSTRAINT TRIGGER reject_test_write AFTER INSERT ON strategy.plans "
+        "DEFERRABLE INITIALLY DEFERRED FOR EACH ROW "
+        "WHEN (NEW.plan_id = 'plan.transaction.failure') "
+        "EXECUTE FUNCTION strategy.reject_test_write()"
+    )
+    async with sessions.begin() as session:
+        await session.execute(
+            text(
+                "CREATE FUNCTION strategy.reject_test_write() RETURNS trigger "
+                "LANGUAGE plpgsql AS $$ BEGIN "
+                "RAISE EXCEPTION 'forced Strategy transaction persistence failure'; END $$"
+            )
+        )
+        await session.execute(text(trigger_sql))
+
+    original_append = context.app.state.strategy_service.audit.append
+    staged: list[str] = []
+
+    async def append_and_check_transaction(event):
+        session = repository.current_session
+        assert session is not None
+        assert (
+            await session.scalar(
+                select(StrategyPlanRecord.plan_id).where(StrategyPlanRecord.plan_id == plan_id)
+            )
+        ) == plan_id
+        staged.append("mutation")
+        await original_append(event)
+        await session.flush()
+        assert (
+            await session.scalar(
+                select(AuditRecord.entity_id).where(
+                    AuditRecord.entity_id == plan_id,
+                    AuditRecord.event_type == "PLAN_CREATED",
+                )
+            )
+        ) == plan_id
+        staged.append("audit")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                context.app.state.strategy_service.audit, "append", append_and_check_transaction
+            )
+            with pytest.raises(DBAPIError, match="forced Strategy transaction persistence failure"):
+                await context.app.state.strategy_service.create_plan(context.executive, plan)
+        assert staged == (
+            ["mutation"] if failure_point == "audit_insert" else ["mutation", "audit"]
+        )
+        # Independent PostgreSQL session proves neither row survived the failed transaction.
+        async with sessions() as session:
+            assert (
+                await session.scalar(
+                    select(StrategyPlanRecord.plan_id).where(StrategyPlanRecord.plan_id == plan_id)
+                )
+                is None
+            )
+            assert (
+                await session.scalar(
+                    select(AuditRecord.audit_id).where(AuditRecord.entity_id == plan_id)
+                )
+                is None
+            )
+    finally:
+        async with sessions.begin() as session:
+            await session.execute(text(f"DROP TRIGGER reject_test_write ON {table}"))
+            await session.execute(text("DROP FUNCTION strategy.reject_test_write()"))
+
+
 async def test_postgres_executive_projection_is_canonical_and_scoped(
     strategy_context: StrategyContext,
 ) -> None:
@@ -1031,6 +1125,8 @@ async def test_postgres_executive_projection_is_canonical_and_scoped(
     assert body["strategy"]["status"] == "CONNECTED" and body["strategy"]["authoritative"] is True
     assert body["last_updated_at"] is not None
     assert body["shared_work"]["status"] == "UNAVAILABLE"
+    assert body["shared_work"]["authoritative"] is True
+    assert body["shared_work"]["last_updated_at"] is None
     assert all(
         item["status"] == "UNAVAILABLE" and item["sources"] == [] for item in body["domains"]
     )

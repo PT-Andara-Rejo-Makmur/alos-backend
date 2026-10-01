@@ -361,7 +361,7 @@ async def test_projection_empty_connected_error_and_unknown_timestamp():
     assert connected["strategy"]["status"] == "CONNECTED"
     assert connected["last_updated_at"] is None
     assert all(item["status"] == "UNAVAILABLE" for item in connected["domains"])
-    assert connected["shared_work"]["authoritative"] is False
+    assert connected["shared_work"]["authoritative"] is True
 
     class UnavailableRepository(InMemoryStrategyRepository):
         async def list_plans(self, tenant_id, organization_id):
@@ -372,6 +372,20 @@ async def test_projection_empty_connected_error_and_unknown_timestamp():
     ).overview(actor)
     assert failed["strategy"]["status"] == "ERROR"
     assert failed["strategy_data"] is None and failed["last_updated_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_shared_work_is_authoritative_even_when_aggregation_is_unavailable():
+    projection = ExecutiveProjectionService(
+        StrategyService(InMemoryStrategyRepository(), InMemoryAuditRepository())
+    )
+    result = await projection.overview(principal())
+    assert result["shared_work"] == {
+        "source": "shared_work",
+        "status": "UNAVAILABLE",
+        "authoritative": True,
+        "last_updated_at": None,
+    }
 
 
 @pytest.mark.asyncio

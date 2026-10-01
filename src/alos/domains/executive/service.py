@@ -57,7 +57,7 @@ class ExecutiveProjectionService:
             "shared_work": {
                 "source": "shared_work",
                 "status": "UNAVAILABLE",
-                "authoritative": False,
+                "authoritative": True,
                 "last_updated_at": None,
             },
             "domains": [
