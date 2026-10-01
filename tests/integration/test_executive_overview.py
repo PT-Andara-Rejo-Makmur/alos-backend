@@ -17,7 +17,7 @@ import pytest_asyncio
 from fastapi import FastAPI
 from sqlalchemy import insert, update
 from sqlalchemy.exc import OperationalError
-from tests.integration.test_strategy_planning_e2e import (
+from test_strategy_planning_e2e import (
     CONTRACTS_ROOT,
     _asyncpg_url,
     _database_url,
