@@ -462,6 +462,11 @@ async def test_finance_budget_reconciliation_and_month_close(context: Context) -
         {"budget_id": bid, "account_code": "OPS", "period": "2027-04", "planned_amount": "250.00"},
     )
     await context.transition("finance", "budgets", bid, "UNDER_REVIEW")
+    member_read = await context.client.get(
+        f"/api/v1/finance/budgets/{bid}", headers=context.headers["member"]
+    )
+    assert member_read.status_code == 200
+    assert "APPROVED" not in member_read.json()["allowed_transitions"]
     await context.transition("finance", "budgets", bid, "APPROVED", 403, "member")
     await context.transition("finance", "budgets", bid, "APPROVED")
     await context.transition("finance", "budgets", bid, "ACTIVE")

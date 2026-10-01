@@ -32,6 +32,7 @@ class RecordSpec:
     update_fields: frozenset[str]
     immutable: bool = False
     enrich_projection: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+    transition_authorized: Callable[[str, Principal], bool] | None = None
 
 
 def authorize(principal: Principal, domain: str, action: str, *, executive: bool = False) -> None:
@@ -252,7 +253,7 @@ class RecordRepository:
                 metadata={"operation": operation},
             ),
         )
-        projection = self.project(spec, row)
+        projection = self.project(spec, row, principal)
         if self.contracts is None:
             raise PlatformError(
                 "CONTRACTS_UNAVAILABLE", "Canonical contract is unavailable.", status_code=503
@@ -264,7 +265,9 @@ class RecordRepository:
         return projection
 
     @staticmethod
-    def project(spec: RecordSpec, row: dict[str, Any]) -> dict[str, Any]:
+    def project(
+        spec: RecordSpec, row: dict[str, Any], principal: Principal | None = None
+    ) -> dict[str, Any]:
         result = {
             key: (
                 format(value, "f")
@@ -275,7 +278,12 @@ class RecordRepository:
             )
             for key, value in row.items()
         }
-        result["allowed_transitions"] = list(spec.transitions.get(str(row.get("status")), ()))
+        result["allowed_transitions"] = [
+            state
+            for state in spec.transitions.get(str(row.get("status")), ())
+            if spec.transition_authorized is None
+            or (principal is not None and spec.transition_authorized(state, principal))
+        ]
         if spec.enrich_projection is not None:
             result.update(spec.enrich_projection(row))
         return result
@@ -309,7 +317,7 @@ class RecordRepository:
                 .all()
             )
             return {
-                "items": [self.project(spec, dict(row)) for row in rows],
+                "items": [self.project(spec, dict(row), principal) for row in rows],
                 "total": aggregate[0],
                 "source": self.source(schema, aggregate[0], aggregate[1]),
             }
@@ -319,7 +327,9 @@ class RecordRepository:
     ) -> dict[str, Any]:
         async with self.factory() as session, session.begin():
             await self.workspace(session, principal)
-            return self.project(spec, await self.row(session, schema, spec, principal, identity))
+            return self.project(
+                spec, await self.row(session, schema, spec, principal, identity), principal
+            )
 
     async def mutate(
         self,

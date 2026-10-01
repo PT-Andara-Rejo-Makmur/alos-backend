@@ -1,6 +1,14 @@
 """Curated migration-owned resources and conservative internal lifecycle."""
 
+from dataclasses import replace
+
 from alos.domains.record_repository import RecordSpec
+from alos.identity import Principal
+
+
+def internal_decision_visible(status: str, principal: Principal) -> bool:
+    return status not in {"APPROVED", "ACTIVE", "CLOSED"} or "DIVISION_LEAD" in principal.roles
+
 
 SPECS = {
     "bank_accounts": RecordSpec(
@@ -168,3 +176,6 @@ SPECS = {
         False,
     ),
 }
+
+for resource in ("budgets", "reconciliations", "tax_obligations", "month_closes"):
+    SPECS[resource] = replace(SPECS[resource], transition_authorized=internal_decision_visible)
