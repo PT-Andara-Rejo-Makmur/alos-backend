@@ -1,0 +1,235 @@
+"""Audited migration-owned resources and conservative internal record lifecycle."""
+
+from alos.domains.record_repository import RecordSpec
+from alos.identity import Principal
+
+
+def transition_visible(status: str, principal: Principal) -> bool:
+    operational = (
+        bool(principal.roles & {"DIVISION_LEAD", "DIVISION_MEMBER"})
+        and "hr.write" in principal.permissions
+    )
+    return operational and (
+        status not in {"CLOSED", "REVIEWED", "ACTIVE", "INACTIVE"}
+        or "DIVISION_LEAD" in principal.roles
+    )
+
+
+SPECS = {
+    "employees": RecordSpec(
+        "employees",
+        "employee_id",
+        "HrEmployee",
+        "ACTIVE",
+        {"ACTIVE": ("INACTIVE",), "INACTIVE": ("ACTIVE",)},
+        frozenset(
+            [
+                "department_code",
+                "email",
+                "employee_number",
+                "end_date",
+                "full_name",
+                "join_date",
+                "position_title",
+            ]
+        ),
+        frozenset(
+            [
+                "department_code",
+                "email",
+                "employee_number",
+                "end_date",
+                "full_name",
+                "join_date",
+                "position_title",
+            ]
+        ),
+        False,
+        transition_authorized=transition_visible,
+        status_field="employment_status",
+    ),
+    "attendances": RecordSpec(
+        "attendances",
+        "attendance_id",
+        "HrAttendance",
+        None,
+        {},
+        frozenset(
+            ["attendance_date", "check_in_at", "check_out_at", "employee_id", "source", "status"]
+        ),
+        frozenset([]),
+        True,
+        transition_authorized=transition_visible,
+        status_field="status",
+    ),
+    "leave_requests": RecordSpec(
+        "leave_requests",
+        "leave_request_id",
+        "HrLeaveRequest",
+        "PENDING",
+        {"PENDING": ("WITHDRAWN",), "WITHDRAWN": ()},
+        frozenset(["employee_id", "end_date", "leave_type", "reason", "start_date"]),
+        frozenset(["end_date", "leave_type", "reason", "start_date"]),
+        False,
+        transition_authorized=transition_visible,
+        status_field="status",
+    ),
+    "recruitments": RecordSpec(
+        "recruitments",
+        "recruitment_id",
+        "HrRecruitment",
+        "OPEN",
+        {"OPEN": ("ON_HOLD", "CLOSED"), "ON_HOLD": ("OPEN", "CLOSED"), "CLOSED": ()},
+        frozenset(["department_code", "employment_type", "opened_at", "position_title"]),
+        frozenset(["department_code", "employment_type", "position_title"]),
+        False,
+        transition_authorized=transition_visible,
+        status_field="status",
+    ),
+    "candidates": RecordSpec(
+        "candidates",
+        "candidate_id",
+        "HrCandidate",
+        "APPLIED",
+        {"APPLIED": ("SCREENING",), "SCREENING": ("INTERVIEW",), "INTERVIEW": ()},
+        frozenset(["email", "full_name", "phone", "recruitment_id", "source"]),
+        frozenset(["email", "full_name", "phone", "source"]),
+        False,
+        transition_authorized=transition_visible,
+        status_field="status",
+    ),
+    "interviews": RecordSpec(
+        "interviews",
+        "interview_id",
+        "HrInterview",
+        "SCHEDULED",
+        {"SCHEDULED": ("COMPLETED", "CANCELLED"), "COMPLETED": (), "CANCELLED": ()},
+        frozenset(["candidate_id", "notes", "scheduled_at"]),
+        frozenset(["notes", "scheduled_at"]),
+        False,
+        transition_authorized=transition_visible,
+        status_field="status",
+    ),
+    "onboardings": RecordSpec(
+        "onboardings",
+        "onboarding_id",
+        "HrOnboarding",
+        "OPEN",
+        {"OPEN": ("IN_PROGRESS",), "IN_PROGRESS": ("COMPLETED",), "COMPLETED": ()},
+        frozenset(["employee_id", "start_date", "target_completion_date"]),
+        frozenset(["start_date", "target_completion_date"]),
+        False,
+        transition_authorized=transition_visible,
+        status_field="status",
+    ),
+    "performance_reviews": RecordSpec(
+        "performance_reviews",
+        "performance_review_id",
+        "HrPerformanceReview",
+        "DRAFT",
+        {"DRAFT": ("IN_REVIEW",), "IN_REVIEW": ("DRAFT", "REVIEWED"), "REVIEWED": ()},
+        frozenset(["employee_id", "rating", "review_period", "summary"]),
+        frozenset(["rating", "review_period", "summary"]),
+        False,
+        transition_authorized=transition_visible,
+        status_field="status",
+    ),
+    "trainings": RecordSpec(
+        "trainings",
+        "training_id",
+        "HrTraining",
+        "PLANNED",
+        {
+            "PLANNED": ("IN_PROGRESS", "CANCELLED"),
+            "IN_PROGRESS": ("COMPLETED",),
+            "COMPLETED": (),
+            "CANCELLED": (),
+        },
+        frozenset(["end_date", "name", "provider", "start_date"]),
+        frozenset(["end_date", "name", "provider", "start_date"]),
+        False,
+        transition_authorized=transition_visible,
+        status_field="status",
+    ),
+    "training_enrollments": RecordSpec(
+        "training_enrollments",
+        "training_enrollment_id",
+        "HrTrainingEnrollment",
+        "ENROLLED",
+        {"ENROLLED": ("COMPLETED", "CANCELLED"), "COMPLETED": (), "CANCELLED": ()},
+        frozenset(["employee_id", "training_id"]),
+        frozenset([]),
+        False,
+        transition_authorized=transition_visible,
+        status_field="status",
+    ),
+    "successions": RecordSpec(
+        "successions",
+        "succession_id",
+        "HrSuccession",
+        "OPEN",
+        {"OPEN": ("IN_REVIEW",), "IN_REVIEW": ("OPEN",)},
+        frozenset(["department_code", "position_title"]),
+        frozenset(["department_code", "position_title"]),
+        False,
+        transition_authorized=transition_visible,
+        status_field="status",
+    ),
+    "succession_candidates": RecordSpec(
+        "succession_candidates",
+        "succession_candidate_id",
+        "HrSuccessionCandidate",
+        None,
+        {},
+        frozenset(["employee_id", "notes", "readiness", "succession_id"]),
+        frozenset(["notes", "readiness"]),
+        False,
+        transition_authorized=transition_visible,
+        status_field="status",
+    ),
+    "grievances": RecordSpec(
+        "grievances",
+        "grievance_id",
+        "HrGrievance",
+        "OPEN",
+        {"OPEN": ("IN_REVIEW",), "IN_REVIEW": ("OPEN",)},
+        frozenset(["category", "description", "employee_id"]),
+        frozenset(["category", "description"]),
+        False,
+        transition_authorized=transition_visible,
+        status_field="status",
+    ),
+    "employment_contracts": RecordSpec(
+        "employment_contracts",
+        "employment_contract_id",
+        "HrEmploymentContract",
+        "DRAFT",
+        {"DRAFT": ("IN_REVIEW",), "IN_REVIEW": ("DRAFT",)},
+        frozenset(
+            [
+                "contract_number",
+                "contract_type",
+                "document_id",
+                "employee_id",
+                "end_date",
+                "start_date",
+            ]
+        ),
+        frozenset(["contract_number", "contract_type", "end_date", "start_date"]),
+        False,
+        transition_authorized=transition_visible,
+        status_field="status",
+    ),
+    "personnel_files": RecordSpec(
+        "personnel_files",
+        "personnel_file_id",
+        "HrPersonnelFile",
+        "RECORDED",
+        {"RECORDED": ("ARCHIVED",), "ARCHIVED": ()},
+        frozenset(["document_id", "employee_id", "file_type"]),
+        frozenset(["file_type"]),
+        False,
+        transition_authorized=transition_visible,
+        status_field="status",
+    ),
+}

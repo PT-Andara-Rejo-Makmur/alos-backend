@@ -1,1 +1,1 @@
-"""HR domain boundary; no speculative business logic in the foundation."""
+"""Canonical HR business operations."""
