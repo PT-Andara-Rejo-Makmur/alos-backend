@@ -23,7 +23,7 @@ def test_setup() -> tuple[AuthService, InMemoryAuthRepository, InMemoryEmailAdap
         EMAIL_PROVIDER="test",
         EMAIL_FROM="notification@company.com",
         EMAIL_FROM_NAME="ALOS",
-        APP_PUBLIC_URL="https://alos.andara.co.id",
+        APP_PUBLIC_URL="https://alos.example.test",
     )
     notifications = NotificationService(settings=settings, adapter=adapter)
     service = AuthService(
@@ -43,7 +43,7 @@ async def setup_authority(
     # Bootstrap initial admin
     await service.bootstrap_initial_admin(
         {
-            "email": "it.admin@andara.co.id",
+            "email": "it.admin@example.test",
             "password": "AdminSecurePassword123!",
             "display_name": "IT Administrator",
             "tenant_id": "tenant_andara",
@@ -58,7 +58,7 @@ async def setup_authority(
     # Register an additional business workspace
     await service.register_for_test(
         {
-            "email": "lead.finance@andara.co.id",
+            "email": "lead.finance@example.test",
             "password": "FinancePass123!",
             "display_name": "Finance Lead",
             "tenant_id": "tenant_andara",
@@ -86,7 +86,7 @@ async def test_initial_employee_master_import(
             "employee_id": "emp_001",
             "employee_number": "ARM-2026-001",
             "full_name": "Budi Santoso",
-            "email": "budi.santoso@andara.co.id",
+            "email": "budi.santoso@example.test",
             "tenant_id": "tenant_andara",
             "organization_id": "org_andara",
             "workspace_id": "ws_finance",
@@ -113,10 +113,11 @@ async def test_initial_employee_master_import(
                 "employee_id": "emp_002",
                 "employee_number": "ARM-2026-001",  # duplicate number
                 "full_name": "Citra Dewi",
-                "email": "citra.dewi@andara.co.id",
+                "email": "citra.dewi@example.test",
                 "tenant_id": "tenant_andara",
                 "organization_id": "org_andara",
                 "workspace_id": "ws_finance",
+            "join_date": date.today().isoformat(),
             }
         )
     assert exc.value.code == "EMPLOYEE_CONFLICT"
@@ -128,10 +129,11 @@ async def test_initial_employee_master_import(
                 "employee_id": "emp_003",
                 "employee_number": "ARM-2026-003",
                 "full_name": "Citra Dewi",
-                "email": "budi.santoso@andara.co.id",  # duplicate email
+                "email": "budi.santoso@example.test",  # duplicate email
                 "tenant_id": "tenant_andara",
                 "organization_id": "org_andara",
                 "workspace_id": "ws_finance",
+            "join_date": date.today().isoformat(),
             }
         )
     assert exc.value.code == "EMPLOYEE_CONFLICT"
@@ -143,9 +145,11 @@ async def test_initial_employee_master_import(
                 "employee_id": "emp_004",
                 "employee_number": "ARM-2026-004",
                 "full_name": "Doni",
+            "email": "doni@example.test",
                 "tenant_id": "tenant_andara",
                 "organization_id": "org_andara",
                 "workspace_id": "ws_nonexistent",
+            "join_date": date.today().isoformat(),
             }
         )
     assert exc.value.status_code == 403
@@ -163,7 +167,7 @@ async def test_account_provisioning_and_branded_email(
             "employee_id": "emp_010",
             "employee_number": "ARM-2026-010",
             "full_name": "Eka Pratama",
-            "email": "eka.pratama@andara.co.id",
+            "email": "eka.pratama@example.test",
             "tenant_id": "tenant_andara",
             "organization_id": "org_andara",
             "workspace_id": "ws_finance",
@@ -178,7 +182,6 @@ async def test_account_provisioning_and_branded_email(
     provisioned = await service.provision(
         {
             "employee_id": "emp_010",
-            "email": "eka.pratama@andara.co.id",
             "tenant_id": "tenant_andara",
             "organization_id": "org_andara",
             "workspace_id": "ws_finance",
@@ -193,10 +196,10 @@ async def test_account_provisioning_and_branded_email(
     # Email adapter received invitation branded as ALOS
     assert len(adapter.sent_messages) == 1
     sent = adapter.sent_messages[0]
-    assert sent.to_email == "eka.pratama@andara.co.id"
+    assert sent.to_email == "eka.pratama@example.test"
     assert sent.from_name == "ALOS"
     assert "Aktifkan Akun ALOS Anda" in sent.subject
-    assert "https://alos.andara.co.id/aktivasi?token=" in sent.text_content
+    assert "https://alos.example.test/aktivasi?token=" in sent.text_content
     assert "Eka Pratama" in sent.text_content
 
     # Extract raw activation token from URL
@@ -205,7 +208,7 @@ async def test_account_provisioning_and_branded_email(
 
     # Ensure raw token is not stored in plaintext anywhere in accounts
     accounts = await service.list_accounts(tenant_id="tenant_andara", organization_id="org_andara")
-    acc = next(a for a in accounts if a["email"] == "eka.pratama@andara.co.id")
+    acc = next(a for a in accounts if a["email"] == "eka.pratama@example.test")
     assert acc["activation_state"] == "PENDING"
     assert acc["email_delivered"] is True
 
@@ -221,7 +224,7 @@ async def test_activation_flow_and_login(
             "employee_id": "emp_020",
             "employee_number": "ARM-2026-020",
             "full_name": "Fani Rahma",
-            "email": "fani.rahma@andara.co.id",
+            "email": "fani.rahma@example.test",
             "tenant_id": "tenant_andara",
             "organization_id": "org_andara",
             "workspace_id": "ws_finance",
@@ -232,7 +235,6 @@ async def test_activation_flow_and_login(
     await service.provision(
         {
             "employee_id": "emp_020",
-            "email": "fani.rahma@andara.co.id",
             "tenant_id": "tenant_andara",
             "organization_id": "org_andara",
             "workspace_id": "ws_finance",
@@ -242,7 +244,7 @@ async def test_activation_flow_and_login(
 
     # Login before activation must fail
     with pytest.raises(PlatformError) as exc:
-        await service.login("fani.rahma@andara.co.id", "SomePass123!")
+        await service.login("fani.rahma@example.test", "SomePass123!")
     assert exc.value.status_code == 401
 
     token = adapter.sent_messages[-1].text_content.split("/aktivasi?token=")[1].split()[0]
@@ -267,9 +269,9 @@ async def test_activation_flow_and_login(
     assert exc.value.code == "ACTIVATION_CHALLENGE_INVALID"
 
     # Login now succeeds with newly created password
-    login_result = await service.login("fani.rahma@andara.co.id", "MySecurePass123!")
+    login_result = await service.login("fani.rahma@example.test", "MySecurePass123!")
     assert login_result["access_token"].startswith("alos_")
-    assert login_result["principal"]["email"] == "fani.rahma@andara.co.id"
+    assert login_result["principal"]["email"] == "fani.rahma@example.test"
 
 
 @pytest.mark.asyncio
@@ -283,17 +285,17 @@ async def test_resend_activation_invalidates_previous_token(
             "employee_id": "emp_030",
             "employee_number": "ARM-2026-030",
             "full_name": "Gita Savitri",
-            "email": "gita.savitri@andara.co.id",
+            "email": "gita.savitri@example.test",
             "tenant_id": "tenant_andara",
             "organization_id": "org_andara",
             "workspace_id": "ws_finance",
             "employment_status": "ACTIVE",
+            "join_date": date.today().isoformat(),
         }
     )
     provisioned = await service.provision(
         {
             "employee_id": "emp_030",
-            "email": "gita.savitri@andara.co.id",
             "tenant_id": "tenant_andara",
             "organization_id": "org_andara",
             "workspace_id": "ws_finance",
@@ -343,17 +345,17 @@ async def test_suspend_and_reactivate_account(
             "employee_id": "emp_040",
             "employee_number": "ARM-2026-040",
             "full_name": "Hadi Wijaya",
-            "email": "hadi.wijaya@andara.co.id",
+            "email": "hadi.wijaya@example.test",
             "tenant_id": "tenant_andara",
             "organization_id": "org_andara",
             "workspace_id": "ws_finance",
             "employment_status": "ACTIVE",
+            "join_date": date.today().isoformat(),
         }
     )
     provisioned = await service.provision(
         {
             "employee_id": "emp_040",
-            "email": "hadi.wijaya@andara.co.id",
             "tenant_id": "tenant_andara",
             "organization_id": "org_andara",
             "workspace_id": "ws_finance",
@@ -370,9 +372,9 @@ async def test_suspend_and_reactivate_account(
     await service.activate("hadi_token_123", "HadiPass123!", "HadiPass123!")
 
     # Login and obtain session
-    session = await service.login("hadi.wijaya@andara.co.id", "HadiPass123!")
+    session = await service.login("hadi.wijaya@example.test", "HadiPass123!")
     session_token = session["access_token"]
-    assert (await service.whoami(session_token))["email"] == "hadi.wijaya@andara.co.id"
+    assert (await service.whoami(session_token))["email"] == "hadi.wijaya@example.test"
 
     # Suspend account
     suspended = await service.set_account_active(
@@ -390,7 +392,7 @@ async def test_suspend_and_reactivate_account(
 
     # New login must be rejected
     with pytest.raises(PlatformError) as exc:
-        await service.login("hadi.wijaya@andara.co.id", "HadiPass123!")
+        await service.login("hadi.wijaya@example.test", "HadiPass123!")
     assert exc.value.status_code == 401
 
     # Reactivate account
@@ -403,9 +405,9 @@ async def test_suspend_and_reactivate_account(
     assert reactivated["active"] is True
 
     # Login works again
-    new_session = await service.login("hadi.wijaya@andara.co.id", "HadiPass123!")
+    new_session = await service.login("hadi.wijaya@example.test", "HadiPass123!")
     who = await service.whoami(new_session["access_token"])
-    assert who["email"] == "hadi.wijaya@andara.co.id"
+    assert who["email"] == "hadi.wijaya@example.test"
 
 
 @pytest.mark.asyncio
@@ -419,17 +421,17 @@ async def test_password_reset_flow(
             "employee_id": "emp_050",
             "employee_number": "ARM-2026-050",
             "full_name": "Indah Permata",
-            "email": "indah.permata@andara.co.id",
+            "email": "indah.permata@example.test",
             "tenant_id": "tenant_andara",
             "organization_id": "org_andara",
             "workspace_id": "ws_finance",
             "employment_status": "ACTIVE",
+            "join_date": date.today().isoformat(),
         }
     )
     await service.provision(
         {
             "employee_id": "emp_050",
-            "email": "indah.permata@andara.co.id",
             "tenant_id": "tenant_andara",
             "organization_id": "org_andara",
             "workspace_id": "ws_finance",
@@ -440,22 +442,22 @@ async def test_password_reset_flow(
     await service.activate(token, "OldPassword123!", "OldPassword123!")
 
     # Establish an active session
-    old_session = await service.login("indah.permata@andara.co.id", "OldPassword123!")
+    old_session = await service.login("indah.permata@example.test", "OldPassword123!")
     old_session_token = old_session["access_token"]
-    assert (await service.whoami(old_session_token))["email"] == "indah.permata@andara.co.id"
+    assert (await service.whoami(old_session_token))["email"] == "indah.permata@example.test"
 
     # Request password reset for non-existent email -> generic response, no enumeration
     adapter.sent_messages.clear()
-    resp1 = await service.request_password_reset("nonexistent@andara.co.id")
+    resp1 = await service.request_password_reset("nonexistent@example.test")
     assert "instruksi pemulihan telah dikirim" in resp1["message"]
     assert len(adapter.sent_messages) == 0
 
     # Request password reset for active user
-    resp2 = await service.request_password_reset("indah.permata@andara.co.id")
+    resp2 = await service.request_password_reset("indah.permata@example.test")
     assert "instruksi pemulihan telah dikirim" in resp2["message"]
     assert len(adapter.sent_messages) == 1
     reset_email = adapter.sent_messages[0]
-    assert reset_email.to_email == "indah.permata@andara.co.id"
+    assert reset_email.to_email == "indah.permata@example.test"
     assert reset_email.from_name == "ALOS"
     assert "Atur Ulang Kata Sandi" in reset_email.subject
     assert "/atur-ulang-sandi?token=" in reset_email.text_content
@@ -485,12 +487,12 @@ async def test_password_reset_flow(
 
     # Old password fails
     with pytest.raises(PlatformError) as exc:
-        await service.login("indah.permata@andara.co.id", "OldPassword123!")
+        await service.login("indah.permata@example.test", "OldPassword123!")
     assert exc.value.status_code == 401
 
     # New password succeeds
-    new_login = await service.login("indah.permata@andara.co.id", "NewPassword123!")
-    assert new_login["principal"]["email"] == "indah.permata@andara.co.id"
+    new_login = await service.login("indah.permata@example.test", "NewPassword123!")
+    assert new_login["principal"]["email"] == "indah.permata@example.test"
 
 
 @pytest.mark.asyncio

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
+from alos.authentication.email_address import normalize_email, valid_email
 from alos.authentication.repository import (
     AccessState,
     AccountState,
@@ -39,13 +40,18 @@ class InMemoryAuthRepository:
         organization_id: str,
         full_name: str,
         employment_status: str = "ACTIVE",
+        email: str | None = None,
+        join_date: date | None = None,
+        end_date: date | None = None,
     ) -> None:
         self._employees[employee_id] = {
             "tenant_id": tenant_id,
             "organization_id": organization_id,
             "full_name": full_name,
             "employee_number": employee_id,
-            "email": None,
+            "email": email,
+            "join_date": join_date.isoformat() if join_date else None,
+            "end_date": end_date.isoformat() if end_date else None,
             "department_code": None,
             "position_title": None,
             "employment_status": employment_status,
@@ -66,8 +72,7 @@ class InMemoryAuthRepository:
             if access.active
         ):
             raise ValueError("initial identity authority already exists")
-        if command.email in self._accounts:
-            raise ValueError("account already exists")
+        email = command.email
         employee = None
         if not bootstrap:
             employee = self._employees.get(command.employee_id or "")
@@ -77,8 +82,10 @@ class InMemoryAuthRepository:
                 or employee["organization_id"] != command.organization_id
                 or employee["employment_status"] != "ACTIVE"
                 or employee["actor_id"] is not None
+                or not self._employment_dates_valid(employee)
             ):
                 raise ValueError("employee is not eligible for account provisioning")
+            email = normalize_email(employee["email"])
             workspace = self._workspaces.get(command.workspace_id)
             if (
                 workspace is None
@@ -87,9 +94,11 @@ class InMemoryAuthRepository:
                 or not workspace.active
             ):
                 raise ValueError("provisioning target is outside an active authority boundary")
+        if email in self._accounts:
+            raise ValueError("account already exists")
         account = AccountState(
             self._next_account_id,
-            command.email,
+            email,
             command.password_hash,
             command.actor_id,
             command.tenant_id,
@@ -106,7 +115,7 @@ class InMemoryAuthRepository:
             ),
         )
         self._next_account_id += 1
-        self._accounts[command.email] = account
+        self._accounts[email] = account
         workspace_state = self._workspaces.get(command.workspace_id)
         initial_access = AccessState(
             command.workspace_id,
@@ -153,7 +162,7 @@ class InMemoryAuthRepository:
                 "employee_id": employee_id,
                 "employee_number": employee["employee_number"],
                 "full_name": employee["full_name"],
-                "email": employee["email"],
+                "email": normalize_email(employee["email"]),
                 "department_code": employee["department_code"],
                 "position_title": employee["position_title"],
                 "employment_status": "ACTIVE",
@@ -164,7 +173,16 @@ class InMemoryAuthRepository:
             and employee["organization_id"] == organization_id
             and employee["employment_status"] == "ACTIVE"
             and employee["actor_id"] is None
+            and self._employment_dates_valid(employee)
+            and valid_email(employee["email"])
         ]
+
+    @staticmethod
+    def _employment_dates_valid(employee: dict[str, str | None]) -> bool:
+        today = datetime.now(UTC).date().isoformat()
+        joined = employee.get("join_date")
+        ended = employee.get("end_date")
+        return bool(joined and joined <= today and (ended is None or ended >= today))
 
     async def active_access(self, actor_id: str) -> list[AccessState]:
         account = next(
@@ -468,6 +486,13 @@ class InMemoryAuthRepository:
         return activated
 
     async def import_employee(self, employee: EmployeeRecord) -> EmployeeRecord:
+        employee.email = normalize_email(employee.email)
+        existing = self._employees.get(employee.employee_id)
+        if existing and (
+            existing["tenant_id"] != employee.tenant_id
+            or existing["organization_id"] != employee.organization_id
+        ):
+            raise ValueError("employee exists in a different tenant or organization")
         workspace = self._workspaces.get(employee.workspace_id)
         if (
             workspace is None
@@ -485,7 +510,7 @@ class InMemoryAuthRepository:
             ):
                 if emp.get("employee_number") == employee.employee_number:
                     raise ValueError("employee_number already exists")
-                if employee.email and emp.get("email") == employee.email:
+                if employee.email and (emp.get("email") or "").strip().lower() == employee.email:
                     raise ValueError("employee email already exists")
 
         self._employees[employee.employee_id] = {
@@ -499,7 +524,9 @@ class InMemoryAuthRepository:
             "department_code": employee.department_code,
             "position_title": employee.position_title,
             "employment_status": employee.employment_status,
-            "actor_id": None,
+            "actor_id": existing["actor_id"] if existing else None,
+            "join_date": employee.join_date.isoformat() if employee.join_date else None,
+            "end_date": employee.end_date.isoformat() if employee.end_date else None,
         }
         return employee
 

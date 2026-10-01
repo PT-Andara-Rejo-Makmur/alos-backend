@@ -6,6 +6,7 @@ import asyncio
 import email.utils
 import logging
 import smtplib
+import ssl
 from collections.abc import Callable
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -50,9 +51,9 @@ class SmtpEmailAdapter:
         timeout = self._settings.SMTP_TIMEOUT_SECONDS
         use_tls = self._settings.SMTP_USE_TLS
         username = self._settings.SMTP_USERNAME
-        password = self._settings.SMTP_APP_PASSWORD.get_secret_value()
+        password = self._settings.SMTP_PASSWORD.get_secret_value()
 
-        if not host or not username:
+        if not self._settings.is_email_configured or not message.from_email:
             logger.warning("SMTP transport unconfigured; delivery skipped.")
             return DeliveryResult(
                 success=False,
@@ -71,10 +72,15 @@ class SmtpEmailAdapter:
 
         server: smtplib.SMTP | None = None
         try:
-            server = smtplib.SMTP(host=host, port=port, timeout=timeout)
-            if use_tls:
+            if use_tls and port == 465:
+                server = smtplib.SMTP_SSL(
+                    host=host, port=port, timeout=timeout, context=ssl.create_default_context()
+                )
+            else:
+                server = smtplib.SMTP(host=host, port=port, timeout=timeout)
+            if use_tls and port != 465:
                 server.ehlo()
-                server.starttls()
+                server.starttls(context=ssl.create_default_context())
                 server.ehlo()
             if username and password:
                 server.login(username, password)

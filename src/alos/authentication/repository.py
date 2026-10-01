@@ -7,9 +7,10 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Protocol
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from alos.authentication.email_address import normalize_email, valid_email
 from alos.persistence.models import (
     ActivationChallengeRecord,
     ActorRecord,
@@ -280,8 +281,7 @@ class SqlAuthRepository:
                     for membership in memberships
                 ):
                     raise ValueError("initial identity authority already exists")
-            if await self._account_record(session, command.email) is not None:
-                raise ValueError("account already exists")
+            email = command.email
             employee = None
             if not bootstrap:
                 employee = await session.scalar(
@@ -297,10 +297,14 @@ class SqlAuthRepository:
                     employee is None
                     or employee.actor_id is not None
                     or employee.employment_status != "ACTIVE"
-                    or (employee.join_date is not None and employee.join_date > now.date())
+                    or employee.join_date is None
+                    or employee.join_date > now.date()
                     or (employee.end_date is not None and employee.end_date < now.date())
                 ):
                     raise ValueError("employee is not eligible for account provisioning")
+                email = normalize_email(employee.email)
+            if await self._account_record(session, email) is not None:
+                raise ValueError("account already exists")
             tenant = await session.get(TenantRecord, command.tenant_id)
             organization = await session.get(OrganizationRecord, command.organization_id)
             workspace = await session.get(WorkspaceRecord, command.workspace_id)
@@ -375,7 +379,7 @@ class SqlAuthRepository:
             )
             await session.flush()
             account = AuthAccountRecord(
-                email=command.email,
+                email=email,
                 password_hash=command.password_hash,
                 actor_id=command.actor_id,
                 tenant_id=command.tenant_id,
@@ -537,7 +541,7 @@ class SqlAuthRepository:
                     EmployeeRecord.organization_id == organization_id,
                     EmployeeRecord.actor_id.is_(None),
                     EmployeeRecord.employment_status == "ACTIVE",
-                    (EmployeeRecord.join_date.is_(None) | (EmployeeRecord.join_date <= today)),
+                    EmployeeRecord.join_date <= today,
                     (EmployeeRecord.end_date.is_(None) | (EmployeeRecord.end_date >= today)),
                 )
                 .order_by(EmployeeRecord.full_name, EmployeeRecord.employee_number)
@@ -547,13 +551,14 @@ class SqlAuthRepository:
                     "employee_id": employee.employee_id,
                     "employee_number": employee.employee_number,
                     "full_name": employee.full_name,
-                    "email": employee.email,
+                    "email": normalize_email(employee.email),
                     "department_code": employee.department_code,
                     "position_title": employee.position_title,
                     "employment_status": employee.employment_status,
                     "linkage_state": "AVAILABLE",
                 }
                 for employee in employees.all()
+                if valid_email(employee.email)
             ]
 
     async def workspace(self, workspace_id: str) -> WorkspaceState | None:
@@ -852,8 +857,13 @@ class SqlAuthRepository:
                 raise ValueError("session is outside the authority boundary")
 
     async def import_employee(self, employee: EmployeeRecord) -> EmployeeRecord:
+        employee.email = normalize_email(employee.email)
         now = datetime.now(UTC)
         async with self._session_factory() as session, session.begin():
+            await session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:boundary, 0))"),
+                {"boundary": f"employee_import:{employee.tenant_id}:{employee.organization_id}"},
+            )
             tenant = await session.get(TenantRecord, employee.tenant_id)
             org = await session.get(OrganizationRecord, employee.organization_id)
             workspace = await session.get(WorkspaceRecord, employee.workspace_id)
@@ -894,7 +904,7 @@ class SqlAuthRepository:
                         select(EmployeeRecord).where(
                             EmployeeRecord.tenant_id == employee.tenant_id,
                             EmployeeRecord.organization_id == employee.organization_id,
-                            EmployeeRecord.email == employee.email,
+                            func.lower(func.trim(EmployeeRecord.email)) == employee.email,
                             EmployeeRecord.employee_id != employee.employee_id,
                         )
                     )
@@ -927,7 +937,7 @@ class SqlAuthRepository:
                     select(EmployeeRecord).where(
                         EmployeeRecord.tenant_id == employee.tenant_id,
                         EmployeeRecord.organization_id == employee.organization_id,
-                        EmployeeRecord.email == employee.email,
+                        func.lower(func.trim(EmployeeRecord.email)) == employee.email,
                     )
                 )
                 if email_conflict is not None:

@@ -46,7 +46,6 @@ class RegisterRequest(BaseModel):
 
 class ProvisionAccountRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    email: str = Field(min_length=3, max_length=255)
     employee_id: str = Field(min_length=3, max_length=128)
     workspace_id: str = Field(min_length=3, max_length=128)
     role_refs: list[AuthorizationRole] = Field(min_length=1, max_length=1)

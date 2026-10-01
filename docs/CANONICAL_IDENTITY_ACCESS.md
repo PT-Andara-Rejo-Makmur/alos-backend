@@ -11,17 +11,19 @@ checked with revocation, workspace state, and account state before access is pro
 existing eligible employee to an account; it does not modify employment, department, position, or
 employment dates. `GET /api/v1/identity/provisioning-candidates` returns the minimum employee fields
 after Backend filters to the caller's tenant and organization, active employment, current employment
-dates, and unlinked records.
+dates (join date required), valid non-empty email, and unlinked records.
 
-`POST /api/v1/identity/accounts` accepts employee, account email, initial workspace, one role,
+`POST /api/v1/identity/accounts` accepts employee, initial workspace, one role,
 effective and optional expiration times, and a note. Backend derives tenant and organization from
 the authenticated administrator, checks the workspace and role policy, then atomically creates the
-actor, account, initial membership, employee link, and activation challenge. The request cannot
+actor, account, initial membership, employee link, and activation challenge. Email is derived
+from the locked Employee record, with syntax validation and lowercase/whitespace normalization. The request cannot
 select permissions, scopes, data scope, or a password.
 
 New accounts begin `ENABLED` and `PENDING`. Login remains denied until the employee activates with
 a one-time expiring token and chooses a password. The database stores a challenge hash only. Challenge
-creation does not imply delivery; this backend does not claim that an email or message was sent.
+creation does not imply delivery; `email_delivered` records the adapter outcome. Failed delivery
+keeps the account PENDING and allows resend without creating a duplicate account.
 The activation sink is available only when `APP_ENV=test`.
 
 ## Membership and account lifecycle
@@ -58,3 +60,48 @@ roles and policy grants, preserves permission and scope metadata, and adds membe
 account lifecycle fields, primary workspace, session activity, and activation challenges. It fails
 closed when a membership has multiple roles or an active non-equivalent legacy role or grant remains.
 Historical migrations remain unchanged.
+
+
+## Operator commands and email configuration
+
+Use `alos-admin bootstrap-identity --help` and `alos-admin import-employee --help`.
+The equivalent module entrypoint is `python -m alos.cli`. Bootstrap takes operator-supplied
+email and prompts for a password through getpass; it creates one fixed IT_ADMIN authority.
+Employee import requires a valid email, normalized to lowercase and trimmed. Duplicate email
+within a tenant/organization is rejected, including case and whitespace variants. Provisioning
+clients must omit email; deploy updated Contracts, Backend, and Web together.
+
+SMTP is provider-neutral. Set EMAIL_PROVIDER=smtp, EMAIL_FROM, EMAIL_FROM_NAME, SMTP_HOST,
+SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, SMTP_USE_TLS, SMTP_TIMEOUT_SECONDS, and APP_PUBLIC_URL.
+There is no SMTP host or sender default. Staging/production SMTP configuration fails at Settings
+construction if incomplete or invalid. Production APP_PUBLIC_URL rejects localhost and loopback.
+SMTP_PASSWORD is canonical; SMTP_APP_PASSWORD is accepted temporarily as a legacy environment
+alias only when SMTP_PASSWORD is absent. Migrate secrets to SMTP_PASSWORD before removing the alias.
+Port 587 uses STARTTLS and port 465 uses implicit TLS when SMTP_USE_TLS=true.
+Development/test can explicitly use EMAIL_PROVIDER=inmemory. Dummy senders are limited to the
+in-memory adapter. Runtime SMTP failures leave accounts PENDING with email_delivered=false.
+
+## Frozen audit vocabulary
+
+- identity.initial_authority.bootstrapped
+- identity.employee.imported
+- identity.account.provisioned
+- identity.activation.challenge_issued
+- identity.activation.resent
+- identity.account.activated (first activation)
+- identity.account.suspended
+- identity.account.reactivated (administrative reactivation)
+- auth.password_reset.requested
+- auth.password_reset.completed
+- auth.password.changed
+- identity.membership.granted
+- identity.membership.updated
+- identity.membership.revoked
+- auth.session.revoked
+
+Public password-reset audit uses entity_type=auth, entity_id=password_reset_request and
+actor_id=anonymous for both known and unknown addresses. It records no email or credential
+metadata. Historical audit rows retain their original names; newly emitted events use this list.
+
+Migration 0028 already supplies a unique token_hash constraint (implicit PostgreSQL index) and
+an account_id index for reset lookup/invalidation. It remains unchanged.

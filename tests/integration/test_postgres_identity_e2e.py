@@ -16,6 +16,7 @@ from sqlalchemy import select
 from alos.config import Settings
 from alos.main import create_app
 from alos.persistence.models import EmployeeRecord
+from alos.security.errors import PlatformError
 
 
 def _database_url(name: str) -> str:
@@ -102,7 +103,7 @@ async def test_employee_provision_activation_and_workspace_lifecycle_on_postgres
                 actor_id=None,
                 employee_number="E2E-001",
                 full_name="Identity Employee",
-                email=employee_email,
+                email="  Employee.Identity.E2E@Example.Test  ",
                 employment_status="ACTIVE",
                 join_date=date.today() - timedelta(days=30),
                 end_date=None,
@@ -112,6 +113,45 @@ async def test_employee_provision_activation_and_workspace_lifecycle_on_postgres
                 updated_at=now,
             )
         )
+
+    async with app.state.database.session_factory() as session, session.begin():
+        for suffix, email, joined, ended in (
+            ("missing_email", None, now.date(), None),
+            ("invalid_email", "invalid@@example.com", now.date(), None),
+            ("missing_join", "missing-join@example.test", None, None),
+            ("future_join", "future-join@example.test", now.date() + timedelta(days=1), None),
+            ("ended", "ended@example.test", now.date(), now.date() - timedelta(days=1)),
+        ):
+            session.add(
+                EmployeeRecord(
+                    employee_id=f"employee_legacy_{suffix}",
+                    employee_number=f"LEGACY-{suffix}",
+                    full_name="Legacy Employee",
+                    tenant_id="tenant_identity_e2e",
+                    organization_id="org_identity_e2e",
+                    workspace_id="workspace_identity_it_e2e",
+                    email=email,
+                    join_date=joined,
+                    end_date=ended,
+                    employment_status="ACTIVE",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+    with pytest.raises(PlatformError) as duplicate:
+        await app.state.auth_service.import_employee(
+            {
+                "employee_id": "employee_duplicate",
+                "employee_number": "DUP-001",
+                "full_name": "Duplicate",
+                "email": employee_email,
+                "tenant_id": "tenant_identity_e2e",
+                "organization_id": "org_identity_e2e",
+                "workspace_id": "workspace_identity_it_e2e",
+                "join_date": now.date(),
+            }
+        )
+    assert duplicate.value.code == "EMPLOYEE_CONFLICT"
 
     transport = httpx.ASGITransport(app=app)
     try:
@@ -128,19 +168,50 @@ async def test_employee_provision_activation_and_workspace_lifecycle_on_postgres
             )
             assert candidates.status_code == 200
             assert [item["employee_id"] for item in candidates.json()] == [employee_id]
+            assert candidates.json()[0]["email"] == employee_email
+            rejected = await client.post(
+                "/api/v1/identity/accounts",
+                headers=admin_headers,
+                json={
+                    "employee_id": employee_id,
+                    "email": "override@example.test",
+                    "workspace_id": "workspace_identity_it_e2e",
+                    "role_refs": ["DIVISION_MEMBER"],
+                    "effective_at": now.isoformat(),
+                },
+            )
+            assert rejected.status_code == 422
+            for suffix in (
+                "missing_email",
+                "invalid_email",
+                "missing_join",
+                "future_join",
+                "ended",
+            ):
+                rejected = await client.post(
+                    "/api/v1/identity/accounts",
+                    headers=admin_headers,
+                    json={
+                        "employee_id": f"employee_legacy_{suffix}",
+                        "workspace_id": "workspace_identity_it_e2e",
+                        "role_refs": ["DIVISION_MEMBER"],
+                        "effective_at": now.isoformat(),
+                    },
+                )
+                assert rejected.status_code == 409
 
             provisioned = await client.post(
                 "/api/v1/identity/accounts",
                 headers=admin_headers,
                 json={
                     "employee_id": employee_id,
-                    "email": employee_email,
                     "workspace_id": "workspace_identity_it_e2e",
                     "role_refs": ["DIVISION_MEMBER"],
                     "effective_at": (now - timedelta(minutes=1)).isoformat(),
                 },
             )
             assert provisioned.status_code == 201, provisioned.text
+            assert provisioned.json()["email"] == employee_email
             actor_id = provisioned.json()["actor_id"]
             assert provisioned.json()["activation_state"] == "PENDING"
             async with app.state.database.session_factory() as session:

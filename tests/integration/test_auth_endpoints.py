@@ -53,7 +53,6 @@ async def _login_headers(client: httpx.AsyncClient, email: str) -> dict[str, str
 def _provision_payload(*, workspace_id: str, email: str) -> dict:
     return {
         "employee_id": "employee_" + email.split("@", 1)[0].replace("-", "_"),
-        "email": email,
         "workspace_id": workspace_id,
         "role_refs": ["DIVISION_MEMBER"],
         "effective_at": "2026-01-01T00:00:00Z",
@@ -76,6 +75,8 @@ def _seed_test_employee(
         organization_id=organization_id,
         full_name=full_name,
         employment_status=employment_status,
+        email=employee_id.removeprefix("employee_").replace("_", "-") + "@example.test",
+        join_date=datetime.now(UTC).date(),
     )
 
 
@@ -84,7 +85,7 @@ async def test_register_and_login_round_trip(client: httpx.AsyncClient) -> None:
     register_response = await client.post(
         "/api/v1/auth/register",
         json={
-            "email": "ops@andara.local",
+            "email": "ops@example.test",
             "password": "StrongPass!123",
             "display_name": "Operations Lead",
             "tenant_id": "tenant_default",
@@ -99,13 +100,13 @@ async def test_register_and_login_round_trip(client: httpx.AsyncClient) -> None:
 
     assert register_response.status_code == 201
     payload = register_response.json()
-    assert payload["email"] == "ops@andara.local"
+    assert payload["email"] == "ops@example.test"
     assert payload["workspace_access"][0]["workspace"]["workspace_id"] == "workspace_operations"
     assert payload["actor"]["actor_id"]
 
     login_response = await client.post(
         "/api/v1/auth/login",
-        json={"email": "ops@andara.local", "password": "StrongPass!123"},
+        json={"email": "ops@example.test", "password": "StrongPass!123"},
     )
 
     assert login_response.status_code == 200
@@ -122,7 +123,7 @@ async def test_whoami_returns_authenticated_principal(client: httpx.AsyncClient)
     await client.post(
         "/api/v1/auth/register",
         json={
-            "email": "whoami@andara.local",
+            "email": "whoami@example.test",
             "password": "StrongPass!123",
             "display_name": "Whoami User",
             "tenant_id": "tenant_default",
@@ -136,7 +137,7 @@ async def test_whoami_returns_authenticated_principal(client: httpx.AsyncClient)
     )
     login_response = await client.post(
         "/api/v1/auth/login",
-        json={"email": "whoami@andara.local", "password": "StrongPass!123"},
+        json={"email": "whoami@example.test", "password": "StrongPass!123"},
     )
     token = login_response.json()["access_token"]
 
@@ -147,7 +148,7 @@ async def test_whoami_returns_authenticated_principal(client: httpx.AsyncClient)
 
     assert whoami_response.status_code == 200
     whoami = whoami_response.json()
-    assert whoami["email"] == "whoami@andara.local"
+    assert whoami["email"] == "whoami@example.test"
     assert whoami["active_workspace"]["workspace"]["workspace_id"] == "workspace_operations"
 
 
@@ -156,7 +157,7 @@ async def test_workspace_listing_and_selection_fail_closed(client: httpx.AsyncCl
     await client.post(
         "/api/v1/auth/register",
         json={
-            "email": "workspace@andara.local",
+            "email": "workspace@example.test",
             "password": "StrongPass!123",
             "display_name": "Workspace User",
             "tenant_id": "tenant_default",
@@ -170,7 +171,7 @@ async def test_workspace_listing_and_selection_fail_closed(client: httpx.AsyncCl
     )
     login = await client.post(
         "/api/v1/auth/login",
-        json={"email": "workspace@andara.local", "password": "StrongPass!123"},
+        json={"email": "workspace@example.test", "password": "StrongPass!123"},
     )
     token = login.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
@@ -195,7 +196,7 @@ async def test_logout_revokes_session(client: httpx.AsyncClient) -> None:
     await client.post(
         "/api/v1/auth/register",
         json={
-            "email": "logout@andara.local",
+            "email": "logout@example.test",
             "password": "StrongPass!123",
             "display_name": "Logout User",
             "tenant_id": "tenant_default",
@@ -206,7 +207,7 @@ async def test_logout_revokes_session(client: httpx.AsyncClient) -> None:
     )
     login = await client.post(
         "/api/v1/auth/login",
-        json={"email": "logout@andara.local", "password": "StrongPass!123"},
+        json={"email": "logout@example.test", "password": "StrongPass!123"},
     )
     headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
     assert (await client.post("/api/v1/auth/logout", headers=headers)).status_code == 204
@@ -217,7 +218,7 @@ async def test_logout_revokes_session(client: httpx.AsyncClient) -> None:
 async def test_login_rejects_unknown_credentials(client: httpx.AsyncClient) -> None:
     response = await client.post(
         "/api/v1/auth/login",
-        json={"email": "missing@andara.local", "password": "wrongpassword"},
+        json={"email": "missing@example.test", "password": "wrongpassword"},
     )
 
     assert response.status_code == 401
@@ -231,7 +232,7 @@ async def test_account_provisioning_uses_permission_policy_and_records_actor(
     await client.post(
         "/api/v1/auth/register",
         json={
-            "email": "identity-admin@andara.local",
+            "email": "identity-admin@example.test",
             "password": "StrongPass!123",
             "display_name": "Identity Admin",
             "tenant_id": "tenant_default",
@@ -244,11 +245,11 @@ async def test_account_provisioning_uses_permission_policy_and_records_actor(
     )
     login = await client.post(
         "/api/v1/auth/login",
-        json={"email": "identity-admin@andara.local", "password": "StrongPass!123"},
+        json={"email": "identity-admin@example.test", "password": "StrongPass!123"},
     )
     principal = login.json()["principal"]
     employee_id = _provision_payload(
-        workspace_id="workspace_operations", email="provisioned@andara.local"
+        workspace_id="workspace_operations", email="provisioned@example.test"
     )["employee_id"]
     _seed_test_employee(
         client,
@@ -263,7 +264,7 @@ async def test_account_provisioning_uses_permission_policy_and_records_actor(
             "X-Correlation-ID": "corr_identity_provision_001",
         },
         json=_provision_payload(
-            workspace_id="workspace_operations", email="provisioned@andara.local"
+            workspace_id="workspace_operations", email="provisioned@example.test"
         ),
     )
 
@@ -273,23 +274,131 @@ async def test_account_provisioning_uses_permission_policy_and_records_actor(
     audit_events = client._transport.app.state.identity_audit.list_events(  # type: ignore[attr-defined]
         tenant_id="tenant_default"
     )
-    event = audit_events[0]
+    event = next(
+        event for event in audit_events if event.event_type == "identity.account.provisioned"
+    )
     assert event.event_type == "identity.account.provisioned"
     assert event.actor_id == principal["actor"]["actor_id"]
+
+
+async def test_final_lifecycle_audit_vocabulary_and_reset_privacy(
+    client: httpx.AsyncClient,
+) -> None:
+    await _register_identity(
+        client,
+        email="audit-admin@example.test",
+        tenant_id="tenant_audit",
+        organization_id="org_audit",
+        workspace_id="workspace_audit",
+        permissions=[
+            "identity.accounts.manage",
+            "identity.accounts.suspend",
+            "identity.accounts.activate",
+            "identity.sessions.revoke",
+        ],
+    )
+    headers = await _login_headers(client, "audit-admin@example.test")
+    payload = _provision_payload(
+        workspace_id="workspace_audit", email="audit-employee@example.test"
+    )
+    _seed_test_employee(
+        client, payload["employee_id"], tenant_id="tenant_audit", organization_id="org_audit"
+    )
+    provisioned = await client.post("/api/v1/identity/accounts", headers=headers, json=payload)
+    assert provisioned.status_code == 201
+    assert provisioned.json()["email"] == "audit-employee@example.test"
+    actor_id = provisioned.json()["actor_id"]
+    app = client._transport.app  # type: ignore[attr-defined]
+    old_token = app.state.test_activation_sink["audit-employee@example.test"]
+    resent = await client.post(
+        f"/api/v1/identity/actors/{actor_id}/activation/resend", headers=headers, json={}
+    )
+    assert resent.status_code == 200
+    token = app.state.test_activation_sink["audit-employee@example.test"]
+    assert token != old_token
+    activated = await client.post(
+        "/api/v1/identity/activate",
+        json={
+            "token": token,
+            "password": "EmployeePass!123",
+            "password_confirmation": "EmployeePass!123",
+        },
+    )
+    assert activated.status_code == 200
+    for action in ("suspend", "activate"):
+        changed = await client.post(
+            f"/api/v1/identity/actors/{actor_id}/{action}",
+            headers=headers,
+            json={"reason": "Audit test"},
+        )
+        assert changed.status_code == 200
+    login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "audit-employee@example.test", "password": "EmployeePass!123"},
+    )
+    assert login.status_code == 200
+    sessions = await client.get(f"/api/v1/identity/actors/{actor_id}/sessions", headers=headers)
+    revoked = await client.delete(
+        f"/api/v1/identity/actors/{actor_id}/sessions/{sessions.json()[0]['session_id']}",
+        headers=headers,
+    )
+    assert revoked.status_code == 204
+    known = await client.post(
+        "/api/v1/auth/password-reset/request", json={"email": "audit-employee@example.test"}
+    )
+    unknown = await client.post(
+        "/api/v1/auth/password-reset/request", json={"email": "unknown@example.test"}
+    )
+    assert known.status_code == unknown.status_code == 200
+    assert known.json() == unknown.json()
+    reset_token = app.state.test_activation_sink["audit-employee@example.test"]
+    confirmed = await client.post(
+        "/api/v1/auth/password-reset/confirm",
+        json={
+            "token": reset_token,
+            "password": "NewPassword!123",
+            "password_confirmation": "NewPassword!123",
+        },
+    )
+    assert confirmed.status_code == 200
+    events = app.state.identity_audit.list_events(tenant_id="tenant_audit")
+    event_types = [event.event_type for event in events]
+    assert event_types.count("identity.account.activated") == 1
+    assert event_types.count("identity.account.reactivated") == 1
+    assert {
+        "identity.account.provisioned",
+        "identity.activation.challenge_issued",
+        "identity.activation.resent",
+        "identity.account.suspended",
+        "auth.session.revoked",
+    } <= set(event_types)
+    reset_events = app.state.identity_audit.list_events(tenant_id="SYSTEM")
+    assert {event.event_type for event in reset_events} == {
+        "auth.password_reset.requested",
+        "auth.password_reset.completed",
+        "auth.password.changed",
+    }
+    for event in reset_events:
+        assert event.entity_type == "auth"
+        assert event.entity_id == "password_reset_request"
+        assert event.actor_id == "anonymous"
+        assert event.metadata == {}
+        assert "@" not in str(event)
+        assert reset_token not in str(event)
 
 
 @pytest.mark.asyncio
 async def test_employee_activation_owns_password_setup(client: httpx.AsyncClient) -> None:
     await _register_identity(
         client,
-        email="activation-admin@andara.local",
+        email="activation-admin@example.test",
         tenant_id="tenant_activation",
         organization_id="org_activation",
         workspace_id="workspace_activation",
         permissions=["identity.accounts.manage"],
     )
     payload = _provision_payload(
-        workspace_id="workspace_activation", email="new-employee@andara.local"
+        workspace_id="workspace_activation", email="new-employee@example.test"
     )
     _seed_test_employee(
         client,
@@ -300,7 +409,7 @@ async def test_employee_activation_owns_password_setup(client: httpx.AsyncClient
     )
     provisioned = await client.post(
         "/api/v1/identity/accounts",
-        headers=await _login_headers(client, "activation-admin@andara.local"),
+        headers=await _login_headers(client, "activation-admin@example.test"),
         json=payload,
     )
     assert provisioned.status_code == 201
@@ -308,12 +417,12 @@ async def test_employee_activation_owns_password_setup(client: httpx.AsyncClient
 
     denied_login = await client.post(
         "/api/v1/auth/login",
-        json={"email": "new-employee@andara.local", "password": "EmployeePass!123"},
+        json={"email": "new-employee@example.test", "password": "EmployeePass!123"},
     )
     assert denied_login.status_code == 401
 
     app = client._transport.app  # type: ignore[attr-defined]
-    token = app.state.test_activation_sink["new-employee@andara.local"]
+    token = app.state.test_activation_sink["new-employee@example.test"]
     activation_payload = {
         "token": token,
         "password": "EmployeePass!123",
@@ -335,17 +444,20 @@ async def test_employee_activation_owns_password_setup(client: httpx.AsyncClient
         "actor_id": provisioned.json()["actor_id"],
         "activation_state": "ACTIVATED",
     }
-    assert CanonicalContractCatalog(CONTRACTS_ROOT).validate(
-        "https://schemas.alos.dev/v1/identity/activate-account-response.schema.json",
-        activation.json(),
-    ) == activation.json()
+    assert (
+        CanonicalContractCatalog(CONTRACTS_ROOT).validate(
+            "https://schemas.alos.dev/v1/identity/activate-account-response.schema.json",
+            activation.json(),
+        )
+        == activation.json()
+    )
     reused = await client.post("/api/v1/identity/activate", json=activation_payload)
     assert reused.status_code == 422
     assert reused.json()["code"] == "ACTIVATION_CHALLENGE_INVALID"
     assert token not in reused.text
     login = await client.post(
         "/api/v1/auth/login",
-        json={"email": "new-employee@andara.local", "password": "EmployeePass!123"},
+        json={"email": "new-employee@example.test", "password": "EmployeePass!123"},
     )
     assert login.status_code == 200
 
@@ -354,14 +466,14 @@ async def test_employee_activation_owns_password_setup(client: httpx.AsyncClient
 async def test_expired_activation_credential_fails_safely(client: httpx.AsyncClient) -> None:
     await _register_identity(
         client,
-        email="expiry-admin@andara.local",
+        email="expiry-admin@example.test",
         tenant_id="tenant_expiry",
         organization_id="org_expiry",
         workspace_id="workspace_expiry",
         permissions=["identity.accounts.manage"],
     )
     payload = _provision_payload(
-        workspace_id="workspace_expiry", email="expiry-employee@andara.local"
+        workspace_id="workspace_expiry", email="expiry-employee@example.test"
     )
     _seed_test_employee(
         client,
@@ -371,12 +483,12 @@ async def test_expired_activation_credential_fails_safely(client: httpx.AsyncCli
     )
     provisioned = await client.post(
         "/api/v1/identity/accounts",
-        headers=await _login_headers(client, "expiry-admin@andara.local"),
+        headers=await _login_headers(client, "expiry-admin@example.test"),
         json=payload,
     )
     assert provisioned.status_code == 201
     app = client._transport.app  # type: ignore[attr-defined]
-    token = app.state.test_activation_sink["expiry-employee@andara.local"]
+    token = app.state.test_activation_sink["expiry-employee@example.test"]
     token_hash = hashlib.sha256(token.encode()).hexdigest()
     app.state.auth_service._repository._activation_challenges[token_hash] = (
         provisioned.json()["actor_id"],
@@ -399,6 +511,7 @@ async def test_expired_activation_credential_fails_safely(client: httpx.AsyncCli
 @pytest.mark.parametrize(
     "forbidden_field",
     [
+        "email",
         "tenant_id",
         "organization_id",
         "workspace_key",
@@ -416,7 +529,7 @@ async def test_public_provisioning_rejects_client_authority_metadata(
 ) -> None:
     await _register_identity(
         client,
-        email="metadata-admin@andara.local",
+        email="metadata-admin@example.test",
         tenant_id="tenant_metadata",
         organization_id="org_metadata",
         workspace_id="workspace_metadata",
@@ -424,11 +537,11 @@ async def test_public_provisioning_rejects_client_authority_metadata(
     )
     response = await client.post(
         "/api/v1/identity/accounts",
-        headers=await _login_headers(client, "metadata-admin@andara.local"),
+        headers=await _login_headers(client, "metadata-admin@example.test"),
         json={
             **_provision_payload(
                 workspace_id="workspace_metadata",
-                email=f"{forbidden_field}@andara.local",
+                email=f"{forbidden_field}@example.test",
             ),
             forbidden_field: "browser-controlled",
         },
@@ -443,14 +556,14 @@ async def test_public_provisioning_derives_boundary_without_inheriting_admin_sco
 ) -> None:
     await _register_identity(
         client,
-        email="scope-admin@andara.local",
+        email="scope-admin@example.test",
         tenant_id="tenant_scope",
         organization_id="org_scope",
         workspace_id="workspace_scope",
         permissions=["identity.accounts.manage"],
     )
     employee_id = _provision_payload(
-        workspace_id="workspace_scope", email="least-privilege@andara.local"
+        workspace_id="workspace_scope", email="least-privilege@example.test"
     )["employee_id"]
     _seed_test_employee(
         client,
@@ -460,10 +573,10 @@ async def test_public_provisioning_derives_boundary_without_inheriting_admin_sco
     )
     response = await client.post(
         "/api/v1/identity/accounts",
-        headers=await _login_headers(client, "scope-admin@andara.local"),
+        headers=await _login_headers(client, "scope-admin@example.test"),
         json=_provision_payload(
             workspace_id="workspace_scope",
-            email="least-privilege@andara.local",
+            email="least-privilege@example.test",
         ),
     )
     assert response.status_code == 201
@@ -481,13 +594,13 @@ async def test_identity_admin_catalogs_are_canonical_and_organization_bounded(
 ) -> None:
     await _register_identity(
         client,
-        email="catalog-admin@andara.local",
+        email="catalog-admin@example.test",
         tenant_id="tenant_catalog",
         organization_id="org_catalog",
         workspace_id="workspace_catalog",
         permissions=["identity.accounts.manage"],
     )
-    headers = await _login_headers(client, "catalog-admin@andara.local")
+    headers = await _login_headers(client, "catalog-admin@example.test")
 
     roles = await client.get("/api/v1/identity/assignable-roles", headers=headers)
     assert roles.status_code == 200
@@ -511,7 +624,7 @@ async def test_identity_admin_catalogs_are_canonical_and_organization_bounded(
 
     accounts = await client.get("/api/v1/identity/accounts", headers=headers)
     assert accounts.status_code == 200
-    assert [account["email"] for account in accounts.json()] == ["catalog-admin@andara.local"]
+    assert [account["email"] for account in accounts.json()] == ["catalog-admin@example.test"]
     assert "password_hash" not in accounts.json()[0]
 
 
@@ -521,13 +634,13 @@ async def test_provisioning_candidates_are_minimal_and_backend_filtered(
 ) -> None:
     await _register_identity(
         client,
-        email="candidate-admin@andara.local",
+        email="candidate-admin@example.test",
         tenant_id="tenant_candidate",
         organization_id="org_candidate",
         workspace_id="workspace_candidate",
         permissions=["identity.accounts.manage"],
     )
-    headers = await _login_headers(client, "candidate-admin@andara.local")
+    headers = await _login_headers(client, "candidate-admin@example.test")
     _seed_test_employee(
         client,
         "employee_candidate_available",
@@ -559,7 +672,7 @@ async def test_provisioning_candidates_are_minimal_and_backend_filtered(
             "employee_id": "employee_candidate_available",
             "employee_number": "employee_candidate_available",
             "full_name": "Available Employee",
-            "email": None,
+            "email": "candidate-available@example.test",
             "department_code": None,
             "position_title": None,
             "employment_status": "ACTIVE",
@@ -573,7 +686,7 @@ async def test_account_provisioning_denies_missing_permission(client: httpx.Asyn
     await client.post(
         "/api/v1/auth/register",
         json={
-            "email": "identity-member@andara.local",
+            "email": "identity-member@example.test",
             "password": "StrongPass!123",
             "display_name": "Identity Member",
             "tenant_id": "tenant_default",
@@ -585,12 +698,12 @@ async def test_account_provisioning_denies_missing_permission(client: httpx.Asyn
     )
     login = await client.post(
         "/api/v1/auth/login",
-        json={"email": "identity-member@andara.local", "password": "StrongPass!123"},
+        json={"email": "identity-member@example.test", "password": "StrongPass!123"},
     )
     response = await client.post(
         "/api/v1/identity/accounts",
         headers={"Authorization": f"Bearer {login.json()['access_token']}"},
-        json=_provision_payload(workspace_id="workspace_operations", email="denied@andara.local"),
+        json=_provision_payload(workspace_id="workspace_operations", email="denied@example.test"),
     )
 
     assert response.status_code == 403
@@ -603,7 +716,7 @@ async def test_account_provisioning_denies_cross_tenant_boundary(
 ) -> None:
     await _register_identity(
         client,
-        email="tenant-admin@andara.local",
+        email="tenant-admin@example.test",
         tenant_id="tenant_a",
         organization_id="org_a",
         workspace_id="workspace_a",
@@ -611,7 +724,7 @@ async def test_account_provisioning_denies_cross_tenant_boundary(
     )
     await _register_identity(
         client,
-        email="tenant-b@andara.local",
+        email="tenant-b@example.test",
         tenant_id="tenant_b",
         organization_id="org_b",
         workspace_id="workspace_b",
@@ -619,11 +732,11 @@ async def test_account_provisioning_denies_cross_tenant_boundary(
 
     response = await client.post(
         "/api/v1/identity/accounts",
-        headers=await _login_headers(client, "tenant-admin@andara.local"),
+        headers=await _login_headers(client, "tenant-admin@example.test"),
         json={
             **_provision_payload(
                 workspace_id="workspace_a",
-                email="cross-tenant@andara.local",
+                email="cross-tenant@example.test",
             ),
             "tenant_id": "tenant_b",
         },
@@ -639,7 +752,7 @@ async def test_account_provisioning_denies_cross_organization_boundary(
 ) -> None:
     await _register_identity(
         client,
-        email="org-admin@andara.local",
+        email="org-admin@example.test",
         tenant_id="tenant_shared",
         organization_id="org_a",
         workspace_id="workspace_a",
@@ -647,7 +760,7 @@ async def test_account_provisioning_denies_cross_organization_boundary(
     )
     await _register_identity(
         client,
-        email="org-b@andara.local",
+        email="org-b@example.test",
         tenant_id="tenant_shared",
         organization_id="org_b",
         workspace_id="workspace_b",
@@ -655,11 +768,11 @@ async def test_account_provisioning_denies_cross_organization_boundary(
 
     response = await client.post(
         "/api/v1/identity/accounts",
-        headers=await _login_headers(client, "org-admin@andara.local"),
+        headers=await _login_headers(client, "org-admin@example.test"),
         json={
             **_provision_payload(
                 workspace_id="workspace_a",
-                email="cross-org@andara.local",
+                email="cross-org@example.test",
             ),
             "organization_id": "org_b",
         },
@@ -675,7 +788,7 @@ async def test_account_provisioning_denies_foreign_workspace(
 ) -> None:
     await _register_identity(
         client,
-        email="workspace-admin@andara.local",
+        email="workspace-admin@example.test",
         tenant_id="tenant_shared",
         organization_id="org_a",
         workspace_id="workspace_a",
@@ -683,7 +796,7 @@ async def test_account_provisioning_denies_foreign_workspace(
     )
     await _register_identity(
         client,
-        email="foreign-workspace@andara.local",
+        email="foreign-workspace@example.test",
         tenant_id="tenant_shared",
         organization_id="org_b",
         workspace_id="workspace_b",
@@ -691,10 +804,10 @@ async def test_account_provisioning_denies_foreign_workspace(
 
     response = await client.post(
         "/api/v1/identity/accounts",
-        headers=await _login_headers(client, "workspace-admin@andara.local"),
+        headers=await _login_headers(client, "workspace-admin@example.test"),
         json=_provision_payload(
             workspace_id="workspace_b",
-            email="foreign-workspace-target@andara.local",
+            email="foreign-workspace-target@example.test",
         ),
     )
 
@@ -708,7 +821,7 @@ async def test_membership_assignment_denies_cross_organization_actor(
 ) -> None:
     await _register_identity(
         client,
-        email="membership-admin@andara.local",
+        email="membership-admin@example.test",
         tenant_id="tenant_shared",
         organization_id="org_a",
         workspace_id="workspace_a",
@@ -716,7 +829,7 @@ async def test_membership_assignment_denies_cross_organization_actor(
     )
     foreign = await _register_identity(
         client,
-        email="foreign-actor@andara.local",
+        email="foreign-actor@example.test",
         tenant_id="tenant_shared",
         organization_id="org_b",
         workspace_id="workspace_b",
@@ -724,7 +837,7 @@ async def test_membership_assignment_denies_cross_organization_actor(
 
     response = await client.post(
         f"/api/v1/identity/actors/{foreign['actor']['actor_id']}/memberships",
-        headers=await _login_headers(client, "membership-admin@andara.local"),
+        headers=await _login_headers(client, "membership-admin@example.test"),
         json={
             "workspace_id": "workspace_a",
             "role_refs": ["DIVISION_MEMBER"],
@@ -742,7 +855,7 @@ async def test_multi_workspace_login_requires_explicit_selection_and_revocation_
 ) -> None:
     admin = await _register_identity(
         client,
-        email="multi-workspace@andara.local",
+        email="multi-workspace@example.test",
         tenant_id="tenant_shared",
         organization_id="org_shared",
         workspace_id="workspace_alpha",
@@ -750,13 +863,13 @@ async def test_multi_workspace_login_requires_explicit_selection_and_revocation_
     )
     await _register_identity(
         client,
-        email="workspace-beta-seed@andara.local",
+        email="workspace-beta-seed@example.test",
         tenant_id="tenant_shared",
         organization_id="org_shared",
         workspace_id="workspace_beta",
     )
     actor_id = admin["actor"]["actor_id"]
-    initial_headers = await _login_headers(client, "multi-workspace@andara.local")
+    initial_headers = await _login_headers(client, "multi-workspace@example.test")
     assigned = await client.post(
         f"/api/v1/identity/actors/{actor_id}/memberships",
         headers=initial_headers,
@@ -770,7 +883,7 @@ async def test_multi_workspace_login_requires_explicit_selection_and_revocation_
 
     login = await client.post(
         "/api/v1/auth/login",
-        json={"email": "multi-workspace@andara.local", "password": "StrongPass!123"},
+        json={"email": "multi-workspace@example.test", "password": "StrongPass!123"},
     )
     assert login.status_code == 200
     body = login.json()
@@ -819,7 +932,7 @@ async def test_production_provisioning_rejects_unsupported_role(
 ) -> None:
     await _register_identity(
         client,
-        email="role-admin@andara.local",
+        email="role-admin@example.test",
         tenant_id="tenant_roles",
         organization_id="org_roles",
         workspace_id="workspace_roles",
@@ -827,13 +940,13 @@ async def test_production_provisioning_rejects_unsupported_role(
     )
     payload = _provision_payload(
         workspace_id="workspace_roles",
-        email="legacy-role@andara.local",
+        email="legacy-role@example.test",
     )
     payload["role_refs"] = ["UNSUPPORTED_ROLE"]
 
     response = await client.post(
         "/api/v1/identity/accounts",
-        headers=await _login_headers(client, "role-admin@andara.local"),
+        headers=await _login_headers(client, "role-admin@example.test"),
         json=payload,
     )
 
@@ -846,7 +959,7 @@ async def test_membership_mutation_rejects_unsupported_role(
 ) -> None:
     admin = await _register_identity(
         client,
-        email="membership-role-admin@andara.local",
+        email="membership-role-admin@example.test",
         tenant_id="tenant_roles",
         organization_id="org_roles",
         workspace_id="workspace_roles",
@@ -855,7 +968,7 @@ async def test_membership_mutation_rejects_unsupported_role(
 
     response = await client.post(
         f"/api/v1/identity/actors/{admin['actor']['actor_id']}/memberships",
-        headers=await _login_headers(client, "membership-role-admin@andara.local"),
+        headers=await _login_headers(client, "membership-role-admin@example.test"),
         json={
             "workspace_id": "workspace_roles",
             "role_refs": ["UNSUPPORTED_ROLE"],
@@ -873,7 +986,7 @@ async def test_admin_manages_multi_workspace_membership_and_account_state(
     admin_registration = await client.post(
         "/api/v1/auth/register",
         json={
-            "email": "access-admin@andara.local",
+            "email": "access-admin@example.test",
             "password": "StrongPass!123",
             "display_name": "Access Admin",
             "tenant_id": "tenant_default",
@@ -893,7 +1006,7 @@ async def test_admin_manages_multi_workspace_membership_and_account_state(
     target_registration = await client.post(
         "/api/v1/auth/register",
         json={
-            "email": "workspace-target@andara.local",
+            "email": "workspace-target@example.test",
             "password": "StrongPass!123",
             "display_name": "Workspace Target",
             "tenant_id": "tenant_default",
@@ -909,7 +1022,7 @@ async def test_admin_manages_multi_workspace_membership_and_account_state(
     target_actor_id = target_registration.json()["actor"]["actor_id"]
     login = await client.post(
         "/api/v1/auth/login",
-        json={"email": "access-admin@andara.local", "password": "StrongPass!123"},
+        json={"email": "access-admin@example.test", "password": "StrongPass!123"},
     )
     headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
     membership = {
@@ -961,7 +1074,7 @@ async def test_admin_manages_multi_workspace_membership_and_account_state(
     assert suspended.json() == {"actor_id": target_actor_id, "active": False}
     target_login = await client.post(
         "/api/v1/auth/login",
-        json={"email": "workspace-target@andara.local", "password": "StrongPass!123"},
+        json={"email": "workspace-target@example.test", "password": "StrongPass!123"},
     )
     assert target_login.status_code == 401
 

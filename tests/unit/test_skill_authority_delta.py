@@ -243,6 +243,7 @@ def test_application_composes_one_agent_registry_and_environment_audit() -> None
         Settings(
             _env_file=None,
             APP_ENV="production",
+            EMAIL_PROVIDER="inmemory",
             ALOS_CONTRACTS_PATH=CONTRACTS_ROOT,
         )
     )

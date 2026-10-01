@@ -40,7 +40,9 @@ class NotificationService:
         else:
             self._adapter = SmtpEmailAdapter(settings)
         self._from_name = settings.EMAIL_FROM_NAME or "ALOS"
-        self._from_email = settings.EMAIL_FROM or "notification@alos.local"
+        self._from_email = settings.EMAIL_FROM
+        if not self._from_email and isinstance(self._adapter, InMemoryEmailAdapter):
+            self._from_email = "notification@alos.test"
         raw_url = app_public_url or settings.APP_PUBLIC_URL
         self._public_url = raw_url.rstrip("/") if raw_url else "http://localhost:3000"
 

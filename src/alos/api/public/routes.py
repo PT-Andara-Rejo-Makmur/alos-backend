@@ -1120,8 +1120,17 @@ async def provision_account(
             outcome="SUCCEEDED",
             occurred_at=datetime.now(UTC),
             reason="Governed identity account provisioned",
-            metadata={"email": payload.email, "role_refs": list(payload.role_refs)},
+            metadata={"employee_id": payload.employee_id, "role_refs": list(payload.role_refs)},
         )
+    )
+    await _record_identity_change(
+        request,
+        principal,
+        correlation_id,
+        event_type="identity.activation.challenge_issued",
+        actor_id=str(result["actor_id"]),
+        workspace_id=payload.workspace_id,
+        reason="Initial activation challenge issued",
     )
     return result
 
@@ -1223,7 +1232,7 @@ async def assign_workspace_membership(
         request,
         principal,
         correlation_id,
-        event_type="identity.membership.assigned",
+        event_type="identity.membership.granted",
         actor_id=actor_id,
         workspace_id=payload.workspace_id,
     )
@@ -1343,7 +1352,7 @@ async def revoke_actor_session(
     )
     await request.app.state.identity_audit.append(
         AuditEvent(
-            event_type="identity.session.revoked",
+            event_type="auth.session.revoked",
             entity_type="actor",
             entity_id=actor_id,
             tenant_id=principal.tenant_id,
@@ -1507,7 +1516,7 @@ async def _change_account_state(
         request,
         principal,
         correlation_id,
-        event_type=f"identity.account.{'activated' if active else 'suspended'}",
+        event_type=f"identity.account.{'reactivated' if active else 'suspended'}",
         actor_id=actor_id,
         workspace_id=principal.workspace_id,
         reason=reason,
@@ -1616,9 +1625,9 @@ async def request_password_reset(
     result = await request.app.state.auth_service.request_password_reset(payload.email)
     await request.app.state.identity_audit.append(
         AuditEvent(
-            event_type="identity.password_reset.requested",
-            entity_type="account",
-            entity_id=payload.email,
+            event_type="auth.password_reset.requested",
+            entity_type="auth",
+            entity_id="password_reset_request",
             tenant_id="SYSTEM",
             organization_id="SYSTEM",
             workspace_id="SYSTEM",
@@ -1645,9 +1654,9 @@ async def confirm_password_reset(
     )
     await request.app.state.identity_audit.append(
         AuditEvent(
-            event_type="identity.password_reset.completed",
-            entity_type="account",
-            entity_id="reset_token",
+            event_type="auth.password_reset.completed",
+            entity_type="auth",
+            entity_id="password_reset_request",
             tenant_id="SYSTEM",
             organization_id="SYSTEM",
             workspace_id="SYSTEM",
@@ -1656,6 +1665,21 @@ async def confirm_password_reset(
             outcome="SUCCEEDED",
             occurred_at=datetime.now(UTC),
             reason="Password reset confirmed",
+        )
+    )
+    await request.app.state.identity_audit.append(
+        AuditEvent(
+            event_type="auth.password.changed",
+            entity_type="auth",
+            entity_id="password_reset_request",
+            tenant_id="SYSTEM",
+            organization_id="SYSTEM",
+            workspace_id="SYSTEM",
+            actor_id="anonymous",
+            correlation_id=current_correlation_id(),
+            outcome="SUCCEEDED",
+            occurred_at=datetime.now(UTC),
+            reason="Password changed through one-time reset challenge",
         )
     )
     return PasswordResetConfirmResponse.model_validate(result)

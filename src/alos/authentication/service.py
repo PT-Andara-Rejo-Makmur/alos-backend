@@ -11,6 +11,7 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from alos.authentication.email_address import normalize_email
 from alos.authentication.repository import (
     AccessState,
     AuthRepository,
@@ -299,7 +300,7 @@ class AuthService:
                         reset_token=reset_token,
                     )
                 except Exception:
-                    logger.debug("Failed sending password reset email", exc_info=True)
+                    logger.debug("Failed sending password reset email")
             if self._activation_sink is not None:
                 self._activation_sink(account.email, reset_token)
         return {"message": generic_message}
@@ -337,7 +338,7 @@ class AuthService:
                     employee_name=account.display_name or account.email,
                 )
             except Exception:
-                logger.debug("Failed sending password changed email", exc_info=True)
+                logger.debug("Failed sending password changed email")
         return {
             "message": (
                 "Kata sandi berhasil diperbarui. Silakan masuk menggunakan kata sandi baru Anda."
@@ -348,7 +349,10 @@ class AuthService:
         employee_id = str(payload.get("employee_id") or "").strip()
         employee_number = str(payload.get("employee_number") or "").strip()
         full_name = str(payload.get("full_name") or "").strip()
-        email = str(payload.get("email") or "").strip().lower() or None
+        try:
+            email = normalize_email(str(payload.get("email") or ""))
+        except ValueError as exc:
+            raise PlatformError("INVALID_EMPLOYEE_EMAIL", str(exc), status_code=422) from exc
         tenant_id = str(payload.get("tenant_id") or "").strip()
         organization_id = str(payload.get("organization_id") or "").strip()
         workspace_id = str(payload.get("workspace_id") or "").strip()
@@ -433,8 +437,12 @@ class AuthService:
         bootstrap: bool,
         initial_authority: bool = False,
     ) -> dict[str, Any]:
-        email = str(payload.get("email", "")).strip().lower()
-        if not email:
+        if not bootstrap and "email" in payload:
+            raise PlatformError(
+                "CLIENT_EMAIL_FORBIDDEN", "account email is derived from Employee", status_code=422
+            )
+        email = str(payload.get("email", "")).strip().lower() if bootstrap else ""
+        if bootstrap and not email:
             raise PlatformError("INVALID_EMAIL", "email is required", status_code=400)
         password = str(payload.get("password") or "") if bootstrap else secrets.token_urlsafe(48)
         if bootstrap and len(password) < 8:
@@ -602,7 +610,7 @@ class AuthService:
                 except Exception:
                     email_delivered = False
             if self._activation_sink is not None:
-                self._activation_sink(email, activation_token)
+                self._activation_sink(account.email, activation_token)
         accesses = await self._repository.active_access(account.actor_id)
         return {
             "actor_id": account.actor_id,
