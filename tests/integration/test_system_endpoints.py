@@ -24,6 +24,7 @@ async def test_readiness_endpoint(client: httpx.AsyncClient) -> None:
         "status": "ready",
         "database_configured": True,
         "genesis_configured": True,
+        "email_configured": False,
     }
 
 

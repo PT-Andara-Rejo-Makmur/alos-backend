@@ -95,7 +95,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         activation_sink = store_test_activation
     email_adapter = (
         InMemoryEmailAdapter()
-        if resolved.APP_ENV == "test" or resolved.EMAIL_PROVIDER == "test"
+        if resolved.APP_ENV == "test"
+        or resolved.EMAIL_PROVIDER in {"test", "sink", "memory", "inmemory"}
         else SmtpEmailAdapter(resolved)
     )
     notification_service = NotificationService(

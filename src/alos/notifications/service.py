@@ -35,7 +35,7 @@ class NotificationService:
         effective_adapter = adapter or email_adapter
         if effective_adapter is not None:
             self._adapter = effective_adapter
-        elif settings.EMAIL_PROVIDER in {"test", "sink", "memory"}:
+        elif settings.EMAIL_PROVIDER in {"test", "sink", "memory", "inmemory"}:
             self._adapter = InMemoryEmailAdapter(sink=activation_sink)
         else:
             self._adapter = SmtpEmailAdapter(settings)

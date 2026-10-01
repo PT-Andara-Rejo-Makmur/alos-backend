@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     ENABLE_TEST_TOOLS: bool = False
     ENABLE_TEST_REGISTRATION: bool = False
     AUTH_SESSION_TTL_MINUTES: int = Field(default=480, ge=5, le=43200)
-    EMAIL_PROVIDER: Literal["smtp", "test", "sink", "memory"] = "smtp"
+    EMAIL_PROVIDER: Literal["smtp", "test", "sink", "memory", "inmemory"] = "smtp"
     EMAIL_FROM: str = ""
     EMAIL_FROM_NAME: str = "ALOS"
     SMTP_HOST: str = "smtp.gmail.com"
@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     @property
     def is_email_configured(self) -> bool:
         """Indicate whether email dispatch is available without exposing credentials."""
-        if self.EMAIL_PROVIDER in {"test", "sink", "memory"}:
+        if self.EMAIL_PROVIDER in {"test", "sink", "memory", "inmemory"}:
             return True
         return bool(
             self.EMAIL_FROM
