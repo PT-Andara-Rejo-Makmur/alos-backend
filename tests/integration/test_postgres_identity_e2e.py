@@ -11,11 +11,12 @@ from urllib.parse import urlsplit, urlunsplit
 import asyncpg
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
+from sqlalchemy.orm import Session
 
 from alos.config import Settings
 from alos.main import create_app
-from alos.persistence.models import EmployeeRecord
+from alos.persistence.models import AuditRecord, AuthSessionRecord, EmployeeRecord
 from alos.security.errors import PlatformError
 
 
@@ -153,7 +154,7 @@ async def test_employee_provision_activation_and_workspace_lifecycle_on_postgres
         )
     assert duplicate.value.code == "EMPLOYEE_CONFLICT"
 
-    transport = httpx.ASGITransport(app=app)
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
     try:
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             admin_login = await client.post(
@@ -318,5 +319,109 @@ async def test_employee_provision_activation_and_workspace_lifecycle_on_postgres
                 json={"workspace_id": "workspace_identity_business_e2e"},
             )
             assert denied.status_code == 403
+
+            # Specific-session revocation must commit, invalidate the token and retain history.
+            sessions_path = f"/api/v1/identity/actors/{actor_id}/sessions"
+            sessions = await client.get(sessions_path, headers=admin_headers)
+            assert sessions.status_code == 200
+            assert len(sessions.json()) == 1
+            session_id = sessions.json()[0]["session_id"]
+            revoke_path = f"{sessions_path}/{session_id}"
+            assert not sessions.json()[0]["revoked"]
+            assert (
+                await client.get("/api/v1/auth/whoami", headers=employee_headers)
+            ).status_code == 200
+            async with app.state.database.session_factory() as session:
+                record = await session.get(AuthSessionRecord, session_id)
+                assert record is not None and record.active and record.revoked_at is None
+                assert record.token_hash != employee_login.json()["access_token"]
+
+            for tenant_id, organization_id in (
+                ("foreign_tenant", "org_identity_e2e"),
+                ("tenant_identity_e2e", "foreign_org"),
+            ):
+                with pytest.raises(PlatformError) as boundary:
+                    await app.state.auth_service.revoke_actor_session(
+                        actor_id, session_id, tenant_id=tenant_id, organization_id=organization_id
+                    )
+                assert boundary.value.code == "SESSION_NOT_FOUND"
+            admin_principal = (
+                await client.get("/api/v1/auth/whoami", headers=admin_headers)
+            ).json()
+            admin_actor_id = admin_principal["actor"]["actor_id"]
+            cross_actor = await client.delete(
+                f"/api/v1/identity/actors/{admin_actor_id}/sessions/{session_id}",
+                headers=admin_headers,
+            )
+            assert cross_actor.status_code == 404
+            # Non-admin employees cannot revoke another actor's session either.
+            admin_sessions = await client.get(
+                f"/api/v1/identity/actors/{admin_actor_id}/sessions", headers=admin_headers
+            )
+            forbidden = await client.delete(
+                f"/api/v1/identity/actors/{admin_actor_id}/sessions/"
+                f"{admin_sessions.json()[0]['session_id']}",
+                headers=employee_headers,
+            )
+            assert forbidden.status_code == 403
+
+            def fail_session_commit(transaction: Session) -> None:
+                if any(isinstance(row, AuthSessionRecord) for row in transaction.dirty):
+                    raise RuntimeError("Simulated PostgreSQL commit failure")
+
+            event.listen(Session, "before_commit", fail_session_commit)
+            try:
+                failed = await client.delete(revoke_path, headers=admin_headers)
+                assert failed.status_code == 500
+            finally:
+                event.remove(Session, "before_commit", fail_session_commit)
+            async with app.state.database.session_factory() as session:
+                record = await session.get(AuthSessionRecord, session_id)
+                assert record is not None and record.active and record.revoked_at is None
+                assert not list(
+                    await session.scalars(
+                        select(AuditRecord).where(AuditRecord.event_type == "auth.session.revoked")
+                    )
+                )
+            assert (
+                await client.get("/api/v1/auth/whoami", headers=employee_headers)
+            ).status_code == 200
+
+            revoked = await client.delete(revoke_path, headers=admin_headers)
+            assert revoked.status_code == 204
+            async with app.state.database.session_factory() as session:
+                record = await session.get(AuthSessionRecord, session_id)
+                assert record is not None and not record.active and record.revoked_at is not None
+                revoked_at = record.revoked_at
+                audits = list(
+                    await session.scalars(
+                        select(AuditRecord).where(AuditRecord.event_type == "auth.session.revoked")
+                    )
+                )
+                assert len(audits) == 1
+                assert audits[0].event_metadata == {"session_id": session_id}
+            assert (
+                await client.get("/api/v1/auth/whoami", headers=employee_headers)
+            ).status_code == 401
+            sessions = await client.get(sessions_path, headers=admin_headers)
+            assert sessions.json()[0]["session_id"] == session_id
+            assert sessions.json()[0]["revoked"] is True
+            repeated = await client.delete(revoke_path, headers=admin_headers)
+            assert repeated.status_code == 404
+            async with app.state.database.session_factory() as session:
+                record = await session.get(AuthSessionRecord, session_id)
+                assert record is not None and not record.active and record.revoked_at == revoked_at
+                assert (
+                    len(
+                        list(
+                            await session.scalars(
+                                select(AuditRecord).where(
+                                    AuditRecord.event_type == "auth.session.revoked"
+                                )
+                            )
+                        )
+                    )
+                    == 1
+                )
     finally:
         await app.state.database.dispose()

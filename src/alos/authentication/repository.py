@@ -846,15 +846,21 @@ class SqlAuthRepository:
     ) -> None:
         async with self._session_factory() as session, session.begin():
             actor = await session.get(ActorRecord, actor_id)
-            record = await session.get(AuthSessionRecord, session_id)
+            record = await session.get(AuthSessionRecord, session_id, with_for_update=True)
             if (
                 actor is None
                 or actor.tenant_id != tenant_id
                 or actor.organization_id != organization_id
                 or record is None
                 or record.actor_id != actor_id
+                or record.tenant_id != tenant_id
+                or record.organization_id != organization_id
             ):
                 raise ValueError("session is outside the authority boundary")
+            if not record.active or record.revoked_at is not None:
+                raise ValueError("session is already revoked")
+            record.active = False
+            record.revoked_at = revoked_at
 
     async def import_employee(self, employee: EmployeeRecord) -> EmployeeRecord:
         employee.email = normalize_email(employee.email)

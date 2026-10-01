@@ -243,7 +243,12 @@ def test_application_composes_one_agent_registry_and_environment_audit() -> None
         Settings(
             _env_file=None,
             APP_ENV="production",
-            EMAIL_PROVIDER="inmemory",
+            EMAIL_PROVIDER="smtp",
+            EMAIL_FROM="notification@example.com",
+            SMTP_HOST="mail.example.com",
+            SMTP_USERNAME="smtp-user",
+            SMTP_PASSWORD="test-only-secret",  # noqa: S106
+            APP_PUBLIC_URL="https://app.example.com",
             ALOS_CONTRACTS_PATH=CONTRACTS_ROOT,
         )
     )

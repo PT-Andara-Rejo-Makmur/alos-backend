@@ -64,11 +64,22 @@ def test_production_rejects_loopback_public_url(url) -> None:
 
 
 @pytest.mark.parametrize("environment", ["development", "test"])
-def test_inmemory_needs_no_smtp_configuration(environment) -> None:
-    settings = Settings(_env_file=None, APP_ENV=environment, EMAIL_PROVIDER="inmemory")
+@pytest.mark.parametrize("provider", ["inmemory", "test", "sink", "memory"])
+def test_inmemory_needs_no_smtp_configuration(environment, provider) -> None:
+    settings = Settings(_env_file=None, APP_ENV=environment, EMAIL_PROVIDER=provider)
     service = NotificationService(settings)
     assert settings.is_email_configured
     assert isinstance(service._adapter, InMemoryEmailAdapter)
+
+
+@pytest.mark.parametrize("environment", ["staging", "production"])
+@pytest.mark.parametrize("provider", ["inmemory", "test", "sink", "memory"])
+def test_deployed_environments_reject_test_providers(environment, provider) -> None:
+    with pytest.raises(ValidationError, match="require EMAIL_PROVIDER=smtp"):
+        Settings(_env_file=None, APP_ENV=environment, **{**SMTP_CONFIG, "EMAIL_PROVIDER": provider})
+    # Readiness must not bless a deployed test adapter even when validation is bypassed.
+    settings = Settings.model_construct(APP_ENV=environment, EMAIL_PROVIDER=provider)
+    assert not settings.is_email_configured
 
 
 @pytest.mark.parametrize("environment", ["staging", "production"])

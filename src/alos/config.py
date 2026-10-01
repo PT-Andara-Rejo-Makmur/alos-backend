@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     def is_email_configured(self) -> bool:
         """Indicate whether email dispatch is available without exposing credentials."""
         if self.EMAIL_PROVIDER in {"test", "sink", "memory", "inmemory"}:
-            return True
+            return self.APP_ENV in {"development", "test"}
         return bool(
             valid_email(self.EMAIL_FROM)
             and self.EMAIL_FROM_NAME
@@ -102,8 +102,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def require_deployed_smtp_configuration(self) -> Settings:
-        if self.APP_ENV not in {"staging", "production"} or self.EMAIL_PROVIDER != "smtp":
+        if self.APP_ENV not in {"staging", "production"}:
             return self
+        if self.EMAIL_PROVIDER != "smtp":
+            raise ValueError("Staging and production require EMAIL_PROVIDER=smtp")
         required = {
             "EMAIL_FROM": self.EMAIL_FROM,
             "EMAIL_FROM_NAME": self.EMAIL_FROM_NAME,
