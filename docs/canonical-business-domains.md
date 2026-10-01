@@ -93,7 +93,8 @@ Finance memakai exact decimal strings pada wire dan Decimal saat persistence/cal
 Outstanding berubah hanya melalui payment transaction dengan row lock; overpayment,
 duplicate nonempty payment reference, dan mutation history ditolak. Tidak ada sum lintas
 currency yang tidak tercatat. Reconciliation selesai hanya setelah seluruh item cocok;
-month close hanya dengan checklist terpenuhi dan history tetap terkunci.
+month close mendukung persiapan/checklist internal; final close belum tersedia.
+Existing historical CLOSED tetap mengunci period.
 
 Tidak perlu tabel baru untuk implementation foundation ini. Jika constraint baru akhirnya
 dibutuhkan, hanya append-only migration dengan alasan dan proof; tidak ada asumsi migration.
@@ -119,8 +120,13 @@ Sales menyediakan `/property-units` sebagai narrow read port dan
 `/opportunities/{identity}/pipeline` dengan allowed actions milik Backend.
 
 Scope berasal active Principal + persisted active workspace. IT_ADMIN/EXECUTIVE
-bukan writer. Finance internal approval/activation/close membutuhkan Division Lead;
-penolakan authority 403, konflik lifecycle 409, reference tak visible 404.
+bukan writer. Predicate transition_authorized dijalankan oleh repository sebelum
+business rule, write, dan audit, bukan hanya untuk projection allowed_transitions.
+Penolakan predicate authority 403 BUSINESS_TRANSITION_DENIED, konflik lifecycle
+409, reference tak visible 404. Division Lead masih diperlukan untuk internal
+Reconciliation/Tax closure yang telah tersedia. Pricing activation, Budget final
+approval/activation/close, dan Month Close final belum memiliki canonical authority
+dan tidak mempunyai allowed transition, termasuk untuk Division Lead.
 Legacy status tetap tampil sebagai recorded status; status tak dikenal tidak dapat
 mutasi atau menjadi reference command. Tidak ada remapping migration lama.
 
@@ -141,8 +147,9 @@ diambil sebelum record locks, dalam urutan deterministik, untuk serialisasi clos
 versus writes. Recorded financial periods immutable. Receivable/payable outstanding
 boleh berubah lewat payment event periode terbuka; invoice original tetap immutable.
 Budget tidak dipetakan ke actual/commitment tanpa sumber. Reconciliation harus seluruh
-item MATCHED dengan transaction/account/period/amount yang sesuai. Month close perlu
-seluruh checklist COMPLETED dan tidak ada reconciliation terbuka yang overlap.
+item MATCHED dengan transaction/account/period/amount yang sesuai. Month Close boleh
+dibuat OPEN dan checklist boleh COMPLETED; OPEN → CLOSED tetap unavailable.
+Historical CLOSED tetap readable dan tidak dapat dibuka kembali atau diubah.
 Tax closure internal perlu amount, due date, dan canonical documents RECORDED;
 tidak merepresentasikan submit/pembayaran ke DJP.
 
@@ -163,7 +170,7 @@ partial source failure, unknown lifecycle dan canonical contract failure.
 | sales/closings | OPEN | OPEN → CANCELLED |
 | sales/customer-followups | OPEN | OPEN → COMPLETED, CANCELLED |
 | sales/customer-complaints | OPEN | OPEN → IN_PROGRESS, CLOSED; IN_PROGRESS → CLOSED |
-| sales/pricings | DRAFT | DRAFT → ACTIVE; ACTIVE → INACTIVE |
+| sales/pricings | DRAFT | No activation; historical ACTIVE → INACTIVE remains available |
 | sales/pricing-items | explicit input / no status | no status command |
 | sales/collaterals | ACTIVE | ACTIVE → INACTIVE; INACTIVE → ACTIVE |
 | marketing/campaigns | PLANNED | PLANNED → ACTIVE, CANCELLED; ACTIVE → COMPLETED, CANCELLED |
@@ -187,16 +194,23 @@ partial source failure, unknown lifecycle dan canonical contract failure.
 | finance/receivable-payments | POSTED | immutable history |
 | finance/payables | OPEN | OPEN → CANCELLED |
 | finance/payable-payments | POSTED | immutable history |
-| finance/budgets | DRAFT | DRAFT → UNDER_REVIEW; UNDER_REVIEW → DRAFT, APPROVED; APPROVED → ACTIVE; ACTIVE → CLOSED |
+| finance/budgets | DRAFT | DRAFT → UNDER_REVIEW; UNDER_REVIEW → DRAFT; historical APPROVED/ACTIVE/CLOSED readable and immutable |
 | finance/budget-lines | explicit input / no status | no status command |
 | finance/reconciliations | OPEN | OPEN → CLOSED |
 | finance/reconciliation-items | UNMATCHED | UNMATCHED → MATCHED |
 | finance/tax-obligations | OPEN | OPEN → CLOSED |
 | finance/tax-documents | DRAFT | DRAFT → RECORDED |
-| finance/month-closes | OPEN | OPEN → CLOSED |
+| finance/month-closes | OPEN | No final close; historical CLOSED readable and period remains protected |
 | finance/month-close-items | OPEN | OPEN → COMPLETED |
 
 Final Booking CONFIRMED, Closing COMPLETED, Opportunity WON, Unit RESERVED/SOLD,
 Change Order/Payment Certificate APPROVED tidak diberikan tanpa authority lintas
 business canonical. Existing stored terminal values tetap dapat dibaca. Internal
 pipeline hanya Lead → Qualified → Survey → Booking; bukan progress KPR/SPK/legal.
+
+Audit governance 2 Oktober 2026 memakai development aktual, bukan baseline audit
+awal di atas. Tidak ada perubahan schema/migration/status enum: allowed_transitions
+adalah capability subset dari canonical enum dan dapat kosong. Web merender array
+dari Backend; tidak ada tombol material decision yang dihitung dari role sendiri.
+PostgreSQL HTTP regression mencakup member/lead, historical records, server-side
+predicate, rollback audit, dan scope isolation.

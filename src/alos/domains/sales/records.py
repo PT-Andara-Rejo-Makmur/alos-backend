@@ -103,7 +103,7 @@ SPECS = {
         "pricing_id",
         "SalesPricing",
         "DRAFT",
-        {"DRAFT": ("ACTIVE",), "ACTIVE": ("INACTIVE",)},
+        {"DRAFT": (), "ACTIVE": ("INACTIVE",)},
         frozenset(["name", "effective_from", "effective_to"]),
         frozenset(["name", "effective_from", "effective_to"]),
         False,

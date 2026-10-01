@@ -146,20 +146,6 @@ class SalesService:
                 raise conflict("Pricing date range is invalid.")
             if (name == "pricing_items" or operation == "update") and pricing["status"] != "DRAFT":
                 raise conflict("Active pricing is immutable.")
-            if values.get("status") == "ACTIVE":
-                table = await self.repository.table(session, "sales", "pricing_items")
-                if (
-                    await session.scalar(
-                        select(table.c.pricing_item_id)
-                        .where(
-                            *self.repository.scope(table, principal),
-                            table.c.pricing_id == data["pricing_id"],
-                        )
-                        .limit(1)
-                    )
-                    is None
-                ):
-                    raise conflict("Pricing requires at least one item.")
 
     async def advance_pipeline(
         self, principal: Principal, identity: str, stage: str

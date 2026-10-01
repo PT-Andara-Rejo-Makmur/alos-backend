@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select, text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from alos.domains.finance.records import SPECS
@@ -159,13 +159,6 @@ class FinanceService:
         if name == "budgets":
             if operation == "update" and old and old["status"] != "DRAFT":
                 raise conflict("Reviewed budgets are immutable.")
-            if values.get("status") in {"APPROVED", "ACTIVE", "CLOSED"}:
-                self._lead(principal)
-                lines = await self._children(
-                    session, principal, "budget_lines", "budget_id", data["budget_id"]
-                )
-                if not lines:
-                    raise conflict("A governed budget requires lines.")
         if name == "budget_lines":
             await self._open_period(session, principal, data["period"])
             budget = await self.repository.row(
@@ -302,32 +295,6 @@ class FinanceService:
                 values["opened_at"] = datetime.now(UTC)
             elif operation == "update":
                 raise conflict("Month close period cannot be changed.")
-            if values.get("status") == "CLOSED":
-                self._lead(principal)
-                items = await self._children(
-                    session,
-                    principal,
-                    "month_close_items",
-                    "month_close_id",
-                    data["month_close_id"],
-                )
-                if not items or any(item["status"] != "COMPLETED" for item in items):
-                    raise conflict("Month close requires all recorded checklist items completed.")
-                year, month = map(int, data["period"].split("-"))
-                start = date(year, month, 1)
-                next_month = date(year + (month == 12), month % 12 + 1, 1)
-                table = await self.repository.table(session, "finance", "reconciliations")
-                unresolved = await session.scalar(
-                    select(func.count()).where(
-                        *self.repository.scope(table, principal),
-                        table.c.period_start < next_month,
-                        table.c.period_end >= start,
-                        table.c.status != "CLOSED",
-                    )
-                )
-                if unresolved:
-                    raise conflict("Open reconciliations prevent month close.")
-                values.update(closed_at=datetime.now(UTC), closed_by=principal.actor_id)
         if name == "month_close_items":
             parent = await self.repository.row(
                 session,

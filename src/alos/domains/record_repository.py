@@ -377,6 +377,14 @@ class RecordRepository:
                     old["status"], ()
                 ):
                     raise conflict("Lifecycle transition is unavailable.")
+                if spec.transition_authorized is not None and not spec.transition_authorized(
+                    values["status"], principal
+                ):
+                    raise PlatformError(
+                        "BUSINESS_TRANSITION_DENIED",
+                        "Transition authority is required.",
+                        status_code=403,
+                    )
             await rule(session, spec, principal, values, old, operation)
             return await self.write(
                 session, schema, spec, principal, values, identity, operation=operation

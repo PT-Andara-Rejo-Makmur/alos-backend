@@ -15,7 +15,7 @@ import httpx
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
-from sqlalchemy import func, insert, select, text
+from sqlalchemy import func, insert, select, text, update
 from sqlalchemy.exc import OperationalError
 from test_strategy_planning_e2e import (
     CONTRACTS_ROOT,
@@ -36,6 +36,23 @@ class Context:
     app: FastAPI
     client: httpx.AsyncClient
     headers: dict[str, dict[str, str]]
+
+    async def seed_legacy_status(
+        self, domain: str, table_name: str, identifier: str, identity: str, status: str
+    ) -> None:
+        """Restore a persisted historical fixture without granting command authority."""
+        repository = getattr(self.app.state, f"{domain}_service").repository
+        async with repository.factory() as session, session.begin():
+            table = await repository.table(session, domain, table_name)
+            result = await session.execute(
+                update(table).where(table.c[identifier] == identity).values(status=status)
+            )
+            assert result.rowcount == 1
+
+    async def audit_count(self, domain: str) -> int:
+        repository = getattr(self.app.state, f"{domain}_service").repository
+        async with repository.factory() as session:
+            return int(await session.scalar(select(func.count()).select_from(AuditRecord)) or 0)
 
     async def create(
         self, domain: str, resource: str, values: dict[str, Any], user: str = "lead"
@@ -395,6 +412,18 @@ async def test_property_project_execution_quality_and_governance(context: Contex
     )
     await context.transition("property", "change-orders", order["change_order_id"], "SUBMITTED")
     await context.transition("property", "change-orders", order["change_order_id"], "APPROVED", 409)
+    certificate = await context.create(
+        "property",
+        "payment-certificates",
+        {"project_id": pid, "certificate_number": "PC1", "period": "2027-01", "amount": "10.25"},
+    )
+    pcid = certificate["payment_certificate_id"]
+    await context.transition("property", "payment-certificates", pcid, "SUBMITTED")
+    for user in ("member", "lead"):
+        await context.transition("property", "payment-certificates", pcid, "APPROVED", 409, user)
+        await context.transition(
+            "property", "change-orders", order["change_order_id"], "APPROVED", 409, user
+        )
     handover = await context.create(
         "property",
         "project-handovers",
@@ -467,9 +496,9 @@ async def test_finance_budget_reconciliation_and_month_close(context: Context) -
     )
     assert member_read.status_code == 200
     assert "APPROVED" not in member_read.json()["allowed_transitions"]
-    await context.transition("finance", "budgets", bid, "APPROVED", 403, "member")
-    await context.transition("finance", "budgets", bid, "APPROVED")
-    await context.transition("finance", "budgets", bid, "ACTIVE")
+    await context.transition("finance", "budgets", bid, "APPROVED", 409, "member")
+    await context.transition("finance", "budgets", bid, "APPROVED", 409)
+    await context.transition("finance", "budgets", bid, "DRAFT")
     account = await context.create(
         "finance",
         "bank-accounts",
@@ -531,7 +560,8 @@ async def test_finance_budget_reconciliation_and_month_close(context: Context) -
     await context.transition(
         "finance", "month-close-items", check["month_close_item_id"], "COMPLETED"
     )
-    await context.transition("finance", "month-closes", mid, "CLOSED")
+    await context.transition("finance", "month-closes", mid, "CLOSED", 409)
+    await context.seed_legacy_status("finance", "month_closes", "month_close_id", mid, "CLOSED")
     blocked = await context.client.post(
         "/api/v1/finance/bank-transactions",
         headers=context.headers["lead"],
@@ -550,6 +580,240 @@ async def test_finance_budget_reconciliation_and_month_close(context: Context) -
         {"tax_type": "INTERNAL", "period": "2027-06", "amount": "100.00", "due_date": "2027-07-10"},
     )
     await context.transition("finance", "tax-obligations", tax["tax_obligation_id"], "CLOSED", 409)
+
+
+@pytest.mark.parametrize("user", ["member", "lead"])
+async def test_pricing_activation_requires_unavailable_canonical_authority(
+    context: Context, user: str
+) -> None:
+    unit = await context.create("property", "property-units", {"unit_code": uuid4().hex})
+    pricing = await context.create("sales", "pricings", {"name": "Prepared pricing"}, user)
+    identity = pricing["pricing_id"]
+    item = await context.create(
+        "sales",
+        "pricing-items",
+        {"pricing_id": identity, "property_unit_id": unit["property_unit_id"], "price": "100.00"},
+        user,
+    )
+    assert pricing["status"] == "DRAFT" and pricing["allowed_transitions"] == []
+    for resource, record_id, values in (
+        ("pricings", identity, {"name": "Edited draft"}),
+        ("pricing-items", item["pricing_item_id"], {"price": "125.00"}),
+    ):
+        edited = await context.client.patch(
+            f"/api/v1/sales/{resource}/{record_id}", headers=context.headers[user], json=values
+        )
+        assert edited.status_code == 200, edited.text
+    audit_before = await context.audit_count("sales")
+    denied = await context.transition("sales", "pricings", identity, "ACTIVE", 409, user)
+    assert denied["code"] == "BUSINESS_STATE_CONFLICT"
+    read = await context.client.get(
+        f"/api/v1/sales/pricings/{identity}", headers=context.headers[user]
+    )
+    assert read.status_code == 200 and read.json()["status"] == "DRAFT"
+    assert read.json()["allowed_transitions"] == []
+    assert await context.audit_count("sales") == audit_before
+    await context.seed_legacy_status("sales", "pricings", "pricing_id", identity, "ACTIVE")
+    historical = await context.client.get(
+        f"/api/v1/sales/pricings/{identity}", headers=context.headers[user]
+    )
+    assert historical.status_code == 200 and historical.json()["status"] == "ACTIVE"
+    assert historical.json()["updated_at"] == read.json()["updated_at"]
+    assert "ACTIVE" not in historical.json()["allowed_transitions"]
+    immutable = await context.client.patch(
+        f"/api/v1/sales/pricings/{identity}",
+        headers=context.headers[user],
+        json={"name": "Rewrite"},
+    )
+    assert immutable.status_code == 409
+
+
+@pytest.mark.parametrize("user", ["member", "lead"])
+async def test_budget_preparation_does_not_grant_material_authority(
+    context: Context, user: str
+) -> None:
+    budget = await context.create(
+        "finance", "budgets", {"name": f"Prepared {user}", "fiscal_year": 2028}, user
+    )
+    identity = budget["budget_id"]
+    await context.create(
+        "finance",
+        "budget-lines",
+        {
+            "budget_id": identity,
+            "account_code": "OPS",
+            "period": "2028-01",
+            "planned_amount": "1.00",
+        },
+        user,
+    )
+    reviewing = await context.transition("finance", "budgets", identity, "UNDER_REVIEW", user=user)
+    assert reviewing["allowed_transitions"] == ["DRAFT"]
+    audit_before = await context.audit_count("finance")
+    await context.transition("finance", "budgets", identity, "APPROVED", 409, user)
+    assert await context.audit_count("finance") == audit_before
+    prepared = await context.transition("finance", "budgets", identity, "DRAFT", user=user)
+    assert prepared["allowed_transitions"] == ["UNDER_REVIEW"]
+
+
+@pytest.mark.parametrize("user", ["member", "lead"])
+@pytest.mark.parametrize(
+    "status,target", [("APPROVED", "ACTIVE"), ("ACTIVE", "CLOSED"), ("CLOSED", "DRAFT")]
+)
+async def test_historical_budget_is_readable_without_material_commands(
+    context: Context, user: str, status: str, target: str
+) -> None:
+    budget = await context.create(
+        "finance", "budgets", {"name": f"Historical {status} {user}", "fiscal_year": 2028}
+    )
+    identity = budget["budget_id"]
+    await context.seed_legacy_status("finance", "budgets", "budget_id", identity, status)
+    audit_before = await context.audit_count("finance")
+    path = f"/api/v1/finance/budgets/{identity}"
+    read = await context.client.get(path, headers=context.headers[user])
+    assert read.status_code == 200
+    assert read.json()["status"] == status and read.json()["allowed_transitions"] == []
+    assert read.json()["updated_at"] == budget["updated_at"]
+    listing = await context.client.get("/api/v1/finance/budgets", headers=context.headers[user])
+    assert any(
+        record["budget_id"] == identity and record["status"] == status
+        for record in listing.json()["items"]
+    )
+    await context.transition("finance", "budgets", identity, target, 409, user)
+    edited = await context.client.patch(
+        path, headers=context.headers[user], json={"name": "Rewrite"}
+    )
+    assert edited.status_code == 409
+    assert await context.audit_count("finance") == audit_before
+
+
+@pytest.mark.parametrize("user,period", [("member", "2028-02"), ("lead", "2028-03")])
+async def test_month_close_unavailable_and_historical_period_stays_closed(
+    context: Context, user: str, period: str
+) -> None:
+    month = await context.create("finance", "month-closes", {"period": period}, user)
+    identity = month["month_close_id"]
+    item = await context.create(
+        "finance",
+        "month-close-items",
+        {"month_close_id": identity, "item_type": "INTERNAL_REVIEW"},
+        user,
+    )
+    await context.transition(
+        "finance", "month-close-items", item["month_close_item_id"], "COMPLETED", user=user
+    )
+    audit_before = await context.audit_count("finance")
+    assert month["status"] == "OPEN" and month["allowed_transitions"] == []
+    await context.transition("finance", "month-closes", identity, "CLOSED", 409, user)
+    read = await context.client.get(
+        f"/api/v1/finance/month-closes/{identity}", headers=context.headers[user]
+    )
+    assert read.json() == month
+    assert await context.audit_count("finance") == audit_before
+    await context.seed_legacy_status(
+        "finance", "month_closes", "month_close_id", identity, "CLOSED"
+    )
+    historical = await context.client.get(
+        f"/api/v1/finance/month-closes/{identity}", headers=context.headers[user]
+    )
+    assert historical.status_code == 200 and historical.json()["status"] == "CLOSED"
+    assert historical.json()["allowed_transitions"] == []
+    assert historical.json()["updated_at"] == month["updated_at"]
+    assert historical.json()["closed_at"] is None
+    await context.transition("finance", "month-closes", identity, "OPEN", 409, user)
+    account = await context.create(
+        "finance",
+        "bank-accounts",
+        {"account_name": "History", "bank_name": "Internal", "currency": "USD"},
+        user,
+    )
+    for resource, values in (
+        (
+            "bank-transactions",
+            {
+                "bank_account_id": account["bank_account_id"],
+                "transaction_date": f"{period}-10",
+                "direction": "IN",
+                "amount": "1.00",
+                "currency": "USD",
+            },
+        ),
+        ("month-close-items", {"month_close_id": identity, "item_type": "NEW_CHECK"}),
+        ("month-closes", {"period": period}),
+    ):
+        denied = await context.client.post(
+            f"/api/v1/finance/{resource}", headers=context.headers[user], json=values
+        )
+        assert denied.status_code == 409, denied.text
+
+
+async def test_hidden_transition_is_enforced_before_owner_business_rule(
+    context: Context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    account = await context.create(
+        "finance",
+        "bank-accounts",
+        {"account_name": "Authority", "bank_name": "Internal", "currency": "USD"},
+    )
+    rec = await context.create(
+        "finance",
+        "reconciliations",
+        {
+            "bank_account_id": account["bank_account_id"],
+            "period_start": "2028-04-01",
+            "period_end": "2028-04-30",
+        },
+    )
+    transaction = await context.create(
+        "finance",
+        "bank-transactions",
+        {
+            "bank_account_id": account["bank_account_id"],
+            "transaction_date": "2028-04-10",
+            "direction": "IN",
+            "amount": "1.00",
+            "currency": "USD",
+        },
+    )
+    item = await context.create(
+        "finance",
+        "reconciliation-items",
+        {
+            "reconciliation_id": rec["reconciliation_id"],
+            "transaction_id": transaction["transaction_id"],
+            "expected_amount": "1.00",
+            "actual_amount": "1.00",
+        },
+    )
+    await context.transition(
+        "finance", "reconciliation-items", item["reconciliation_item_id"], "MATCHED"
+    )
+    path = f"/api/v1/finance/reconciliations/{rec['reconciliation_id']}"
+    projection = await context.client.get(path, headers=context.headers["member"])
+    assert projection.json()["allowed_transitions"] == []
+    service = context.app.state.finance_service
+    original = service._rule
+    rule_called = False
+
+    async def observe_rule(*args: Any, **kwargs: Any) -> None:
+        nonlocal rule_called
+        rule_called = True
+        await original(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_rule", observe_rule)
+    audit_before = await context.audit_count("finance")
+    denied = await context.transition(
+        "finance", "reconciliations", rec["reconciliation_id"], "CLOSED", 403, "member"
+    )
+    assert denied["code"] == "BUSINESS_TRANSITION_DENIED"
+    assert not rule_called
+    assert await context.audit_count("finance") == audit_before
+    read = await context.client.get(path, headers=context.headers["member"])
+    assert read.json() == projection.json()
+    closed = await context.transition(
+        "finance", "reconciliations", rec["reconciliation_id"], "CLOSED"
+    )
+    assert closed["status"] == "CLOSED" and rule_called
 
 
 @pytest.mark.parametrize(
