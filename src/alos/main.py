@@ -14,8 +14,12 @@ from alos.api.models import HealthResponse, ReadinessResponse
 from alos.api.public.domain_routes import router as domain_data_router
 from alos.api.public.domain_routes import workspace_navigation_router
 from alos.api.public.executive_routes import router as executive_router
+from alos.api.public.finance_routes import router as finance_router
+from alos.api.public.marketing_routes import router as marketing_router
+from alos.api.public.property_routes import router as property_router
 from alos.api.public.release_routes import router as release_router
 from alos.api.public.routes import router as public_router
+from alos.api.public.sales_routes import router as sales_router
 from alos.api.public.shared_work_routes import router as shared_work_router
 from alos.api.public.strategy_routes import router as strategy_router
 from alos.audit import InMemoryAuditRepository, SqlAuditRepository, SqlToolAuditSink
@@ -27,6 +31,14 @@ from alos.config import Settings, get_settings
 from alos.contracts import CanonicalContractCatalog
 from alos.domains.crud import DomainCrudService
 from alos.domains.executive.service import ExecutiveProjectionService
+from alos.domains.finance.service import FinanceService
+from alos.domains.marketing.references import MarketingReferences
+from alos.domains.marketing.service import MarketingService
+from alos.domains.property.references import PropertyUnitReferences
+from alos.domains.property.service import PropertyService
+from alos.domains.record_repository import RecordRepository
+from alos.domains.sales.references import SalesReferences
+from alos.domains.sales.service import SalesService
 from alos.domains.shared_work import SharedWorkService
 from alos.domains.strategy import InMemoryStrategyRepository, SqlStrategyRepository, StrategyService
 from alos.domains.strategy.repository import SqlStrategyAuditRepository
@@ -238,8 +250,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.strategy_service = StrategyService(
         strategy_repository, strategy_audit, auth_repository.workspace
     )
+    records = RecordRepository(app.state.database.session_factory, contracts)
+    sales_refs = SalesReferences(records)
+    marketing_refs = MarketingReferences(records)
+    unit_refs = PropertyUnitReferences(records, app.state.shared_work_service)
+    app.state.property_unit_references = unit_refs
+    app.state.sales_service = SalesService(
+        records,
+        sales=sales_refs,
+        marketing=marketing_refs,
+        units=unit_refs,
+        work=app.state.shared_work_service,
+    )
+    app.state.marketing_service = MarketingService(
+        records, sales=sales_refs, marketing=marketing_refs
+    )
+    app.state.property_service = PropertyService(records, work=app.state.shared_work_service)
+    app.state.finance_service = FinanceService(records, work=app.state.shared_work_service)
     app.state.executive_service = ExecutiveProjectionService(
-        app.state.strategy_service, app.state.shared_work_service
+        app.state.strategy_service,
+        app.state.shared_work_service,
+        business_sources={
+            "SALES": (
+                ("sales", app.state.sales_service),
+                ("marketing", app.state.marketing_service),
+            ),
+            "PROPERTY": (("property", app.state.property_service),),
+            "FINANCE": (("finance", app.state.finance_service),),
+        },
     )
     app.add_middleware(
         CORSMiddleware,
@@ -272,6 +310,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(release_router)
     app.include_router(strategy_router)
     app.include_router(executive_router)
+    app.include_router(sales_router)
+    app.include_router(marketing_router)
+    app.include_router(property_router)
+    app.include_router(finance_router)
     app.include_router(internal_router)
     return app
 

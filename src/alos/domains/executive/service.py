@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -15,16 +15,32 @@ from alos.identity import Principal
 from alos.security.errors import PlatformError
 
 if TYPE_CHECKING:
-    from executive_contracts import ExecutiveConnectionStatus, ExecutiveOverviewProjection
+    from executive_contracts import (
+        ExecutiveConnectionStatus,
+        ExecutiveDomainStatus,
+        ExecutiveOverviewProjection,
+        ExecutiveSourceStatus,
+    )
     from strategy_contracts import StrategyOverviewProjection
+
+
+class BusinessOverviewPort(Protocol):
+    async def overview(
+        self, principal: Principal, *, executive: bool = False
+    ) -> dict[str, Any]: ...
 
 
 class ExecutiveProjectionService:
     def __init__(
-        self, strategy: StrategyService, shared_work: SharedWorkService | None = None
+        self,
+        strategy: StrategyService,
+        shared_work: SharedWorkService | None = None,
+        *,
+        business_sources: dict[str, tuple[tuple[str, BusinessOverviewPort], ...]] | None = None,
     ) -> None:
         self.strategy = strategy
         self.shared_work = shared_work
+        self.business_sources = business_sources or {}
 
     async def overview(self, principal: Principal) -> ExecutiveOverviewProjection:
         authorize(
@@ -76,7 +92,47 @@ class ExecutiveProjectionService:
             except (SQLAlchemyError, ConnectionError, TimeoutError, OSError):
                 pass
         work_updated = work_data["last_updated_at"] if work_data is not None else None
+        domains: list[ExecutiveDomainStatus] = []
+        business_times: list[str] = []
+        for domain in ("SALES", "FINANCE", "PROPERTY", "LEGAL", "HR", "IT"):
+            sources: list[ExecutiveSourceStatus] = []
+            domain_status: ExecutiveConnectionStatus = "UNAVAILABLE"
+            ports = self.business_sources.get(domain, ())
+            if ports:
+                domain_status = "CONNECTED_EMPTY"
+                for source_name, port in ports:
+                    try:
+                        summary = await port.overview(principal, executive=True)
+                        sources.append(cast("ExecutiveSourceStatus", summary["source"]))
+                    except (SQLAlchemyError, ConnectionError, TimeoutError, OSError):
+                        sources.append(
+                            {
+                                "source": source_name,
+                                "status": "ERROR",
+                                "authoritative": True,
+                                "last_updated_at": None,
+                            }
+                        )
+                if any(source["status"] == "ERROR" for source in sources):
+                    domain_status = "ERROR"
+                elif any(source["status"] == "CONNECTED" for source in sources):
+                    domain_status = "CONNECTED"
+            stamps = [
+                source["last_updated_at"]
+                for source in sources
+                if source["last_updated_at"] is not None
+            ]
+            business_times.extend(stamps)
+            domains.append(
+                {
+                    "domain": cast(Any, domain),
+                    "status": domain_status,
+                    "sources": sources,
+                    "last_verified_at": max(stamps, key=datetime.fromisoformat) if stamps else None,
+                }
+            )
         known_times = [value for value in (updated, work_updated) if value is not None]
+        known_times.extend(business_times)
         last_updated = max(known_times, key=datetime.fromisoformat) if known_times else None
         return {
             "tenant_id": principal.tenant_id,
@@ -94,10 +150,7 @@ class ExecutiveProjectionService:
                 "authoritative": True,
                 "last_updated_at": work_updated,
             },
-            "domains": [
-                {"domain": domain, "status": "UNAVAILABLE", "sources": [], "last_verified_at": None}
-                for domain in ("SALES", "FINANCE", "PROPERTY", "LEGAL", "HR", "IT")
-            ],
+            "domains": domains,
             "last_updated_at": last_updated,
             "strategy_data": cast("StrategyOverviewProjection | None", data),
             "shared_work_data": work_data,
