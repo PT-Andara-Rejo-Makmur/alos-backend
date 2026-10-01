@@ -8,7 +8,20 @@ from typing import Any, cast
 
 from fastapi import APIRouter, Request
 
-from alos.dependencies import CurrentPrincipalDependency
+from alos.api.public.strategy_contracts import (
+    BusinessTargetCreateRequest,
+    CascadeAcceptRequest,
+    CascadePreviewRequest,
+    MetricObservationCreateRequest,
+    PlanningAssumptionCreateRequest,
+    StrategicObjectiveCreateRequest,
+    StrategyPlanCreateRequest,
+    StrategyPlanUpdateRequest,
+    TargetRelationshipCreateRequest,
+    TargetRevisionCreateRequest,
+    request_contract,
+)
+from alos.dependencies import ContractCatalogDependency, CurrentPrincipalDependency
 from alos.domains.strategy.models import (
     CascadeRule,
     Constraint,
@@ -156,10 +169,14 @@ async def list_plans(
     ]
 
 
-@router.post("/plans", status_code=201)
+@router.post("/plans", status_code=201, openapi_extra=request_contract(StrategyPlanCreateRequest))
 async def create_plan(
-    payload: dict[str, Any], request: Request, principal: CurrentPrincipalDependency
+    body: StrategyPlanCreateRequest,
+    request: Request,
+    contracts: ContractCatalogDependency,
+    principal: CurrentPrincipalDependency,
 ) -> dict[str, Any]:
+    payload = body.validated(contracts)
     plan = await _service(request).create_plan(principal, _plan(payload, principal))
     return _plan_projection(plan, principal)
 
@@ -171,13 +188,15 @@ async def get_plan(
     return _plan_projection(await _service(request).get_plan(principal, plan_id), principal)
 
 
-@router.patch("/plans/{plan_id}")
+@router.patch("/plans/{plan_id}", openapi_extra=request_contract(StrategyPlanUpdateRequest))
 async def update_plan(
     plan_id: str,
-    payload: dict[str, Any],
+    body: StrategyPlanUpdateRequest,
     request: Request,
+    contracts: ContractCatalogDependency,
     principal: CurrentPrincipalDependency,
 ) -> dict[str, Any]:
+    payload = body.validated(contracts)
     changes: dict[str, Any] = {}
     for field in ("name", "description", "owner_role_ref", "materiality"):
         if field in payload:
@@ -187,22 +206,6 @@ async def update_plan(
     for field in ("source_refs", "evidence_refs"):
         if field in payload:
             changes[field] = tuple(payload[field])
-    allowed = {
-        "name",
-        "description",
-        "owner_role_ref",
-        "materiality",
-        "period",
-        "source_refs",
-        "evidence_refs",
-    }
-    if unknown := set(payload) - allowed:
-        raise PlatformError(
-            "STRATEGY_UPDATE_INVALID",
-            "Plan update contains immutable or unsupported fields.",
-            status_code=409,
-            details={"fields": sorted(unknown)},
-        )
     return _plan_projection(
         await _service(request).update_plan(principal, plan_id, changes), principal
     )
@@ -216,10 +219,16 @@ async def list_objectives(
     return project_domains(await _service(request).repository.list_objectives(plan_id))
 
 
-@router.post("/objectives", status_code=201)
+@router.post(
+    "/objectives", status_code=201, openapi_extra=request_contract(StrategicObjectiveCreateRequest)
+)
 async def create_objective(
-    payload: dict[str, Any], request: Request, principal: CurrentPrincipalDependency
+    body: StrategicObjectiveCreateRequest,
+    request: Request,
+    contracts: ContractCatalogDependency,
+    principal: CurrentPrincipalDependency,
 ) -> dict[str, Any]:
+    payload = body.validated(contracts)
     objective = Objective(
         str(payload["objective_id"]),
         int(payload.get("version", 1)),
@@ -247,10 +256,16 @@ async def list_targets(
     return project_domains(await _service(request).list_targets(principal))
 
 
-@router.post("/targets", status_code=201)
+@router.post(
+    "/targets", status_code=201, openapi_extra=request_contract(BusinessTargetCreateRequest)
+)
 async def create_target(
-    payload: dict[str, Any], request: Request, principal: CurrentPrincipalDependency
+    body: BusinessTargetCreateRequest,
+    request: Request,
+    contracts: ContractCatalogDependency,
+    principal: CurrentPrincipalDependency,
 ) -> dict[str, Any]:
+    payload = body.validated(contracts)
     return project(await _service(request).create_target(principal, _target(payload, principal)))
 
 
@@ -289,13 +304,19 @@ async def list_observations(
     )
 
 
-@router.post("/targets/{target_id}/observations", status_code=201)
+@router.post(
+    "/targets/{target_id}/observations",
+    status_code=201,
+    openapi_extra=request_contract(MetricObservationCreateRequest),
+)
 async def create_observation(
     target_id: str,
-    payload: dict[str, Any],
+    body: MetricObservationCreateRequest,
     request: Request,
+    contracts: ContractCatalogDependency,
     principal: CurrentPrincipalDependency,
 ) -> dict[str, Any]:
+    payload = body.validated(contracts)
     target = await _service(request).get_target(principal, target_id)
     if target_id != str(payload["target_id"]) or target.version != int(payload["target_version"]):
         raise PlatformError(
@@ -347,10 +368,19 @@ async def list_relationships(
     )
 
 
-@router.post("/targets/{target_id}/relationships", status_code=201)
+@router.post(
+    "/targets/{target_id}/relationships",
+    status_code=201,
+    openapi_extra=request_contract(TargetRelationshipCreateRequest),
+)
 async def create_relationship(
-    target_id: str, payload: dict[str, Any], request: Request, principal: CurrentPrincipalDependency
+    target_id: str,
+    body: TargetRelationshipCreateRequest,
+    request: Request,
+    contracts: ContractCatalogDependency,
+    principal: CurrentPrincipalDependency,
 ) -> dict[str, Any]:
+    payload = body.validated(contracts)
     if target_id != str(payload["parent_target_id"]):
         raise PlatformError(
             "STRATEGY_PATH_MISMATCH",
@@ -376,16 +406,31 @@ async def create_relationship(
 async def list_assumptions(
     request: Request, principal: CurrentPrincipalDependency
 ) -> list[dict[str, Any]]:
+    _service(request).authority_projection(principal)
     values = await _service(request).repository.list_assumptions(
         principal.tenant_id, principal.organization_id
     )
-    return project_domains(values)
+    return project_domains(
+        tuple(
+            item
+            for item in values
+            if "EXECUTIVE" in principal.roles
+            or item.scope.type == "COMPANY"
+            or item.owner_workspace_id == principal.workspace_id
+        )
+    )
 
 
-@router.post("/assumptions", status_code=201)
+@router.post(
+    "/assumptions", status_code=201, openapi_extra=request_contract(PlanningAssumptionCreateRequest)
+)
 async def create_assumption(
-    payload: dict[str, Any], request: Request, principal: CurrentPrincipalDependency
+    body: PlanningAssumptionCreateRequest,
+    request: Request,
+    contracts: ContractCatalogDependency,
+    principal: CurrentPrincipalDependency,
 ) -> dict[str, Any]:
+    payload = body.validated(contracts)
     assumption = PlanningAssumption(
         str(payload["assumption_id"]),
         int(payload.get("version", 1)),
@@ -411,10 +456,24 @@ async def create_assumption(
     return project(await _service(request).create_assumption(principal, assumption))
 
 
-@router.post("/cascade/preview")
+@router.post("/cascade/preview", openapi_extra=request_contract(CascadePreviewRequest))
 async def preview_cascade(
-    payload: dict[str, Any], request: Request, principal: CurrentPrincipalDependency
+    body: CascadePreviewRequest,
+    request: Request,
+    contracts: ContractCatalogDependency,
+    principal: CurrentPrincipalDependency,
 ) -> dict[str, Any]:
+    payload = body.validated(contracts)
+    for item in payload["rules"]:
+        if (item["tenant_id"], item["organization_id"]) != (
+            principal.tenant_id,
+            principal.organization_id,
+        ):
+            raise PlatformError(
+                "STRATEGY_SCOPE_DENIED",
+                "Cascade rule is outside authenticated authority.",
+                status_code=403,
+            )
     rules = tuple(
         CascadeRule(
             str(item["cascade_rule_id"]),
@@ -501,13 +560,17 @@ async def get_cascade_run(
     return project(run)
 
 
-@router.post("/cascade-runs/{cascade_run_id}/accept")
+@router.post(
+    "/cascade-runs/{cascade_run_id}/accept", openapi_extra=request_contract(CascadeAcceptRequest)
+)
 async def accept_cascade(
     cascade_run_id: str,
-    payload: dict[str, Any],
+    body: CascadeAcceptRequest,
     request: Request,
+    contracts: ContractCatalogDependency,
     principal: CurrentPrincipalDependency,
 ) -> dict[str, Any]:
+    payload = body.validated(contracts)
     targets = tuple(
         _target(item, principal, cascade_run_id=cascade_run_id)
         for item in payload.get("derived_targets", ())
@@ -544,10 +607,19 @@ async def list_revisions(
     return project_domains(await _service(request).repository.list_revisions(target_id))
 
 
-@router.post("/targets/{target_id}/revisions", status_code=201)
+@router.post(
+    "/targets/{target_id}/revisions",
+    status_code=201,
+    openapi_extra=request_contract(TargetRevisionCreateRequest),
+)
 async def create_revision(
-    target_id: str, payload: dict[str, Any], request: Request, principal: CurrentPrincipalDependency
+    target_id: str,
+    body: TargetRevisionCreateRequest,
+    request: Request,
+    contracts: ContractCatalogDependency,
+    principal: CurrentPrincipalDependency,
 ) -> dict[str, Any]:
+    payload = body.validated(contracts)
     revision, target = await _service(request).revise_target(
         principal, target_id, str(payload["reason"]), current_correlation_id()
     )

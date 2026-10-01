@@ -8,6 +8,7 @@ import sys
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -16,19 +17,20 @@ import httpx
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from alos.config import Settings
 from alos.domains.strategy.models import Constraint
 from alos.identity import Principal
 from alos.main import create_app
-from alos.persistence.models import AuditRecord
+from alos.persistence.models import AuditRecord, WorkspaceMembershipRecord
 from alos.persistence.strategy_models import StrategyTargetRecord
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
 
 DATABASE_NAME = "alos_strategy_e2e"
 PASSWORD = "StrongPass!123"  # noqa: S105 - isolated integration-test credential
+CONTRACTS_ROOT = Path(__file__).resolve().parents[3] / "alos-contracts"
 PERIOD = {"granularity": "ANNUAL", "starts_at": "2027-01-01", "ends_at": "2027-12-31"}
 
 
@@ -127,6 +129,7 @@ async def strategy_context() -> AsyncIterator[StrategyContext]:
         GENESIS_INTERNAL_TOKEN="test-only-token",  # noqa: S106
         OTEL_SERVICE_NAME="alos-strategy-e2e",
         ENABLE_TEST_REGISTRATION=True,
+        ALOS_CONTRACTS_PATH=CONTRACTS_ROOT,
     )
     app = create_app(settings)
     transport = httpx.ASGITransport(app=app)
@@ -183,7 +186,7 @@ async def strategy_context() -> AsyncIterator[StrategyContext]:
             roles=["EXECUTIVE"],
             permissions=strategy_permissions,
         )
-        missing_permission_headers, _ = await _register_and_login(
+        missing_permission_headers, denied_actor = await _register_and_login(
             client,
             email="strategy-no-permission@e2e.local",
             tenant_id="tenant_strategy_e2e",
@@ -192,6 +195,14 @@ async def strategy_context() -> AsyncIterator[StrategyContext]:
             roles=["EXECUTIVE"],
             permissions=[],
         )
+        # Remove stored grants to prove role alone cannot authorize Strategy operations.
+        async with app.state.database.session_factory() as session:
+            await session.execute(
+                update(WorkspaceMembershipRecord)
+                .where(WorkspaceMembershipRecord.actor_id == denied_actor)
+                .values(permission_refs=[])
+            )
+            await session.commit()
         yield StrategyContext(
             client,
             app,
@@ -393,6 +404,9 @@ async def test_persistent_strategy_api_vertical_slice_and_scope_security(
             "rules": [
                 {
                     "cascade_rule_id": "rule.required-leads.e2e",
+                    "tenant_id": "tenant_strategy_e2e",
+                    "organization_id": "org_strategy_e2e",
+                    "version": 1,
                     "rule_type": "RATIO_DIVIDE_CEIL",
                     "input_target_refs": [{"target_id": root_target_id, "version": 1}],
                     "output_target_refs": [{"target_id": division_target_id, "version": 1}],
@@ -622,6 +636,12 @@ async def test_persistent_strategy_failure_states_block_closed(
             "rules": [
                 {
                     "cascade_rule_id": "rule.missing-ratio.e2e",
+                    "input_target_refs": [
+                        {"target_id": "target.invalid-cascade.e2e", "version": 1}
+                    ],
+                    "tenant_id": "tenant_strategy_e2e",
+                    "organization_id": "org_strategy_e2e",
+                    "version": 1,
                     "rule_type": "RATIO_DIVIDE_CEIL",
                     "output_target_refs": [{"target_id": "target.incomplete.e2e", "version": 1}],
                     "parameters": {},
@@ -643,6 +663,12 @@ async def test_persistent_strategy_failure_states_block_closed(
             "rules": [
                 {
                     "cascade_rule_id": "rule.zero-ratio.e2e",
+                    "input_target_refs": [
+                        {"target_id": "target.invalid-cascade.e2e", "version": 1}
+                    ],
+                    "tenant_id": "tenant_strategy_e2e",
+                    "organization_id": "org_strategy_e2e",
+                    "version": 1,
                     "rule_type": "RATIO_DIVIDE_CEIL",
                     "output_target_refs": [{"target_id": "target.invalid.e2e", "version": 1}],
                     "parameters": {},
