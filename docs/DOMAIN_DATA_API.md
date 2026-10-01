@@ -4,6 +4,13 @@ The operational tables introduced by migrations `0012`-`0021` are exposed throug
 
 ## Routes
 
+Generic mutations for `sales`, `marketing`, `property`, `finance`, `legal`, `hr`
+and `it` return `409 CANONICAL_DOMAIN_MUTATION_REQUIRED`. These domains use their
+dedicated canonical APIs; generic reads remain available for compatibility.
+See [Legal, HR and IT operations](legal-hr-it-operations.md) for current resources,
+immutable history, lifecycle commands and authority boundaries. The route catalog
+below describes the legacy adapter, not permission to mutate canonical owners.
+
 For any catalogued table:
 
 ```text

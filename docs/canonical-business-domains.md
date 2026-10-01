@@ -1,5 +1,9 @@
 # Audit business domains development — 1 Oktober 2026
 
+Bagian audit berikut mencatat baseline historis. Legal, HR dan IT kini memiliki
+owner canonical dan terhubung ke Executive; resource, lifecycle, batas authority,
+UI dan bukti PostgreSQL terkini tersedia di [Legal, HR dan IT](legal-hr-it-operations.md).
+
 Audit dilakukan sebelum perubahan kode. Fetch kelima remote development cocok dengan
 baseline yang diberikan, dan seluruh working tree bersih. Tidak ada AGENTS.md pada
 repository. GENESIS tidak akan dimodifikasi atau dihubungkan ke domain baru.
@@ -138,7 +142,8 @@ planned progress curve atau budget variance dari asumsi.
 Executive membaca owner overview ports dengan COMPANY visibility hanya jika
 DataScope.COMPANY. SALES mencakup Sales dan Marketing, PROPERTY/FINANCE masing-masing
 owner service. Retrieval failure menghasilkan source ERROR terpisah; contract/security
-failure fail closed. Legal/HR/IT tetap UNAVAILABLE. Tidak ada tabel Executive baru.
+failure fail closed. Legal/HR/IT kini memakai owner overview ports canonical dengan
+CONNECTED/CONNECTED_EMPTY/ERROR. Tidak ada tabel Executive baru.
 
 Mutations memakai satu PostgreSQL transaction dengan audit.append_in_session dan
 canonical projection validation sebelum commit. Payment row lock mempertahankan
