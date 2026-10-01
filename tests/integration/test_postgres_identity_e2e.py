@@ -14,6 +14,7 @@ import pytest
 from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
+from alos.cli import bootstrap_identity, build_parser
 from alos.config import Settings
 from alos.main import create_app
 from alos.persistence.models import AuditRecord, AuthSessionRecord, EmployeeRecord
@@ -61,7 +62,9 @@ async def _recreate_database(name: str) -> str:
 @pytest.mark.skipif(
     not os.environ.get("ALOS_TEST_DATABASE_URL"), reason="PostgreSQL test URL is required"
 )
-async def test_employee_provision_activation_and_workspace_lifecycle_on_postgres() -> None:
+async def test_employee_provision_activation_and_workspace_lifecycle_on_postgres(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     url = await _recreate_database("alos_identity_e2e")
     settings = Settings(
         _env_file=None,
@@ -81,19 +84,45 @@ async def test_employee_provision_activation_and_workspace_lifecycle_on_postgres
     employee_id = "employee_identity_e2e"
     employee_email = "employee.identity.e2e@example.test"
 
-    await app.state.auth_service.bootstrap_initial_admin(
-        {
-            "email": "identity.admin.e2e@example.test",
-            "password": "StrongPass!123",
-            "display_name": "Identity Administrator",
-            "tenant_id": "tenant_identity_e2e",
-            "organization_id": "org_identity_e2e",
-            "workspace_id": "workspace_identity_it_e2e",
-            "workspace_key": "identity-it-e2e",
-            "workspace_name": "Identity IT",
-            "workspace_type": "IT_OPERATIONS",
-        }
+    monkeypatch.setattr("alos.cli.Settings", lambda: settings)
+    bootstrap_args = build_parser().parse_args(
+        [
+            "bootstrap-identity",
+            "--email",
+            "identity.admin.e2e@example.test",
+            "--display-name",
+            "Identity Administrator",
+            "--tenant-id",
+            "tenant_identity_e2e",
+            "--organization-id",
+            "org_identity_e2e",
+            "--workspace-id",
+            "workspace_identity_it_e2e",
+            "--workspace-key",
+            "identity-it-e2e",
+            "--workspace-name",
+            "Identity IT",
+            "--workspace-type",
+            "IT_OPERATIONS",
+        ]
     )
+    initial = await bootstrap_identity(bootstrap_args, "StrongPass!123")
+    async with app.state.database.session_factory() as session:
+        bootstrap_audits = list(
+            await session.scalars(
+                select(AuditRecord).where(
+                    AuditRecord.event_type == "identity.initial_authority.bootstrapped"
+                )
+            )
+        )
+        assert len(bootstrap_audits) == 1
+        assert bootstrap_audits[0].entity_id == initial["actor_id"]
+        assert bootstrap_audits[0].actor_kind == "SYSTEM"
+        assert bootstrap_audits[0].correlation_id == initial["correlation_id"]
+        assert bootstrap_audits[0].event_metadata == {"role_refs": ["IT_ADMIN"]}
+    with pytest.raises(PlatformError) as repeated_bootstrap:
+        await bootstrap_identity(bootstrap_args, "StrongPass!123")
+    assert repeated_bootstrap.value.code == "IDENTITY_BOOTSTRAP_EXISTS"
     async with app.state.database.session_factory() as session, session.begin():
         session.add(
             EmployeeRecord(

@@ -82,9 +82,7 @@ async def bootstrap_identity(args: argparse.Namespace, password: str) -> dict[st
                 "division_code": args.division_code,
             }
         )
-        actor = result["actor"]
-        assert isinstance(actor, dict)
-        actor_id = str(actor["actor_id"])
+        actor_id = str(result["actor_id"])
         await audit.append(
             AuditEvent(
                 event_type="identity.initial_authority.bootstrapped",

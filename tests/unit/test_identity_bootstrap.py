@@ -1,10 +1,11 @@
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 
 import pytest
 
 from alos.authentication.memory import InMemoryAuthRepository
 from alos.authentication.service import AuthService, _resolve_default_permissions
-from alos.cli import build_parser
+from alos.cli import build_parser, main
 from alos.security.errors import PlatformError
 
 
@@ -58,6 +59,52 @@ def test_bootstrap_cli_has_no_password_or_override_argument() -> None:
     }
     assert "password" not in options
     assert "override" not in options
+
+
+def test_bootstrap_cli_prompts_password_and_prints_success(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "alos-admin",
+            "bootstrap-identity",
+            "--email",
+            "operator@example.test",
+            "--display-name",
+            "Operator",
+            "--tenant-id",
+            "tenant_operator",
+            "--organization-id",
+            "org_operator",
+            "--workspace-id",
+            "workspace_operator",
+            "--workspace-key",
+            "it",
+            "--workspace-name",
+            "IT",
+        ],
+    )
+    prompts = []
+
+    def password_prompt(prompt: str) -> str:
+        prompts.append(prompt)
+        return "StrongPass!123"
+
+    monkeypatch.setattr("alos.cli.getpass.getpass", password_prompt)
+    bootstrap = AsyncMock(
+        return_value={
+            "actor_id": "actor_operator",
+            "tenant_id": "tenant_operator",
+            "organization_id": "org_operator",
+            "workspace_id": "workspace_operator",
+        }
+    )
+    monkeypatch.setattr("alos.cli.bootstrap_identity", bootstrap)
+    assert main() == 0
+    bootstrap.assert_awaited_once()
+    assert prompts == ["Initial administrator password: ", "Confirm password: "]
+    output = capsys.readouterr()
+    assert "Initial identity authority created: actor=actor_operator" in output.out
+    assert "StrongPass!123" not in output.out + output.err
 
 
 def test_workspace_metadata_limits_default_permissions() -> None:
