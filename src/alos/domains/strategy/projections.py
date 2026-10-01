@@ -113,14 +113,16 @@ def project(value: object) -> JsonValue:
             "category": value.category,
             "name": value.name,
             "description": value.description,
-            "value": value.value,
+            "value": float(value.value) if isinstance(value.value, Decimal) else value.value,
             "unit": value.unit,
             "period": project(value.period),
             "scope": project(value.scope),
-            "source_ref": value.source_ref,
+            "source_ref": value.source_ref or None,
             "source_mode": value.source_mode,
             "evidence_refs": list(value.evidence_refs),
             "verification_state": value.verification_state.value,
+            "updated_at": project(value.updated_at),
+            "verification_reason": value.verification_reason,
             "owner_role_ref": value.owner_role_ref,
             "lifecycle_state": value.lifecycle_state.value,
         }
@@ -139,6 +141,8 @@ def project(value: object) -> JsonValue:
             "rule_snapshot": project(value.rule_snapshot),
             "constraint_snapshot": project(value.constraint_snapshot),
             "result_snapshot": project(value.result_snapshot),
+            "candidate_snapshot": project(value.candidate_snapshot),
+            "context_snapshot": project(value.context_snapshot),
             "input_hash": value.input_hash,
             "result_hash": value.result_hash,
             "created_by": value.created_by,
@@ -157,12 +161,16 @@ def project(value: object) -> JsonValue:
             "unit": value.unit,
             "period": project(value.period),
             "source_mode": value.source_mode,
-            "source_ref": value.source_ref,
+            "source_ref": value.source_ref or None,
             "actor_id": value.actor_id,
             "observed_at": project(value.observed_at),
             "verified_at": project(value.verified_at),
             "verification_state": value.verification_state.value,
             "evidence_refs": list(value.evidence_refs),
+            "recorded_at": project(value.recorded_at),
+            "record_sequence": value.record_sequence,
+            "supersedes_observation_id": value.supersedes_observation_id,
+            "verification_reason": value.verification_reason,
         }
         if value.verified_at is None:
             result.pop("verified_at")
@@ -208,6 +216,7 @@ def project(value: object) -> JsonValue:
             "evidence_refs": list(value.evidence_refs),
             "source_refs": list(value.source_refs),
             "cascade_run_id": value.cascade_run_id,
+            "kpi_definition_ref": value.kpi_definition_ref,
             "created_by": value.created_by,
             "created_at": project(value.created_at),
             "updated_at": project(value.updated_at),
@@ -231,6 +240,22 @@ def project(value: object) -> JsonValue:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     raise TypeError(f"Unsupported strategy projection type: {type(value).__name__}")
+
+
+def target_request(target: Target) -> dict[str, JsonValue]:
+    """Serialize explicit human metadata, excluding Backend-owned identity and lifecycle."""
+    data = project(target)
+    for field in (
+        "tenant_id",
+        "organization_id",
+        "lifecycle_state",
+        "created_by",
+        "created_at",
+        "updated_at",
+        "cascade_run_id",
+    ):
+        data.pop(field, None)
+    return data
 
 
 def project_domains(

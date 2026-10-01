@@ -49,24 +49,27 @@ class SqlAuditRepository:
 
     async def append(self, event: AuditEvent) -> None:
         async with self._session_factory() as session:
-            session.add(
-                AuditRecord(
-                    event_type=event.event_type,
-                    entity_type=event.entity_type,
-                    entity_id=event.entity_id,
-                    tenant_id=event.tenant_id,
-                    organization_id=event.organization_id,
-                    workspace_id=event.workspace_id,
-                    actor_id=event.actor_id,
-                    actor_kind=event.actor_kind,
-                    correlation_id=event.correlation_id,
-                    outcome=event.outcome,
-                    reason=event.reason,
-                    event_metadata=event.metadata,
-                    occurred_at=event.occurred_at,
-                )
-            )
+            await self.append_in_session(session, event)
             await session.commit()
+
+    async def append_in_session(self, session: AsyncSession, event: AuditEvent) -> None:
+        session.add(
+            AuditRecord(
+                event_type=event.event_type,
+                entity_type=event.entity_type,
+                entity_id=event.entity_id,
+                tenant_id=event.tenant_id,
+                organization_id=event.organization_id,
+                workspace_id=event.workspace_id,
+                actor_id=event.actor_id,
+                actor_kind=event.actor_kind,
+                correlation_id=event.correlation_id,
+                outcome=event.outcome,
+                reason=event.reason,
+                event_metadata=event.metadata,
+                occurred_at=event.occurred_at,
+            )
+        )
 
     async def list_events(
         self,

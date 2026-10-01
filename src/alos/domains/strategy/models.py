@@ -74,6 +74,7 @@ class CascadeStatus(StrEnum):
 class ScopeRef:
     type: str
     ref: str | None = None
+    label: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +82,7 @@ class Period:
     granularity: str
     starts_at: str
     ends_at: str
+    label: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +130,7 @@ class Objective:
     scope: ScopeRef = field(default_factory=lambda: ScopeRef("COMPANY"))
     owner_role_ref: str = "EXECUTIVE"
     lifecycle_state: LifecycleState = LifecycleState.DRAFT
+    created_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +162,7 @@ class Target:
     source_refs: tuple[str, ...] = ()
     evidence_refs: tuple[str, ...] = ()
     cascade_run_id: str | None = None
+    kpi_definition_ref: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,6 +185,10 @@ class Observation:
     organization_id: str = "unknown"
     owner_workspace_id: str = "unknown"
     correlation_id: str = "unknown"
+    recorded_at: datetime | None = None
+    record_sequence: int | None = None
+    supersedes_observation_id: str | None = None
+    verification_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +227,8 @@ class PlanningAssumption:
     correlation_id: str
     description: str | None = None
     lifecycle_state: LifecycleState = LifecycleState.DRAFT
+    updated_at: datetime | None = None
+    verification_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,6 +237,8 @@ class CascadeRule:
     rule_type: RuleType
     output_target_id: str
     parameters: dict[str, Any]
+    input_target_refs: tuple[tuple[str, int], ...] = ()
+    output_version: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,6 +290,8 @@ class CascadeRun:
     tenant_id: str
     organization_id: str
     owner_workspace_id: str
+    candidate_snapshot: tuple[dict[str, Any], ...] = ()
+    context_snapshot: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

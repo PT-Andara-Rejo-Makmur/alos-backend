@@ -6,10 +6,11 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, cast
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 
 from alos.api.public.strategy_contracts import (
     BusinessTargetCreateRequest,
+    BusinessTargetUpdateRequest,
     CascadeAcceptRequest,
     CascadePreviewRequest,
     MetricObservationCreateRequest,
@@ -17,6 +18,7 @@ from alos.api.public.strategy_contracts import (
     StrategicObjectiveCreateRequest,
     StrategyPlanCreateRequest,
     StrategyPlanUpdateRequest,
+    StrategyVerificationRequest,
     TargetRelationshipCreateRequest,
     TargetRevisionCreateRequest,
     request_contract,
@@ -41,6 +43,8 @@ from alos.domains.strategy.models import (
     VerificationState,
 )
 from alos.domains.strategy.projections import project, project_domains
+from alos.domains.strategy.read_model import plan_projection as _plan_projection
+from alos.domains.strategy.read_model import target_detail
 from alos.domains.strategy.service import StrategyService
 from alos.observability.correlation import current_correlation_id
 from alos.security.errors import PlatformError
@@ -53,11 +57,20 @@ def _service(request: Request) -> StrategyService:
 
 
 def _period(value: dict[str, Any]) -> Period:
-    return Period(str(value["granularity"]), str(value["starts_at"]), str(value["ends_at"]))
+    return Period(
+        str(value["granularity"]),
+        str(value["starts_at"]),
+        str(value["ends_at"]),
+        value.get("label"),
+    )
 
 
 def _scope(value: dict[str, Any]) -> ScopeRef:
-    return ScopeRef(str(value["type"]), None if value.get("ref") is None else str(value["ref"]))
+    return ScopeRef(
+        str(value["type"]),
+        None if value.get("ref") is None else str(value["ref"]),
+        value.get("label"),
+    )
 
 
 def _plan(payload: dict[str, Any], principal: CurrentPrincipalDependency) -> Plan:
@@ -114,46 +127,12 @@ def _target(
         correlation_id=current_correlation_id(),
         description=payload.get("description"),
         metric_code=payload.get("metric_code"),
+        kpi_definition_ref=payload.get("kpi_definition_ref"),
         materiality=str(payload.get("materiality", "NON_MATERIAL")),
         source_refs=tuple(payload.get("source_refs", ())),
         evidence_refs=tuple(payload.get("evidence_refs", ())),
         cascade_run_id=cascade_run_id,
     )
-
-
-def _plan_projection(plan: Plan, principal: CurrentPrincipalDependency) -> dict[str, Any]:
-    data = project(plan)
-    if data.get("strategic_plan_id") is None:
-        data.pop("strategic_plan_id", None)
-        data.pop("strategic_plan_version", None)
-    actions: list[str] = []
-    company_authority = (
-        plan.scope.type == "COMPANY"
-        and "EXECUTIVE" in principal.roles
-        and "strategy.company.manage" in principal.permissions
-    )
-    division_authority = (
-        plan.scope.type != "COMPANY"
-        and "DIVISION_LEAD" in principal.roles
-        and "strategy.division.manage" in principal.permissions
-        and plan.owner_workspace_id == principal.workspace_id
-    )
-    if plan.lifecycle_state is LifecycleState.DRAFT and (company_authority or division_authority):
-        actions.extend(("EDIT", "SUBMIT"))
-    if (
-        plan.lifecycle_state is LifecycleState.UNDER_REVIEW
-        and "EXECUTIVE" in principal.roles
-        and "strategy.approve" in principal.permissions
-    ):
-        actions.append("APPROVE")
-    if (
-        plan.lifecycle_state is LifecycleState.APPROVED
-        and "EXECUTIVE" in principal.roles
-        and "strategy.activate" in principal.permissions
-    ):
-        actions.append("ACTIVATE")
-    data["authorized_actions"] = project(actions)
-    return data
 
 
 @router.get("/authority")
@@ -186,9 +165,14 @@ async def create_plan(
 
 @router.get("/plans/{plan_id}")
 async def get_plan(
-    plan_id: str, request: Request, principal: CurrentPrincipalDependency
+    plan_id: str,
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    version: int | None = Query(None, ge=1),
 ) -> dict[str, Any]:
-    return _plan_projection(await _service(request).get_plan(principal, plan_id), principal)
+    return _plan_projection(
+        await _service(request).get_plan(principal, plan_id, version), principal
+    )
 
 
 @router.patch("/plans/{plan_id}", openapi_extra=request_contract(StrategyPlanUpdateRequest))
@@ -216,10 +200,21 @@ async def update_plan(
 
 @router.get("/objectives")
 async def list_objectives(
-    plan_id: str, request: Request, principal: CurrentPrincipalDependency
+    plan_id: str,
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    plan_version: int | None = Query(None, ge=1),
 ) -> list[dict[str, Any]]:
-    await _service(request).get_plan(principal, plan_id)
-    return project_domains(await _service(request).repository.list_objectives(plan_id))
+    plan = await _service(request).get_plan(principal, plan_id, plan_version)
+    return project_domains(
+        tuple(
+            item
+            for item in await _service(request).repository.list_objectives(plan_id)
+            if item.plan_version == plan.version
+            and item.tenant_id == principal.tenant_id
+            and item.organization_id == principal.organization_id
+        )
+    )
 
 
 @router.post(
@@ -274,34 +269,41 @@ async def create_target(
 
 @router.get("/targets/{target_id}")
 async def get_target(
-    target_id: str, request: Request, principal: CurrentPrincipalDependency
+    target_id: str,
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    version: int | None = Query(None, ge=1),
 ) -> dict[str, Any]:
-    target = await _service(request).get_target(principal, target_id)
-    relationships = await _service(request).repository.list_relationships(
-        target.tenant_id, target.organization_id
-    )
-    revisions = await _service(request).repository.list_revisions(target.target_id)
-    return {
-        "target": project(target),
-        "observations": project_domains(
-            await _service(request).repository.list_observations(target.target_id, target.version)
-        ),
-        "relationships": project_domains(
-            tuple(
-                item
-                for item in relationships
-                if target.target_id in {item.parent_target_id, item.child_target_id}
-            )
-        ),
-        "revisions": project_domains(revisions),
-    }
+    target = await _service(request).get_target(principal, target_id, version)
+    return await target_detail(_service(request), principal, target)
+
+
+@router.patch("/targets/{target_id}", openapi_extra=request_contract(BusinessTargetUpdateRequest))
+async def update_target(
+    target_id: str,
+    body: BusinessTargetUpdateRequest,
+    request: Request,
+    contracts: ContractCatalogDependency,
+    principal: CurrentPrincipalDependency,
+) -> dict[str, Any]:
+    payload = body.validated(contracts)
+    version = int(payload.pop("version"))
+    if "period" in payload:
+        payload["period"] = _period(payload["period"])
+    for name in ("source_refs", "evidence_refs"):
+        if name in payload:
+            payload[name] = tuple(payload[name])
+    return project(await _service(request).update_target(principal, target_id, version, payload))
 
 
 @router.get("/targets/{target_id}/observations")
 async def list_observations(
-    target_id: str, request: Request, principal: CurrentPrincipalDependency
+    target_id: str,
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    version: int | None = Query(None, ge=1),
 ) -> list[dict[str, Any]]:
-    target = await _service(request).get_target(principal, target_id)
+    target = await _service(request).get_target(principal, target_id, version)
     return project_domains(
         await _service(request).repository.list_observations(target.target_id, target.version)
     )
@@ -320,7 +322,9 @@ async def create_observation(
     principal: CurrentPrincipalDependency,
 ) -> dict[str, Any]:
     payload = body.validated(contracts)
-    target = await _service(request).get_target(principal, target_id)
+    target = await _service(request).get_target(
+        principal, target_id, int(payload["target_version"])
+    )
     if target_id != str(payload["target_id"]) or target.version != int(payload["target_version"]):
         raise PlatformError(
             "STRATEGY_PATH_MISMATCH",
@@ -339,7 +343,7 @@ async def create_observation(
         value=value,
         unit=str(payload["unit"]),
         period=_period(payload["period"]),
-        source_ref=str(payload.get("source_ref") or "manual"),
+        source_ref=str(payload.get("source_ref") or ""),
         source_mode=str(payload["source_mode"]),
         observed_at=datetime.fromisoformat(str(payload["observed_at"]).replace("Z", "+00:00")),
         verified_at=(
@@ -443,7 +447,7 @@ async def create_assumption(
         str(payload["unit"]),
         _period(payload["period"]),
         _scope(payload["scope"]),
-        str(payload.get("source_ref") or "manual"),
+        str(payload.get("source_ref") or ""),
         str(payload["source_mode"]),
         tuple(payload.get("evidence_refs", ())),
         VerificationState(str(payload.get("verification_state", "UNVERIFIED"))),
@@ -477,12 +481,22 @@ async def preview_cascade(
                 "Cascade rule is outside authenticated authority.",
                 status_code=403,
             )
+    if any(len(item["output_target_refs"]) != 1 for item in payload["rules"]):
+        raise PlatformError(
+            "STRATEGY_CASCADE_RULE_INVALID",
+            "Use one explicit calculation rule per output target.",
+            status_code=422,
+        )
     rules = tuple(
         CascadeRule(
             str(item["cascade_rule_id"]),
             RuleType(str(item["rule_type"])),
             str(item["output_target_refs"][0]["target_id"]),
             dict(item.get("parameters", {})),
+            tuple(
+                (str(ref["target_id"]), int(ref["version"])) for ref in item["input_target_refs"]
+            ),
+            int(item["output_target_refs"][0]["version"]),
         )
         for item in payload.get("rules", ())
     )
@@ -512,18 +526,58 @@ async def preview_cascade(
         constraints=constraints,
         correlation_id=current_correlation_id(),
         assumption_refs=tuple(str(item) for item in payload.get("assumption_refs", ())),
+        derived_targets=tuple(
+            _target(item, principal) for item in payload.get("derived_targets", ())
+        ),
     )
     projected = project(run)
     results = cast(list[dict[str, Any]], projected["result_snapshot"])
-    return {
+    response = {
         "cascade_run_id": run.cascade_run_id,
         "status": run.status.value,
         "root_target_ref": {"id": run.root_target_id, "version": run.root_target_version},
-        "derived_targets": [],
-        "calculation_trace": [item for item in results if "rule_id" in item],
-        "assumptions_used": [
-            item for item in run.assumption_snapshot.values() if isinstance(item, dict)
+        "derived_targets": [
+            {
+                "target_id": rule.output_target_id,
+                "version": rule.output_version,
+                "calculated_value": next(
+                    (
+                        item.get("output")
+                        for item in results
+                        if item.get("output_target_id") == rule.output_target_id
+                    ),
+                    None,
+                ),
+                "request": next(
+                    (
+                        item
+                        for item in run.candidate_snapshot
+                        if item["target_id"] == rule.output_target_id
+                    ),
+                    None,
+                ),
+                "required_metadata": []
+                if run.candidate_snapshot
+                else list(
+                    contracts.required_fields(
+                        "https://schemas.alos.dev/v1/strategy/business-target-create-request.schema.json"
+                    )
+                ),
+            }
+            for rule in rules
         ],
+        "calculation_trace": [item for item in results if "rule_id" in item],
+        "assumptions_used": project_domains(
+            tuple(
+                item
+                for item in await _service(request).repository.list_assumptions(
+                    principal.tenant_id, principal.organization_id
+                )
+                if item.assumption_id in run.assumption_snapshot
+                and run.assumption_snapshot[item.assumption_id] is not None
+                and item.version == run.assumption_snapshot[item.assumption_id]["version"]
+            )
+        ),
         "constraint_results": [
             {
                 "constraint_id": item["constraint_id"],
@@ -548,6 +602,10 @@ async def preview_cascade(
         "input_hash": run.input_hash,
         "result_hash": run.result_hash,
     }
+
+    return contracts.validate(
+        "https://schemas.alos.dev/v1/strategy/cascade-preview-response.schema.json", response
+    )
 
 
 @router.get("/cascade-runs/{cascade_run_id}")
@@ -578,7 +636,27 @@ async def accept_cascade(
         _target(item, principal, cascade_run_id=cascade_run_id)
         for item in payload.get("derived_targets", ())
     )
-    return project(await _service(request).accept_cascade(principal, cascade_run_id, targets))
+    return project(
+        await _service(request).accept_cascade(
+            principal,
+            cascade_run_id,
+            targets,
+            payload.get("input_hash"),
+            payload.get("result_hash"),
+        )
+    )
+
+
+@router.post("/plans/{plan_id}/archive")
+async def archive_plan(
+    plan_id: str,
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    version: int | None = Query(default=None, ge=1),
+) -> dict[str, Any]:
+    return _plan_projection(
+        await _service(request).archive_plan(principal, plan_id, version), principal
+    )
 
 
 @router.post("/plans/{plan_id}/submit")
@@ -627,3 +705,76 @@ async def create_revision(
         principal, target_id, str(payload["reason"]), current_correlation_id()
     )
     return {"revision": project(revision), "target": project(target)}
+
+
+@router.post(
+    "/targets/{target_id}/observations/{observation_id}/verification",
+    status_code=201,
+    openapi_extra=request_contract(StrategyVerificationRequest),
+)
+async def verify_observation(
+    target_id: str,
+    observation_id: str,
+    body: StrategyVerificationRequest,
+    request: Request,
+    contracts: ContractCatalogDependency,
+    principal: CurrentPrincipalDependency,
+    version: int | None = Query(default=None, ge=1),
+) -> dict[str, Any]:
+    payload = body.validated(contracts)
+    return project(
+        await _service(request).verify_observation(
+            principal,
+            target_id,
+            observation_id,
+            VerificationState(payload["verification_state"]),
+            payload["reason"],
+            current_correlation_id(),
+            version,
+        )
+    )
+
+
+@router.post(
+    "/assumptions/{assumption_id}/verification",
+    status_code=201,
+    openapi_extra=request_contract(StrategyVerificationRequest),
+)
+async def verify_assumption(
+    assumption_id: str,
+    body: StrategyVerificationRequest,
+    request: Request,
+    contracts: ContractCatalogDependency,
+    principal: CurrentPrincipalDependency,
+) -> dict[str, Any]:
+    payload = body.validated(contracts)
+    return project(
+        await _service(request).verify_assumption(
+            principal,
+            assumption_id,
+            VerificationState(payload["verification_state"]),
+            payload["reason"],
+            current_correlation_id(),
+        )
+    )
+
+
+@router.post("/targets/{target_id}/submit")
+async def submit_target(
+    target_id: str, request: Request, principal: CurrentPrincipalDependency
+) -> dict[str, Any]:
+    return project(await _service(request).transition_target(principal, target_id, "submit"))
+
+
+@router.post("/targets/{target_id}/approve")
+async def approve_target(
+    target_id: str, request: Request, principal: CurrentPrincipalDependency
+) -> dict[str, Any]:
+    return project(await _service(request).transition_target(principal, target_id, "approve"))
+
+
+@router.post("/targets/{target_id}/activate")
+async def activate_target(
+    target_id: str, request: Request, principal: CurrentPrincipalDependency
+) -> dict[str, Any]:
+    return project(await _service(request).transition_target(principal, target_id, "activate"))

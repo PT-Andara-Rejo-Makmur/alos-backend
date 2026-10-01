@@ -89,13 +89,13 @@ def target(identity: str, *, workspace: str = "executive", scope: str = "COMPANY
         identity,
         "plan-rkap",
         1,
-        "objective-growth",
-        1,
+        None,
+        None,
         "tenant-1",
         "org-1",
         workspace,
         "EXECUTIVE" if scope == "COMPANY" else "DIVISION_LEAD",
-        "COUNT",
+        "HIGHER_IS_BETTER",
         "COUNT",
         period(),
         ScopeRef(scope, None if scope == "COMPANY" else workspace),
@@ -423,7 +423,7 @@ async def test_preview_is_immutable_and_accept_creates_draft_only():
         root_target_id=root.target_id,
         root_target_version=1,
         rules=(CascadeRule("rule", RuleType.RATIO_DIVIDE_CEIL, "division", {}),),
-        rule_inputs={"rule": {"input": Decimal("5"), "ratio": Decimal("0.5")}},
+        rule_inputs={"rule": {"input": Decimal("10"), "ratio": Decimal("0.5")}},
         constraints=(Constraint("capacity", "CAPACITY", True, Decimal(10), Decimal(10)),),
         correlation_id="corr-preview",
     )
@@ -432,7 +432,7 @@ async def test_preview_is_immutable_and_accept_creates_draft_only():
     with pytest.raises(PlatformError) as incomplete_accept:
         await service.accept_cascade(actor, run.cascade_run_id, ())
     assert incomplete_accept.value.code == "STRATEGY_CASCADE_TARGET_INVALID"
-    derived = target("division", workspace="sales", scope="DIVISION")
+    derived = target("division")
     accepted = await service.accept_cascade(actor, run.cascade_run_id, (derived,))
     assert accepted.status is CascadeStatus.ACCEPTED
     stored = await repository.get_target("division")
@@ -440,7 +440,7 @@ async def test_preview_is_immutable_and_accept_creates_draft_only():
     assert stored.cascade_run_id == run.cascade_run_id
     derived_observations = await repository.list_observations("division", 1)
     assert len(derived_observations) == 1
-    assert derived_observations[0].value == Decimal("10")
+    assert derived_observations[0].value == Decimal("20")
     assert derived_observations[0].verification_state is VerificationState.VERIFIED
     await service.submit_plan(actor, "plan-rkap")
     await service.approve_plan(actor, "plan-rkap")
@@ -497,8 +497,9 @@ async def test_manual_observation_is_evidenced_persistent_and_kind_safe():
         owner_workspace_id=actor.workspace_id,
         correlation_id="corr-observation",
     )
-    await service.create_observation(actor, observation)
-    assert await repository.list_observations("target-observed", 1) == (observation,)
+    stored = await service.create_observation(actor, observation)
+    assert stored.recorded_at is not None
+    assert await repository.list_observations("target-observed", 1) == (stored,)
     assert observation.kind is ObservationKind.TARGET
     assert observation.value == Decimal("10.25")
 

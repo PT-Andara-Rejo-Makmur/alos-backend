@@ -44,6 +44,12 @@ class CanonicalContractCatalog:
     def has_schema(self, schema_id: str) -> bool:
         return schema_id in self._documents
 
+    def required_fields(self, schema_id: str) -> tuple[str, ...]:
+        document = self._documents.get(schema_id)
+        if document is None:
+            raise ValueError(f"Canonical schema is not available: {schema_id}")
+        return tuple(document.get("required", ()))
+
     def enum_values(self, schema_id: str, definition: str) -> tuple[str, ...]:
         schema = self._documents.get(schema_id)
         if schema is None:

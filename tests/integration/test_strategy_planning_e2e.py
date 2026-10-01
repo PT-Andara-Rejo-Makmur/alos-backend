@@ -25,6 +25,7 @@ from alos.identity import Principal
 from alos.main import create_app
 from alos.persistence.models import AuditRecord, WorkspaceMembershipRecord
 from alos.persistence.strategy_models import StrategyTargetRecord
+from alos.security.errors import PlatformError
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
 
@@ -392,7 +393,7 @@ async def test_persistent_strategy_api_vertical_slice_and_scope_security(
         },
     )
     assert assumption.status_code == 201, assumption.text
-    assert assumption.json()["value"] == "0.3"
+    assert assumption.json()["value"] == 0.3
 
     before_preview = await client.get("/api/v1/strategy/targets", headers=headers)
     assert before_preview.status_code == 200
@@ -720,3 +721,385 @@ async def test_persistent_strategy_failure_states_block_closed(
                 context.executive, plan_id, (constraint,)
             )
         assert getattr(blocked.value, "code", None) == "STRATEGY_CONSTRAINT_BLOCKED"
+
+
+async def _preview_candidate(
+    context: StrategyContext, suffix: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    plan_id, root_id, derived_id = (
+        f"plan.{suffix}",
+        f"target.root.{suffix}",
+        f"target.derived.{suffix}",
+    )
+    await _create_plan_target(context, plan_id, root_id)
+    candidate = _target_payload(derived_id, plan_id)
+    response = await context.client.post(
+        "/api/v1/strategy/cascade/preview",
+        headers=context.executive_headers,
+        json={
+            "root_target_ref": {"target_id": root_id, "version": 1},
+            "rules": [
+                {
+                    "cascade_rule_id": f"rule.{suffix}",
+                    "tenant_id": "tenant_strategy_e2e",
+                    "organization_id": "org_strategy_e2e",
+                    "version": 1,
+                    "rule_type": "DIRECT",
+                    "input_target_refs": [{"target_id": root_id, "version": 1}],
+                    "output_target_refs": [{"target_id": derived_id, "version": 1}],
+                    "parameters": {},
+                }
+            ],
+            "rule_inputs": {},
+            "assumption_refs": [],
+            "constraints": [],
+            "derived_targets": [candidate],
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "VALID"
+    assert body["derived_targets"][0]["required_metadata"] == []
+    assert body["derived_targets"][0]["calculated_value"] == "7"
+    return body, candidate
+
+
+async def test_postgres_active_observations_are_append_only_and_version_bound(
+    strategy_context: StrategyContext,
+) -> None:
+    context = strategy_context
+    plan_id, target_id = "plan.monitoring.persistent", "target.monitoring.persistent"
+    await _create_plan_target(context, plan_id, target_id)
+    for action in ("submit", "approve", "activate"):
+        response = await context.client.post(
+            f"/api/v1/strategy/plans/{plan_id}/{action}", headers=context.executive_headers
+        )
+        assert response.status_code == 200, response.text
+    for kind in ("ACTUAL", "FORECAST"):
+        payload = {
+            **_observation_payload(f"observation.{kind}.persistent", target_id, verified=False),
+            "kind": kind,
+            "verification_state": "PENDING_VERIFICATION",
+        }
+        response = await context.client.post(
+            f"/api/v1/strategy/targets/{target_id}/observations",
+            headers=context.executive_headers,
+            json=payload,
+        )
+        assert response.status_code == 201, response.text
+        assert response.json()["record_sequence"] >= 2
+        duplicate = await context.client.post(
+            f"/api/v1/strategy/targets/{target_id}/observations",
+            headers=context.executive_headers,
+            json={**payload, "value": 999},
+        )
+        assert duplicate.status_code == 409
+    target_attempt = await context.client.post(
+        f"/api/v1/strategy/targets/{target_id}/observations",
+        headers=context.executive_headers,
+        json=_observation_payload("observation.illegal.planning", target_id),
+    )
+    assert target_attempt.status_code == 409
+    verified_claim = await context.client.post(
+        f"/api/v1/strategy/targets/{target_id}/observations",
+        headers=context.executive_headers,
+        json={
+            **_observation_payload("observation.forged.verification", target_id),
+            "kind": "ACTUAL",
+        },
+    )
+    assert verified_claim.status_code == 403
+    missing_grant = await context.client.post(
+        f"/api/v1/strategy/targets/{target_id}/observations/observation.ACTUAL.persistent/verification",
+        headers=context.executive_headers,
+        json={"verification_state": "VERIFIED", "reason": "Monitoring evidence reviewed"},
+    )
+    assert missing_grant.status_code == 403
+    for headers in (context.cross_org_headers, context.cross_tenant_headers, context.sales_headers):
+        attack = await context.client.post(
+            f"/api/v1/strategy/targets/{target_id}/observations",
+            headers=headers,
+            json={
+                **_observation_payload("observation.foreign.attack", target_id, verified=False),
+                "kind": "ACTUAL",
+            },
+        )
+        assert attack.status_code == 403
+    before = await context.client.get(
+        f"/api/v1/strategy/targets/{target_id}?version=1", headers=context.executive_headers
+    )
+    assert len(before.json()["observations"]) == 3
+    assert before.json()["selected_observations"]["actual"]["value"] == "7"
+    revised = await context.client.post(
+        f"/api/v1/strategy/targets/{target_id}/revisions",
+        headers=context.executive_headers,
+        json={"reason": "Revised evidenced planning basis"},
+    )
+    assert revised.status_code == 201, revised.text
+    old = await context.client.get(
+        f"/api/v1/strategy/targets/{target_id}?version=1", headers=context.executive_headers
+    )
+    latest = await context.client.get(
+        f"/api/v1/strategy/targets/{target_id}", headers=context.executive_headers
+    )
+    assert old.json()["target"]["lifecycle_state"] == "ACTIVE"
+    assert len(old.json()["observations"]) == 3
+    assert latest.json()["target"]["version"] == 2 and latest.json()["observations"] == []
+    payload = {
+        **_observation_payload("observation.revised.target", target_id),
+        "target_version": 2,
+        "value": 14,
+    }
+    saved = await context.client.post(
+        f"/api/v1/strategy/targets/{target_id}/observations",
+        headers=context.executive_headers,
+        json=payload,
+    )
+    assert saved.status_code == 201, saved.text
+    for action in ("submit", "approve", "activate"):
+        changed = await context.client.post(
+            f"/api/v1/strategy/targets/{target_id}/{action}", headers=context.executive_headers
+        )
+        assert changed.status_code == 200, changed.text
+    old = await context.client.get(
+        f"/api/v1/strategy/targets/{target_id}?version=1", headers=context.executive_headers
+    )
+    assert old.json()["target"]["lifecycle_state"] == "SUPERSEDED"
+    assert len(old.json()["observations"]) == 3
+    restarted = create_app(context.app.state.settings)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=restarted), base_url="http://restart"
+    ) as client:
+        persisted = await client.get(
+            f"/api/v1/strategy/targets/{target_id}?version=1", headers=context.executive_headers
+        )
+        assert len(persisted.json()["observations"]) == 3
+    await restarted.state.database.dispose()
+
+
+async def test_postgres_verification_retains_original_and_superseding_record(
+    strategy_context: StrategyContext,
+) -> None:
+    context = strategy_context
+    plan_id, target_id = "plan.verification.persistent", "target.verification.persistent"
+    await _create_plan_target(context, plan_id, target_id, verified=False)
+    response = await context.client.post(
+        f"/api/v1/strategy/targets/{target_id}/observations/observation.{target_id}/verification",
+        headers=context.executive_headers,
+        json={
+            "verification_state": "VERIFIED",
+            "reason": "Planning evidence independently reviewed",
+        },
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["supersedes_observation_id"] == f"observation.{target_id}"
+    detail = await context.client.get(
+        f"/api/v1/strategy/targets/{target_id}", headers=context.executive_headers
+    )
+    assert len(detail.json()["observations"]) == 2
+    assert {item["verification_state"] for item in detail.json()["observations"]} == {
+        "UNVERIFIED",
+        "VERIFIED",
+    }
+    for action in ("submit", "approve", "activate"):
+        response = await context.client.post(
+            f"/api/v1/strategy/plans/{plan_id}/{action}", headers=context.executive_headers
+        )
+        assert response.status_code == 200, response.text
+
+
+async def test_postgres_cascade_metadata_hash_identity_and_duplicate_guards(
+    strategy_context: StrategyContext,
+) -> None:
+    context = strategy_context
+    preview, candidate = await _preview_candidate(context, "integrity.persistent")
+    path = f"/api/v1/strategy/cascade-runs/{preview['cascade_run_id']}/accept"
+    canonical = {
+        "derived_targets": [candidate],
+        "input_hash": preview["input_hash"],
+        "result_hash": preview["result_hash"],
+    }
+    for changed in (
+        {**candidate, "name": "Tampered"},
+        {**candidate, "target_id": "target.mismatched.persistent"},
+        {**candidate, "owner_workspace_id": "workspace_other_org"},
+    ):
+        rejected = await context.client.post(
+            path,
+            headers=context.executive_headers,
+            json={**canonical, "derived_targets": [changed]},
+        )
+        assert rejected.status_code in {403, 409}, rejected.text
+    hash_attack = await context.client.post(
+        path,
+        headers=context.executive_headers,
+        json={**canonical, "result_hash": "sha256:" + "0" * 64},
+    )
+    assert hash_attack.status_code == 409
+    for headers in (
+        context.cross_org_headers,
+        context.cross_tenant_headers,
+        context.unrelated_headers,
+    ):
+        rejected = await context.client.post(path, headers=headers, json=canonical)
+        assert rejected.status_code == 403, rejected.text
+    responses = await asyncio.gather(
+        *(
+            context.client.post(path, headers=context.executive_headers, json=canonical)
+            for _ in range(2)
+        )
+    )
+    assert sorted(item.status_code for item in responses) == [200, 409]
+    detail = await context.client.get(
+        f"/api/v1/strategy/targets/{candidate['target_id']}", headers=context.executive_headers
+    )
+    assert len(detail.json()["observations"]) == 1
+    run = await context.client.get(
+        f"/api/v1/strategy/cascade-runs/{preview['cascade_run_id']}",
+        headers=context.executive_headers,
+    )
+    assert run.json()["input_hash"] == preview["input_hash"]
+    assert run.json()["result_hash"] == preview["result_hash"]
+
+
+async def test_postgres_cascade_and_audit_failure_roll_back_atomically(
+    strategy_context: StrategyContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = strategy_context
+    preview, candidate = await _preview_candidate(context, "rollback.persistent")
+
+    async def fail_audit(event):
+        raise PlatformError("AUDIT_UNAVAILABLE", "Audit storage failed", status_code=503)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(context.app.state.strategy_service.audit, "append", fail_audit)
+        response = await context.client.post(
+            f"/api/v1/strategy/cascade-runs/{preview['cascade_run_id']}/accept",
+            headers=context.executive_headers,
+            json={"derived_targets": [candidate]},
+        )
+    assert response.status_code == 503
+    assert await context.app.state.strategy_repository.get_target(candidate["target_id"]) is None
+    assert (
+        await context.app.state.strategy_repository.list_observations(candidate["target_id"], 1)
+        == ()
+    )
+    run = await context.client.get(
+        f"/api/v1/strategy/cascade-runs/{preview['cascade_run_id']}",
+        headers=context.executive_headers,
+    )
+    assert run.json()["status"] == "VALID"
+
+
+async def test_postgres_activation_failure_has_no_partial_active_targets(
+    strategy_context: StrategyContext,
+) -> None:
+    context = strategy_context
+    plan_id, first, second = "plan.atomic.activation", "target.atomic.first", "target.atomic.second"
+    await _create_plan_target(context, plan_id, first)
+    created = await context.client.post(
+        "/api/v1/strategy/targets",
+        headers=context.executive_headers,
+        json=_target_payload(second, plan_id),
+    )
+    assert created.status_code == 201
+    for action in ("submit", "approve"):
+        response = await context.client.post(
+            f"/api/v1/strategy/plans/{plan_id}/{action}", headers=context.executive_headers
+        )
+        assert response.status_code == 200
+    failed = await context.client.post(
+        f"/api/v1/strategy/plans/{plan_id}/activate", headers=context.executive_headers
+    )
+    assert failed.status_code == 409
+    for identity in (first, second):
+        retained = await context.client.get(
+            f"/api/v1/strategy/targets/{identity}", headers=context.executive_headers
+        )
+        assert retained.json()["target"]["lifecycle_state"] == "DRAFT"
+
+
+async def test_postgres_executive_projection_is_canonical_and_scoped(
+    strategy_context: StrategyContext,
+) -> None:
+    context = strategy_context
+    response = await context.client.get(
+        "/api/v1/executive/overview", headers=context.executive_headers
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["strategy"]["status"] == "CONNECTED" and body["strategy"]["authoritative"] is True
+    assert body["last_updated_at"] is not None
+    assert body["shared_work"]["status"] == "UNAVAILABLE"
+    assert all(
+        item["status"] == "UNAVAILABLE" and item["sources"] == [] for item in body["domains"]
+    )
+    assert all(
+        item["target"]["tenant_id"] == body["tenant_id"]
+        and item["target"]["organization_id"] == body["organization_id"]
+        for item in body["strategy_data"]["targets"]
+    )
+    schema = "https://schemas.alos.dev/v1/executive/executive-overview-projection.schema.json"
+    context.app.state.factory_contracts.validate(schema, body)
+    denied = await context.client.get("/api/v1/executive/overview", headers=context.sales_headers)
+    assert denied.status_code == 403
+    empty = await context.client.get(
+        "/api/v1/executive/overview", headers=context.cross_org_headers
+    )
+    assert empty.status_code == 200
+    assert empty.json()["strategy"]["status"] == "CONNECTED_EMPTY"
+    assert empty.json()["last_updated_at"] is None
+
+
+async def test_postgres_plan_version_closure_and_archive_preserve_measurements(
+    strategy_context: StrategyContext,
+) -> None:
+    context = strategy_context
+    plan_id, target_id = "plan.version-closure", "target.version-closure"
+    await _create_plan_target(context, plan_id, target_id)
+    for action in ("submit", "approve", "activate"):
+        result = await context.client.post(
+            f"/api/v1/strategy/plans/{plan_id}/{action}", headers=context.executive_headers
+        )
+        assert result.status_code == 200, result.text
+    next_plan = {**_plan_payload(plan_id), "version": 2}
+    created = await context.client.post(
+        "/api/v1/strategy/plans", headers=context.executive_headers, json=next_plan
+    )
+    assert created.status_code == 201, created.text
+    assert (
+        await context.client.post(
+            f"/api/v1/strategy/plans/{plan_id}/archive", headers=context.executive_headers
+        )
+    ).status_code == 409
+    for action in ("submit", "approve", "activate"):
+        result = await context.client.post(
+            f"/api/v1/strategy/plans/{plan_id}/{action}", headers=context.executive_headers
+        )
+        assert result.status_code == 200, result.text
+    old = await context.client.get(
+        f"/api/v1/strategy/plans/{plan_id}?version=1", headers=context.executive_headers
+    )
+    assert old.json()["lifecycle_state"] == "SUPERSEDED"
+    target = await context.client.get(
+        f"/api/v1/strategy/targets/{target_id}?version=1", headers=context.executive_headers
+    )
+    assert target.json()["target"]["lifecycle_state"] == "SUPERSEDED"
+    assert len(target.json()["observations"]) == 1
+    denied = await context.client.post(
+        f"/api/v1/strategy/plans/{plan_id}/archive", headers=context.unrelated_headers
+    )
+    assert denied.status_code == 403
+    archived = await context.client.post(
+        f"/api/v1/strategy/plans/{plan_id}/archive", headers=context.executive_headers
+    )
+    assert archived.status_code == 200 and archived.json()["lifecycle_state"] == "ARCHIVED"
+    assert (
+        await context.client.post(
+            f"/api/v1/strategy/plans/{plan_id}/activate", headers=context.executive_headers
+        )
+    ).status_code == 409
+    plans = await context.client.get("/api/v1/strategy/plans", headers=context.executive_headers)
+    assert not any(
+        item["plan_id"] == plan_id and item["lifecycle_state"] == "ACTIVE" for item in plans.json()
+    )

@@ -84,3 +84,11 @@ def request_contract(model: type[StrategyRequest]) -> dict[str, Any]:
             },
         }
     }
+
+
+class BusinessTargetUpdateRequest(StrategyRequest):
+    schema_file = "business-target-update-request.schema.json"
+
+
+class StrategyVerificationRequest(StrategyRequest):
+    schema_file = "strategy-verification-request.schema.json"

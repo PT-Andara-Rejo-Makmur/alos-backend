@@ -77,10 +77,11 @@ def _rehydrate[DomainT: StrategyDomain](domain: type[DomainT], payload: dict[str
         "rule_snapshot",
         "constraint_snapshot",
         "result_snapshot",
+        "candidate_snapshot",
     ):
         if isinstance(payload.get(key), list):
             payload[key] = tuple(payload[key])
-    for key in ("created_at", "updated_at", "observed_at", "verified_at"):
+    for key in ("created_at", "updated_at", "observed_at", "verified_at", "recorded_at"):
         timestamp = payload.get(key)
         if isinstance(timestamp, str):
             payload[key] = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
@@ -108,7 +109,11 @@ class StrategyPayloadRecord:
         workspace = data.get("owner_workspace_id") or data.get("owner_workspace_ref") or "company"
         keys = cls.primary_values(data)
         created_at = (
-            data.get("created_at") or data.get("observed_at") or datetime.now().astimezone()
+            data.get("created_at")
+            or data.get("recorded_at")
+            or data.get("updated_at")
+            or data.get("observed_at")
+            or datetime.now().astimezone()
         )
         record = cls()
         for key, item in keys.items():

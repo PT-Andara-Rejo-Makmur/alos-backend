@@ -13,6 +13,7 @@ from alos.api.internal.routes import router as internal_router
 from alos.api.models import HealthResponse, ReadinessResponse
 from alos.api.public.domain_routes import router as domain_data_router
 from alos.api.public.domain_routes import workspace_navigation_router
+from alos.api.public.executive_routes import router as executive_router
 from alos.api.public.release_routes import router as release_router
 from alos.api.public.routes import router as public_router
 from alos.api.public.shared_work_routes import router as shared_work_router
@@ -25,8 +26,10 @@ from alos.capabilities.registry import CapabilityRegistry
 from alos.config import Settings, get_settings
 from alos.contracts import CanonicalContractCatalog
 from alos.domains.crud import DomainCrudService
+from alos.domains.executive.service import ExecutiveProjectionService
 from alos.domains.shared_work import SharedWorkService
 from alos.domains.strategy import InMemoryStrategyRepository, SqlStrategyRepository, StrategyService
+from alos.domains.strategy.repository import SqlStrategyAuditRepository
 from alos.evidence import EvidenceRegistry, SqlEvidenceRegistry
 from alos.integrations import ExternalRetrievalPolicy, ExternalRetrievalService
 from alos.notifications import InMemoryEmailAdapter, NotificationService, SmtpEmailAdapter
@@ -228,9 +231,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if resolved.APP_ENV == "test"
         else SqlStrategyRepository(app.state.database.session_factory)
     )
+    if isinstance(strategy_repository, SqlStrategyRepository):
+        strategy_audit = SqlStrategyAuditRepository(strategy_repository)
     app.state.strategy_audit = strategy_audit
     app.state.strategy_repository = strategy_repository
-    app.state.strategy_service = StrategyService(strategy_repository, strategy_audit)
+    app.state.strategy_service = StrategyService(
+        strategy_repository, strategy_audit, auth_repository.workspace
+    )
+    app.state.executive_service = ExecutiveProjectionService(app.state.strategy_service)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=resolved.cors_allowed_origins,
@@ -261,6 +269,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(workspace_navigation_router)
     app.include_router(release_router)
     app.include_router(strategy_router)
+    app.include_router(executive_router)
     app.include_router(internal_router)
     return app
 

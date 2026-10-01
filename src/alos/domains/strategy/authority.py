@@ -9,6 +9,7 @@ _ROLE_BY_ACTION = {
     "review": frozenset({"EXECUTIVE"}),
     "approve": frozenset({"EXECUTIVE"}),
     "activate": frozenset({"EXECUTIVE"}),
+    "verify_monitoring": frozenset({"EXECUTIVE", "DIVISION_LEAD"}),
 }
 _PERMISSION_BY_ACTION = {
     "read": "strategy.read",
@@ -17,6 +18,7 @@ _PERMISSION_BY_ACTION = {
     "review": "strategy.review",
     "approve": "strategy.approve",
     "activate": "strategy.activate",
+    "verify_monitoring": "strategy.observation.verify",
 }
 
 
