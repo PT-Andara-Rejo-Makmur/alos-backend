@@ -1,8 +1,9 @@
 """Canonical Executive projection endpoint."""
 
-from typing import Any, cast
+from typing import cast
 
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 
 from alos.dependencies import ContractCatalogDependency, CurrentPrincipalDependency
 from alos.domains.executive.service import ExecutiveProjectionService
@@ -14,10 +15,11 @@ SCHEMA = "https://schemas.alos.dev/v1/executive/executive-overview-projection.sc
 
 @router.get(
     "/overview",
+    response_model=None,
     openapi_extra={
         "responses": {
             "200": {
-                "description": "Governed Strategy read projection",
+                "description": "Governed Strategy and Shared Work read projection",
                 "content": {"application/json": {"schema": {"$ref": SCHEMA}}},
             }
         }
@@ -25,12 +27,12 @@ SCHEMA = "https://schemas.alos.dev/v1/executive/executive-overview-projection.sc
 )
 async def get_overview(
     request: Request, contracts: ContractCatalogDependency, principal: CurrentPrincipalDependency
-) -> dict[str, Any]:
+) -> JSONResponse:
     projection = await cast(
         ExecutiveProjectionService, request.app.state.executive_service
     ).overview(principal)
     try:
-        return contracts.validate(SCHEMA, projection)
+        return JSONResponse(content=contracts.validate(SCHEMA, dict(projection)))
     except ValueError as exc:
         raise PlatformError(
             "CONTRACTS_UNAVAILABLE",

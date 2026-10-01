@@ -39,7 +39,35 @@ Input hash binds inputs, rules, assumptions, constraints, complete candidate met
 
 ## Executive API
 
-GET /api/v1/executive/overview requires EXECUTIVE plus strategy.read. It returns the canonical ExecutiveOverviewProjection with strategy_data from authoritative Strategy state. CONNECTED means retrieval succeeded with data; CONNECTED_EMPTY means retrieval succeeded with no data; ERROR means retrieval failed. Other integrations report UNAVAILABLE. Timestamps use known persisted Strategy updates only, and remain null when unknown. No Executive table, synchronization job or copied operational data exists.
+GET /api/v1/executive/overview requires EXECUTIVE, strategy.read and work.read. It returns
+the canonical ExecutiveOverviewProjection with strategy_data from authoritative Strategy
+and shared_work_data from SharedWorkService.executive_summary. CONNECTED means a
+successful read with data; CONNECTED_EMPTY means a successful empty read; ERROR means
+retrieval failed; UNAVAILABLE means projection capability is not implemented. Failed
+sources have null payloads while independent successful sources remain available.
+Authorization and authentication failures propagate as 403 and 401; missing/invalid
+contracts fail closed with 503.
+
+Shared Work retains its tenant, organization and active workspace visibility. Company
+Strategy access does not grant access to every Shared Work workspace. Company work is
+visible when its existing entity-workspace links include the active Executive workspace;
+documents retain their existing workspace ownership. The service aggregates all visible
+records in a PostgreSQL read-only repeatable-read transaction. Exact counts are separate
+from previews, which are capped at 50 canonical records each. Priority previews show
+pending approvals, unresolved findings, and overdue tasks first. No lifecycle is changed.
+
+Pending approvals count only PENDING. RETURNED, REJECTED and HELD retain their distinct
+statuses (HOLD remains the canonical decision for HELD). Active findings exclude VERIFIED
+and CLOSED, and critical/high filtering uses severity enums only. Overdue tasks require
+due_at and exclude COMPLETED/CANCELLED. The UI uses the accurate label Temuan Aktif;
+findings are not reinterpreted as a business risk score.
+
+Timestamps use persisted entity updated_at and approval decided_at/requested_at. The
+overview timestamp is the maximum known source timestamp, with null when unknown.
+SALES, PROPERTY, FINANCE, LEGAL, HR and IT stay UNAVAILABLE. No Executive table,
+synchronization job, business metric or copied operational data exists. No migration is
+needed. See tests/integration/test_executive_overview.py for persisted isolation,
+counts, partial failures and workspace switching proof.
 
 ## Persistence and contracts
 

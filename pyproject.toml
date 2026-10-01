@@ -55,7 +55,7 @@ ignore = ["S101"]
 python_version = "3.12"
 strict = true
 packages = ["alos"]
-mypy_path = ["src"]
+mypy_path = ["src", "../alos-contracts/generated/python"]
 exclude = ["migrations"]
 plugins = ["pydantic.mypy"]
 

@@ -6,15 +6,30 @@ import asyncio
 from collections import Counter
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import uuid4
 
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import MetaData, Table, and_, delete, exists, func, insert, or_, select, update
+from sqlalchemy import (
+    MetaData,
+    Table,
+    and_,
+    delete,
+    exists,
+    func,
+    insert,
+    or_,
+    select,
+    text,
+    update,
+)
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from alos.identity import Principal
 from alos.security.errors import PlatformError
+
+if TYPE_CHECKING:
+    from executive_contracts import ExecutiveSharedWorkSummary
 
 
 class SharedWorkService:
@@ -1086,6 +1101,101 @@ class SharedWorkService:
             raise PlatformError(
                 "WORKSPACE_ACCESS_DENIED", "Active workspace is unavailable.", status_code=403
             )
+
+    async def executive_summary(self, principal: Principal) -> ExecutiveSharedWorkSummary:
+        """Read existing workspace authority, with exact counts and bounded entity previews.
+
+        Executive company context never overrides entity workspace links. All queries share
+        a read-only repeatable snapshot; no entity or lifecycle is copied or mutated.
+        """
+        if not principal.active or "EXECUTIVE" not in principal.roles:
+            raise PlatformError("EXECUTIVE_ROLE_DENIED", "Executive access is required.",
+                                status_code=403)
+        if "work.read" not in principal.permissions:
+            raise PlatformError("WORK_PERMISSION_DENIED", "Shared Work read is required.",
+                                status_code=403)
+        counts: dict[str, int] = {}
+        result: dict[str, Any] = {"counts": counts}
+        times: list[datetime] = []
+        now = datetime.now(UTC)
+        specifications = (
+            ("projects", "projects", "project_workspaces", "project_id"),
+            ("tasks", "tasks", "task_workspaces", "task_id"),
+            ("approvals", "work_approvals", "work_approval_workspaces", "approval_id"),
+            ("findings", "work_findings", "work_finding_workspaces", "finding_id"),
+            ("reports", "work_reports", "work_report_workspaces", "report_id"),
+            ("documents", "documents", None, "document_id"),
+        )
+        async with self._session_factory() as session, session.begin():
+            await session.execute(
+                text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            )
+            await self._verify_workspace(session, principal)
+            for name, table_name, link_name, identifier in specifications:
+                table = await self._table(session, table_name)
+                if link_name is None:
+                    predicates = self._document_scope(table, principal)
+                else:
+                    link = await self._table(session, link_name)
+                    predicates = self._visible(table, link, identifier, principal)
+                metrics: dict[str, Any] = {}
+                priority: list[Any] = []
+                if name == "projects":
+                    metrics = {
+                        "active_projects": table.c.status == "ACTIVE",
+                        "on_hold_projects": table.c.status == "ON_HOLD",
+                        "completed_projects": table.c.status == "COMPLETED",
+                    }
+                elif name == "tasks":
+                    active = table.c.status.not_in(("COMPLETED", "CANCELLED"))
+                    metrics = {
+                        "overdue_tasks": and_(active, table.c.due_at < now),
+                        "blocked_tasks": table.c.status == "BLOCKED",
+                        "critical_tasks": and_(active, table.c.priority == "CRITICAL"),
+                        "pending_review_tasks": table.c.status == "UNDER_REVIEW",
+                    }
+                    priority = [metrics["overdue_tasks"].desc().nulls_last()]
+                elif name == "approvals":
+                    predicates = (*predicates, table.c.subject_type.in_(self._approval_subjects))
+                    metrics = {"pending_approvals": table.c.status == "PENDING"}
+                    priority = [metrics["pending_approvals"].desc()]
+                elif name == "findings":
+                    active = table.c.status.in_(
+                        ("OPEN", "ASSIGNED", "IN_PROGRESS", "PENDING_VERIFICATION")
+                    )
+                    metrics = {
+                        "open_findings": table.c.status == "OPEN",
+                        "active_findings": active,
+                        "critical_findings": and_(active, table.c.severity == "CRITICAL"),
+                        "high_findings": and_(active, table.c.severity == "HIGH"),
+                        "pending_verification_findings": table.c.status == "PENDING_VERIFICATION",
+                    }
+                    priority = [active.desc(), (table.c.severity == "CRITICAL").desc()]
+                updated = (
+                    func.coalesce(table.c.decided_at, table.c.requested_at)
+                    if name == "approvals" else table.c.updated_at
+                )
+                aggregate = (await session.execute(
+                    select(
+                        func.count().label(name),
+                        *(func.count().filter(condition).label(key)
+                          for key, condition in metrics.items()),
+                        func.max(updated).label("last_updated_at"),
+                    ).select_from(table).where(*predicates)
+                )).mappings().one()
+                counts.update({key: int(aggregate[key]) for key in (name, *metrics)})
+                if aggregate["last_updated_at"] is not None:
+                    times.append(aggregate["last_updated_at"])
+                rows = (await session.execute(
+                    select(table).where(*predicates)
+                    .order_by(*priority, updated.desc(), table.c[identifier]).limit(50)
+                )).mappings().all()
+                result[name] = [
+                    self._document_projection(dict(row)) if name == "documents"
+                    else self._projection(dict(row), principal) for row in rows
+                ]
+        result["last_updated_at"] = max(times).isoformat() if times else None
+        return cast("ExecutiveSharedWorkSummary", result)
 
     async def list_projects(
         self, principal: Principal, *, status: str | None, search: str | None

@@ -1124,7 +1124,7 @@ async def test_postgres_executive_projection_is_canonical_and_scoped(
     body = response.json()
     assert body["strategy"]["status"] == "CONNECTED" and body["strategy"]["authoritative"] is True
     assert body["last_updated_at"] is not None
-    assert body["shared_work"]["status"] == "UNAVAILABLE"
+    assert body["shared_work"]["status"] == "CONNECTED_EMPTY"
     assert body["shared_work"]["authoritative"] is True
     assert body["shared_work"]["last_updated_at"] is None
     assert all(

@@ -238,7 +238,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.strategy_service = StrategyService(
         strategy_repository, strategy_audit, auth_repository.workspace
     )
-    app.state.executive_service = ExecutiveProjectionService(app.state.strategy_service)
+    app.state.executive_service = ExecutiveProjectionService(
+        app.state.strategy_service, app.state.shared_work_service
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=resolved.cors_allowed_origins,
