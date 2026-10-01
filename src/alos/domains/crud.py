@@ -815,7 +815,7 @@ class DomainCrudService:
 
     @staticmethod
     def _reject_generic_shared_mutation(resource: DomainResource) -> None:
-        if resource.domain in {"sales", "marketing", "property", "finance"}:
+        if resource.domain in {"sales", "marketing", "property", "finance", "legal", "hr", "it"}:
             raise PlatformError(
                 "CANONICAL_DOMAIN_MUTATION_REQUIRED",
                 "Use the dedicated canonical domain API to preserve lifecycle and audit authority.",

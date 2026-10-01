@@ -15,6 +15,9 @@ from alos.api.public.domain_routes import router as domain_data_router
 from alos.api.public.domain_routes import workspace_navigation_router
 from alos.api.public.executive_routes import router as executive_router
 from alos.api.public.finance_routes import router as finance_router
+from alos.api.public.hr_routes import router as hr_router
+from alos.api.public.it_routes import router as it_router
+from alos.api.public.legal_routes import router as legal_router
 from alos.api.public.marketing_routes import router as marketing_router
 from alos.api.public.property_routes import router as property_router
 from alos.api.public.release_routes import router as release_router
@@ -32,6 +35,9 @@ from alos.contracts import CanonicalContractCatalog
 from alos.domains.crud import DomainCrudService
 from alos.domains.executive.service import ExecutiveProjectionService
 from alos.domains.finance.service import FinanceService
+from alos.domains.hr.service import HrService
+from alos.domains.it.service import ItService
+from alos.domains.legal.service import LegalService
 from alos.domains.marketing.references import MarketingReferences
 from alos.domains.marketing.service import MarketingService
 from alos.domains.property.references import PropertyUnitReferences
@@ -267,6 +273,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.property_service = PropertyService(records, work=app.state.shared_work_service)
     app.state.finance_service = FinanceService(records, work=app.state.shared_work_service)
+    app.state.it_service = ItService(records, work=app.state.shared_work_service)
+    app.state.hr_service = HrService(records, work=app.state.shared_work_service)
+    app.state.legal_service = LegalService(records, work=app.state.shared_work_service)
     app.state.executive_service = ExecutiveProjectionService(
         app.state.strategy_service,
         app.state.shared_work_service,
@@ -277,6 +286,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ),
             "PROPERTY": (("property", app.state.property_service),),
             "FINANCE": (("finance", app.state.finance_service),),
+            "IT": (("it", app.state.it_service),),
+            "HR": (("hr", app.state.hr_service),),
+            "LEGAL": (("legal", app.state.legal_service),),
         },
     )
     app.add_middleware(
@@ -314,6 +326,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(marketing_router)
     app.include_router(property_router)
     app.include_router(finance_router)
+    app.include_router(it_router)
+    app.include_router(hr_router)
+    app.include_router(legal_router)
     app.include_router(internal_router)
     return app
 

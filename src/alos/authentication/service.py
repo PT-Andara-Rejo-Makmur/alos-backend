@@ -39,6 +39,7 @@ CANONICAL_ROLES = frozenset(
 
 DEFAULT_DOMAIN_PERMISSIONS: dict[str, tuple[str, ...]] = {
     "hr": (
+        "strategy.read",
         "hr.read",
         "hr.write",
         "hr.delete",
@@ -76,6 +77,7 @@ DEFAULT_DOMAIN_PERMISSIONS: dict[str, tuple[str, ...]] = {
         "navigation.read",
     ),
     "legal": (
+        "strategy.read",
         "legal.read",
         "legal.write",
         "legal.delete",
@@ -93,6 +95,7 @@ DEFAULT_DOMAIN_PERMISSIONS: dict[str, tuple[str, ...]] = {
         "navigation.read",
     ),
     "it": (
+        "strategy.read",
         "it.read",
         "it.write",
         "it.delete",
