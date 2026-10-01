@@ -232,8 +232,23 @@ async def test_domain_crud_round_trip_and_shared_workspace_scope() -> None:
             headers=headers,
             json={"account_name": "Operating account", "bank_name": "Example Bank"},
         )
-        assert created.status_code == 201, created.text
-        account = created.json()
+        assert created.status_code == 409, created.text
+        assert created.json()["code"] == "CANONICAL_DOMAIN_MUTATION_REQUIRED"
+        # Retained legacy read compatibility never provides a lifecycle write bypass.
+        postgres = await asyncpg.connect(postgres_url)
+        try:
+            row = await postgres.fetchrow("""
+                INSERT INTO finance.bank_accounts (
+                    bank_account_id, tenant_id, organization_id, workspace_id,
+                    account_name, bank_name, currency, status, created_at, updated_at
+                ) VALUES ('legacy_account', 'tenant_default', 'org_default', 'workspace_it',
+                          'Operating account', 'Example Bank', 'IDR', 'ACTIVE', now(), now())
+                RETURNING *
+            """)
+            assert row is not None
+            account = dict(row)
+        finally:
+            await postgres.close()
         assert account["workspace_id"] == "workspace_it"
 
         listed = await client.get("/api/v1/domains/finance/bank_accounts", headers=headers)
@@ -245,8 +260,8 @@ async def test_domain_crud_round_trip_and_shared_workspace_scope() -> None:
             headers=headers,
             json={"bank_name": "Updated Bank"},
         )
-        assert updated.status_code == 200
-        assert updated.json()["bank_name"] == "Updated Bank"
+        assert updated.status_code == 409
+        assert updated.json()["code"] == "CANONICAL_DOMAIN_MUTATION_REQUIRED"
 
         created_project = await client.post(
             "/api/v1/projects",
@@ -337,8 +352,8 @@ async def test_domain_crud_round_trip_and_shared_workspace_scope() -> None:
                 "amount": "10.00",
             },
         )
-        assert cross_workspace_reference.status_code == 404
-        assert cross_workspace_reference.json()["code"] == "DOMAIN_REFERENCE_NOT_FOUND"
+        assert cross_workspace_reference.status_code == 409
+        assert cross_workspace_reference.json()["code"] == "CANONICAL_DOMAIN_MUTATION_REQUIRED"
 
         forged_scope = await client.post(
             "/api/v1/domains/finance/bank_accounts",
@@ -349,24 +364,22 @@ async def test_domain_crud_round_trip_and_shared_workspace_scope() -> None:
                 "tenant_id": "tenant_attacker",
             },
         )
-        assert forged_scope.status_code == 422
-        assert forged_scope.json()["code"] == "INVALID_DOMAIN_FIELDS"
+        assert forged_scope.status_code == 409
+        assert forged_scope.json()["code"] == "CANONICAL_DOMAIN_MUTATION_REQUIRED"
 
         deleted_project = await client.delete(
             f"/api/v1/domains/shared/projects/{project_id}", headers=headers
         )
         assert deleted_project.status_code == 409
         assert deleted_project.json()["code"] == "WORK_MUTATION_REQUIRES_DEDICATED_API"
-        retained_project = await client.get(
-            f"/api/v1/projects/{project_id}", headers=headers
-        )
+        retained_project = await client.get(f"/api/v1/projects/{project_id}", headers=headers)
         assert retained_project.status_code == 200
 
         deleted_account = await client.delete(
             f"/api/v1/domains/finance/bank_accounts/{account['bank_account_id']}",
             headers=headers,
         )
-        assert deleted_account.status_code == 204
+        assert deleted_account.status_code == 409
 
         # -------------------------------------------------------------
         # Pengujian Antar Divisi: Sales vs Marketing & Workspace Switch
@@ -458,13 +471,12 @@ async def test_domain_crud_round_trip_and_shared_workspace_scope() -> None:
 
         # 1. Sales buat data Customer
         created_customer = await client.post(
-            "/api/v1/domains/sales/customers",
+            "/api/v1/sales/customers",
             headers=sales_headers,
             json={
                 "customer_code": "CUST-001",
                 "name": "PT Mitra Abadi",
-                "customer_type": "CORPORATE",
-                "status": "ACTIVE",
+                "customer_type": "COMPANY",
             },
         )
         assert created_customer.status_code == 201
@@ -479,9 +491,9 @@ async def test_domain_crud_round_trip_and_shared_workspace_scope() -> None:
 
         # 3. Marketing buat Campaign
         created_campaign = await client.post(
-            "/api/v1/domains/marketing/campaigns",
+            "/api/v1/marketing/campaigns",
             headers=marketing_headers,
-            json={"name": "Promo Q4", "campaign_type": "DIGITAL", "status": "ACTIVE"},
+            json={"name": "Promo Q4", "campaign_type": "DIGITAL"},
         )
         assert created_campaign.status_code == 201
         campaign_id = created_campaign.json()["campaign_id"]
@@ -490,7 +502,7 @@ async def test_domain_crud_round_trip_and_shared_workspace_scope() -> None:
         sales_view_campaigns = await client.get(
             f"/api/v1/domains/marketing/campaigns/{campaign_id}", headers=sales_headers
         )
-        assert sales_view_campaigns.status_code == 403
+        assert sales_view_campaigns.status_code == 404
 
         # 5. Uji Switch Workspace: Sales pindah workspace aktif ke workspace_marketing
         switch_resp = await client.put(

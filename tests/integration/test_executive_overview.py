@@ -274,7 +274,15 @@ async def test_authoritative_sources_contract_lineage_and_exact_counts(context: 
     context.app.state.factory_contracts.validate(
         "https://schemas.alos.dev/v1/executive/executive-overview-projection.schema.json", body
     )
-    assert all(domain["status"] == "UNAVAILABLE" for domain in body["domains"])
+    assert all(
+        domain["status"]
+        == (
+            "CONNECTED_EMPTY"
+            if domain["domain"] in {"SALES", "PROPERTY", "FINANCE"}
+            else "UNAVAILABLE"
+        )
+        for domain in body["domains"]
+    )
 
 
 async def test_pending_approval_never_includes_terminal_returned_or_held(context: Context):
