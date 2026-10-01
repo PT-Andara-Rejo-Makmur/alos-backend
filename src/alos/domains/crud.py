@@ -815,6 +815,12 @@ class DomainCrudService:
 
     @staticmethod
     def _reject_generic_shared_mutation(resource: DomainResource) -> None:
+        if resource.domain in {"sales", "marketing", "property", "finance"}:
+            raise PlatformError(
+                "CANONICAL_DOMAIN_MUTATION_REQUIRED",
+                "Use the dedicated canonical domain API to preserve lifecycle and audit authority.",
+                status_code=409,
+            )
         if resource.domain == "shared" and resource.table == "work_approvals":
             raise PlatformError(
                 "APPROVAL_LIFECYCLE_REQUIRES_DEDICATED_API",

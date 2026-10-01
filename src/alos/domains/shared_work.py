@@ -635,6 +635,29 @@ class SharedWorkService:
         if visible.scalar_one_or_none() is None:
             raise self._not_found()
 
+    async def validate_project_reference(
+        self, session: AsyncSession, principal: Principal, project_id: str
+    ) -> None:
+        """Owner boundary for scoped business references in the caller's transaction."""
+        await self._visible_project_id(session, principal, project_id)
+
+    async def visible_project_ids(
+        self, session: AsyncSession, principal: Principal
+    ) -> tuple[str, ...]:
+        projects = await self._table(session, "projects")
+        links = await self._table(session, "project_workspaces")
+        result = await session.scalars(
+            select(projects.c.project_id).where(
+                *self._visible(projects, links, "project_id", principal)
+            )
+        )
+        return tuple(result.all())
+
+    async def validate_document_reference(
+        self, session: AsyncSession, principal: Principal, document_id: str
+    ) -> None:
+        await self._document_row(session, principal, document_id)
+
     async def _visible_task_id(
         self, session: AsyncSession, principal: Principal, task_id: str
     ) -> None:

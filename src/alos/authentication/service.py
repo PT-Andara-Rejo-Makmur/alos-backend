@@ -47,6 +47,7 @@ DEFAULT_DOMAIN_PERMISSIONS: dict[str, tuple[str, ...]] = {
         "navigation.read",
     ),
     "finance": (
+        "strategy.read",
         "finance.read",
         "finance.write",
         "finance.delete",
@@ -55,9 +56,13 @@ DEFAULT_DOMAIN_PERMISSIONS: dict[str, tuple[str, ...]] = {
         "navigation.read",
     ),
     "sales": (
+        "strategy.read",
         "sales.read",
         "sales.write",
         "sales.delete",
+        "marketing.read",
+        "marketing.write",
+        "marketing.delete",
         "work.read",
         "work.write",
         "navigation.read",
@@ -79,6 +84,7 @@ DEFAULT_DOMAIN_PERMISSIONS: dict[str, tuple[str, ...]] = {
         "navigation.read",
     ),
     "property": (
+        "strategy.read",
         "property.read",
         "property.write",
         "property.delete",
