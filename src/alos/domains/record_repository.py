@@ -33,6 +33,7 @@ class RecordSpec:
     immutable: bool = False
     enrich_projection: Callable[[dict[str, Any]], dict[str, Any]] | None = None
     transition_authorized: Callable[[str, Principal], bool] | None = None
+    status_field: str = "status"
 
 
 def authorize(principal: Principal, domain: str, action: str, *, executive: bool = False) -> None:
@@ -44,7 +45,14 @@ def authorize(principal: Principal, domain: str, action: str, *, executive: bool
         allowed = "EXECUTIVE" in principal.roles and "strategy.read" in principal.permissions
     else:
         allowed = (
-            bool(principal.roles & {"DIVISION_LEAD", "DIVISION_MEMBER"})
+            bool(
+                principal.roles
+                & (
+                    {"DIVISION_LEAD", "DIVISION_MEMBER", "IT_ADMIN"}
+                    if domain == "it"
+                    else {"DIVISION_LEAD", "DIVISION_MEMBER"}
+                )
+            )
             and f"{domain}.{action}" in principal.permissions
         )
     if not allowed:
@@ -195,7 +203,7 @@ class RecordRepository:
             raise PlatformError(
                 "CONTRACTS_UNAVAILABLE", "Canonical lifecycle is unavailable.", status_code=503
             ) from exc
-        if row.get("status") not in states:
+        if row.get(spec.status_field) not in states:
             raise conflict("Unrecognized historical lifecycle cannot be mutated or referenced.")
 
     async def write(
@@ -224,7 +232,7 @@ class RecordRepository:
                 }
             )
             if spec.initial is not None:
-                values["status"] = spec.initial
+                values[spec.status_field] = spec.initial
             query: ReturningInsert[Any] | ReturningUpdate[Any] = (
                 insert(table).values(**values).returning(table)
             )
@@ -280,7 +288,7 @@ class RecordRepository:
         }
         result["allowed_transitions"] = [
             state
-            for state in spec.transitions.get(str(row.get("status")), ())
+            for state in spec.transitions.get(str(row.get(spec.status_field)), ())
             if spec.transition_authorized is None
             or (principal is not None and spec.transition_authorized(state, principal))
         ]
@@ -373,12 +381,12 @@ class RecordRepository:
             if old is not None and spec.immutable:
                 raise conflict("Historical records are immutable.")
             if operation == "transition":
-                if old is None or values.get("status") not in spec.transitions.get(
-                    old["status"], ()
+                if old is None or values.get(spec.status_field) not in spec.transitions.get(
+                    old[spec.status_field], ()
                 ):
                     raise conflict("Lifecycle transition is unavailable.")
                 if spec.transition_authorized is not None and not spec.transition_authorized(
-                    values["status"], principal
+                    values[spec.status_field], principal
                 ):
                     raise PlatformError(
                         "BUSINESS_TRANSITION_DENIED",
