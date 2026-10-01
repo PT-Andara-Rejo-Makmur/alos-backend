@@ -23,6 +23,7 @@ from sqlalchemy import (
     text,
     update,
 )
+from sqlalchemy.engine import ScalarResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from alos.identity import Principal
@@ -646,7 +647,7 @@ class SharedWorkService:
     ) -> tuple[str, ...]:
         projects = await self._table(session, "projects")
         links = await self._table(session, "project_workspaces")
-        result = await session.scalars(
+        result: ScalarResult[str] = await session.scalars(
             select(projects.c.project_id).where(
                 *self._visible(projects, links, "project_id", principal)
             )
