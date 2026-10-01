@@ -278,7 +278,7 @@ async def test_authoritative_sources_contract_lineage_and_exact_counts(context: 
         domain["status"]
         == (
             "CONNECTED_EMPTY"
-            if domain["domain"] in {"SALES", "PROPERTY", "FINANCE"}
+            if domain["domain"] in {"SALES", "PROPERTY", "FINANCE", "LEGAL", "HR", "IT"}
             else "UNAVAILABLE"
         )
         for domain in body["domains"]

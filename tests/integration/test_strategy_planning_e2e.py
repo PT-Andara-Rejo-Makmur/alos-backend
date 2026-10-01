@@ -1128,14 +1128,7 @@ async def test_postgres_executive_projection_is_canonical_and_scoped(
     assert body["shared_work"]["authoritative"] is True
     assert body["shared_work"]["last_updated_at"] is None
     assert all(
-        item["status"]
-        == (
-            "CONNECTED_EMPTY"
-            if item["domain"] in {"SALES", "PROPERTY", "FINANCE"}
-            else "UNAVAILABLE"
-        )
-        and (bool(item["sources"]) == (item["domain"] in {"SALES", "PROPERTY", "FINANCE"}))
-        for item in body["domains"]
+        item["status"] == "CONNECTED_EMPTY" and bool(item["sources"]) for item in body["domains"]
     )
     assert all(
         item["target"]["tenant_id"] == body["tenant_id"]

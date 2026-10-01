@@ -115,8 +115,8 @@ async def context() -> AsyncIterator[Context]:
     headers = {}
     permissions = [
         f"{domain}.{action}"
-        for domain in ("sales", "marketing", "property", "finance")
-        for action in ("read", "write")
+        for domain in ("sales", "marketing", "property", "finance", "legal", "hr", "it")
+        for action in ("read", "write", "delete")
     ]
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
@@ -873,7 +873,7 @@ async def test_executive_real_business_connection_status_and_source_timestamps(
         assert all(source["authoritative"] for source in domains[name]["sources"])
         assert domains[name]["last_verified_at"] is not None
     for name in ("LEGAL", "HR", "IT"):
-        assert domains[name]["status"] == "UNAVAILABLE"
+        assert domains[name]["status"] == "CONNECTED_EMPTY"
         assert domains[name]["last_verified_at"] is None
     forbidden = await context.client.get(
         "/api/v1/executive/overview", headers=context.headers["it"]
