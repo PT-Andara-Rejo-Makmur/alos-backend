@@ -120,6 +120,11 @@ ROLE_DEFAULT_PERMISSIONS: dict[str, tuple[str, ...]] = {
     "EXECUTIVE": (
         "navigation.read",
         "work.read",
+        "strategy.read",
+        "strategy.company.manage",
+        "strategy.review",
+        "strategy.approve",
+        "strategy.activate",
     ),
 }
 

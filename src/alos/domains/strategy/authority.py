@@ -6,6 +6,7 @@ from alos.security.errors import PlatformError
 _ROLE_BY_ACTION = {
     "company_manage": frozenset({"EXECUTIVE"}),
     "division_manage": frozenset({"DIVISION_LEAD"}),
+    "review": frozenset({"EXECUTIVE"}),
     "approve": frozenset({"EXECUTIVE"}),
     "activate": frozenset({"EXECUTIVE"}),
 }
