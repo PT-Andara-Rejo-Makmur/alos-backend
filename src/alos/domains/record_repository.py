@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any, cast
+from typing import Any, Protocol, cast
 from uuid import uuid4
 
 from sqlalchemy import MetaData, Numeric, Table, func, insert, select, text, update
@@ -19,6 +19,26 @@ from alos.contracts import CanonicalContractCatalog
 from alos.identity import DataScope, Principal
 from alos.observability.correlation import current_correlation_id
 from alos.security.errors import PlatformError
+
+
+@dataclass(frozen=True)
+class MaterialAction:
+    subject_type: str
+    requested_action: str
+    source_states: tuple[str, ...]
+    target_status: str
+
+
+class MaterialApprovalPort(Protocol):
+    async def consume_in_session(
+        self,
+        session: AsyncSession,
+        principal: Principal,
+        approval_id: str,
+        subject_type: str,
+        subject_id: str,
+        requested_action: str,
+    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -34,6 +54,7 @@ class RecordSpec:
     enrich_projection: Callable[[dict[str, Any]], dict[str, Any]] | None = None
     transition_authorized: Callable[[str, Principal], bool] | None = None
     status_field: str = "status"
+    material_actions: tuple[MaterialAction, ...] = ()
 
 
 def authorize(principal: Principal, domain: str, action: str, *, executive: bool = False) -> None:
@@ -294,6 +315,25 @@ class RecordRepository:
         ]
         if spec.enrich_projection is not None:
             result.update(spec.enrich_projection(row))
+        if spec.material_actions:
+            result["material_actions"] = [
+                {
+                    "subject_type": action.subject_type,
+                    "requested_action": action.requested_action,
+                    "target_status": action.target_status,
+                    "approval_required": True,
+                    "execution_allowed": spec.transition_authorized is None
+                    or (
+                        principal is not None
+                        and spec.transition_authorized(action.target_status, principal)
+                    ),
+                }
+                for action in spec.material_actions
+                if row.get(spec.status_field) in action.source_states
+                and principal is not None
+                and bool(principal.roles & {"DIVISION_LEAD", "DIVISION_MEMBER"})
+                and f"{action.subject_type.split('_', 1)[0].lower()}.write" in principal.permissions
+            ]
         return result
 
     async def listing(
@@ -356,14 +396,20 @@ class RecordRepository:
             Awaitable[None],
         ]
         | None = None,
+        approvals: MaterialApprovalPort | None = None,
     ) -> dict[str, Any]:
         """One state/audit transaction; each owner supplies its business policy."""
         if operation != "transition":
             self.editable(spec, payload, creating=identity is None)
+        elif set(payload) - {spec.status_field, "approval_id"}:
+            raise conflict("Transitions cannot change business fields or scope.")
         async with self.factory() as session, session.begin():
             await self.workspace(session, principal)
             table = await self.table(session, schema, spec.table)
-            values = self.values(table, payload)
+            approval_id = payload.get("approval_id") if operation == "transition" else None
+            values = self.values(
+                table, {key: value for key, value in payload.items() if key != "approval_id"}
+            )
             if before_lock is not None:
                 snapshot = (
                     None
@@ -381,10 +427,35 @@ class RecordRepository:
             if old is not None and spec.immutable:
                 raise conflict("Historical records are immutable.")
             if operation == "transition":
-                if old is None or values.get(spec.status_field) not in spec.transitions.get(
-                    old[spec.status_field], ()
+                material = next(
+                    (
+                        action
+                        for action in spec.material_actions
+                        if values.get(spec.status_field) == action.target_status
+                        and old is not None
+                        and old[spec.status_field] in action.source_states
+                    ),
+                    None,
+                )
+                if old is None or (
+                    material is None
+                    and values.get(spec.status_field)
+                    not in spec.transitions.get(old[spec.status_field], ())
                 ):
                     raise conflict("Lifecycle transition is unavailable.")
+                if material is not None:
+                    if approvals is None or not isinstance(approval_id, str) or not identity:
+                        raise conflict("An approved action-scoped request is required.")
+                    await approvals.consume_in_session(
+                        session,
+                        principal,
+                        approval_id,
+                        material.subject_type,
+                        identity,
+                        material.requested_action,
+                    )
+                elif approval_id is not None:
+                    raise conflict("Approval does not authorize this transition.")
                 if spec.transition_authorized is not None and not spec.transition_authorized(
                     values[spec.status_field], principal
                 ):

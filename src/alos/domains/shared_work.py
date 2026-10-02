@@ -26,7 +26,11 @@ from sqlalchemy import (
 from sqlalchemy.engine import ScalarResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from alos.audit import AuditEvent, SqlAuditRepository
+from alos.contracts import CanonicalContractCatalog
+from alos.governance.material_approvals import BusinessApprovalSubjectPort
 from alos.identity import Principal
+from alos.observability.correlation import current_correlation_id
 from alos.security.errors import PlatformError
 
 if TYPE_CHECKING:
@@ -44,6 +48,138 @@ class SharedWorkService:
         self._metadata = MetaData()
         self._tables: dict[str, Table] = {}
         self._reflection_lock = asyncio.Lock()
+        self._material_ports: dict[str, BusinessApprovalSubjectPort] = {}
+        self._contracts: CanonicalContractCatalog | None = None
+        self._audit = SqlAuditRepository(session_factory)
+
+    def configure_material_approvals(
+        self,
+        contracts: CanonicalContractCatalog,
+        ports: dict[str, BusinessApprovalSubjectPort],
+    ) -> None:
+        self._contracts = contracts
+        self._material_ports = ports
+
+    @property
+    def approval_subject_types(self) -> tuple[str, ...]:
+        if self._contracts is None:
+            return tuple(self._approval_subjects)
+        return tuple(
+            self._contracts.enum_values(
+                "https://schemas.alos.dev/v1/shared-work/shared-work.schema.json",
+                "ApprovalSubjectType",
+            )
+        )
+
+    async def _material_subject(
+        self,
+        session: AsyncSession,
+        principal: Principal,
+        row: dict[str, Any],
+        *,
+        mode: str,
+    ) -> dict[str, Any]:
+        port = self._material_ports.get(str(row["subject_type"]).split("_", 1)[0])
+        if port is None:
+            raise self._not_found()
+        return await port.approval_subject(
+            session,
+            principal,
+            row["subject_type"],
+            row["subject_id"],
+            row.get("requested_action"),
+            mode=mode,
+        )
+
+    async def _audit_material_approval(
+        self,
+        session: AsyncSession,
+        principal: Principal,
+        row: dict[str, Any],
+        operation: str,
+    ) -> None:
+        if self._contracts is None:
+            raise PlatformError(
+                "CONTRACTS_UNAVAILABLE", "Canonical contracts are required.", status_code=503
+            )
+        self._contracts.validate(
+            "https://schemas.alos.dev/v1/shared-work/shared-work.schema.json#/$defs/ApprovalProjection",
+            self._projection(row, principal),
+        )
+        await self._audit.append_in_session(
+            session,
+            AuditEvent(
+                event_type=f"approval.{operation}",
+                entity_type="approval",
+                entity_id=row["approval_id"],
+                tenant_id=principal.tenant_id,
+                organization_id=principal.organization_id,
+                workspace_id=principal.workspace_id,
+                actor_id=principal.actor_id,
+                correlation_id=current_correlation_id(),
+                outcome="SUCCEEDED",
+                occurred_at=datetime.now(UTC),
+                reason="Action-scoped business approval",
+                metadata={
+                    "requested_action": row["requested_action"],
+                    "transition_ref": row.get("transition_ref"),
+                },
+            ),
+        )
+
+    async def consume_in_session(
+        self,
+        session: AsyncSession,
+        principal: Principal,
+        approval_id: str,
+        subject_type: str,
+        subject_id: str,
+        requested_action: str,
+    ) -> None:
+        approvals = await self._table(session, "work_approvals")
+        links = await self._table(session, "work_approval_workspaces")
+        row = await self._locked_record(
+            session, approvals, links, "approval_id", approval_id, principal
+        )
+        if (
+            row["subject_type"] != subject_type
+            or row["subject_id"] != subject_id
+            or row["requested_action"] != requested_action
+            or row["status"] != "APPROVED"
+            or row["decision"] != "APPROVED"
+            or row["consumed_at"] is not None
+            or not row["approver_actor_id"]
+            or row["requested_by"] == row["approver_actor_id"]
+        ):
+            raise PlatformError(
+                "MATERIAL_APPROVAL_CONFLICT",
+                "Approval does not authorize this action or was consumed.",
+                status_code=409,
+            )
+        subject = await self._material_subject(session, principal, row, mode="execute")
+        if subject["snapshot"] != row["subject_snapshot"]:
+            raise PlatformError(
+                "MATERIAL_APPROVAL_STALE",
+                "Business content changed after this request.",
+                status_code=409,
+            )
+        updated = dict(
+            (
+                await session.execute(
+                    update(approvals)
+                    .where(approvals.c.approval_id == approval_id)
+                    .values(
+                        consumed_at=datetime.now(UTC),
+                        consumed_by=principal.actor_id,
+                        transition_ref=uuid4().hex,
+                    )
+                    .returning(approvals)
+                )
+            )
+            .mappings()
+            .one()
+        )
+        await self._audit_material_approval(session, principal, updated, "consumed")
 
     async def _table(self, session: AsyncSession, name: str, schema: str = "core") -> Table:
         key = f"{schema}.{name}"
@@ -170,7 +306,20 @@ class SharedWorkService:
 
     @staticmethod
     def _projection(row: dict[str, Any], principal: Principal) -> dict[str, Any]:
-        return {**jsonable_encoder(row), "workspace_ids": [principal.workspace_id]}
+        projection = {**jsonable_encoder(row), "workspace_ids": [principal.workspace_id]}
+        if row.get("requested_action") is not None:
+            domain = str(row["subject_type"]).split("_", 1)[0].lower()
+            can_decide = (row.get("status") == "PENDING"
+                and row.get("requested_by") != principal.actor_id
+                and "DIVISION_LEAD" in principal.roles
+                and f"{domain}.write" in principal.permissions)
+            projection["allowed_decisions"] = [
+                decision for decision, permission in (
+                    ("APPROVED", "approval.approve"), ("RETURNED", "approval.return"),
+                    ("REJECTED", "approval.reject"), ("HOLD", "approval.hold"),
+                ) if can_decide and permission in principal.permissions
+            ]
+        return projection
 
     async def present(
         self, principal: Principal, entity_type: str, rows: list[dict[str, Any]]
@@ -673,6 +822,25 @@ class SharedWorkService:
         if visible.scalar_one_or_none() is None:
             raise self._not_found()
 
+    async def validate_document_version_reference(
+        self,
+        session: AsyncSession,
+        principal: Principal,
+        document_id: str,
+        version: str,
+    ) -> None:
+        await self._document_row(session, principal, document_id)
+        versions = await self._table(session, "document_versions")
+        found = await session.scalar(
+            select(versions.c.record_id).where(
+                versions.c.document_id == document_id,
+                versions.c.version == version,
+                *self._document_scope(versions, principal),
+            )
+        )
+        if found is None:
+            raise self._not_found()
+
     async def _assert_shared_entity(
         self, session: AsyncSession, principal: Principal, entity_type: str, entity_id: str
     ) -> None:
@@ -689,15 +857,34 @@ class SharedWorkService:
         configuration = resources.get(entity_type)
         if configuration is None:
             raise self._not_found()
+        if entity_type == "APPROVAL":
+            approvals = await self._table(session, "work_approvals")
+            approval = (
+                (
+                    await session.execute(
+                        select(approvals).where(
+                            approvals.c.approval_id == entity_id,
+                            approvals.c.tenant_id == principal.tenant_id,
+                            approvals.c.organization_id == principal.organization_id,
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if approval is not None and approval["requested_action"] is not None:
+                await self._material_subject(session, principal, dict(approval), mode="read")
         table_name, link_name, identifier = configuration
         table = await self._table(session, table_name)
         link = await self._table(session, link_name)
-        found = (await session.execute(
-            select(table.c[identifier]).where(
-                table.c[identifier] == entity_id,
-                *self._visible(table, link, identifier, principal),
+        found = (
+            await session.execute(
+                select(table.c[identifier]).where(
+                    table.c[identifier] == entity_id,
+                    *self._visible(table, link, identifier, principal),
+                )
             )
-        )).scalar_one_or_none()
+        ).scalar_one_or_none()
         if found is None:
             raise self._not_found()
 
@@ -717,17 +904,37 @@ class SharedWorkService:
         if entity_type == "APPROVAL":
             approvals = await self._table(session, "work_approvals")
             approval_links = await self._table(session, "work_approval_workspaces")
-            approval = (await session.execute(select(approvals).where(
-                approvals.c.approval_id == entity_id,
-                *self._visible(approvals, approval_links, "approval_id", principal),
-            ))).mappings().first()
+            approval = (
+                (
+                    await session.execute(
+                        select(approvals).where(
+                            approvals.c.approval_id == entity_id,
+                            *self._visible(approvals, approval_links, "approval_id", principal),
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
             if approval is None:
                 raise self._not_found()
+            if approval["requested_action"] is not None:
+                await self._material_subject(session, principal, dict(approval), mode="read")
+                return {
+                    "entity_type": entity_type,
+                    "entity_id": entity_id,
+                    "title": str(approval["requested_action"]),
+                    "status": str(approval["status"]),
+                }
             subject = await self._relation_projection(
                 session, principal, str(approval["subject_type"]), str(approval["subject_id"])
             )
-            return {"entity_type": entity_type, "entity_id": entity_id,
-                    "title": subject["title"], "status": str(approval["status"])}
+            return {
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "title": subject["title"],
+                "status": str(approval["status"]),
+            }
         configuration = resources.get(entity_type)
         if configuration is None:
             raise self._not_found()
@@ -806,7 +1013,7 @@ class SharedWorkService:
                 ).where(approvals.c.approval_id == entity_id,
                         approvals.c.tenant_id == principal.tenant_id,
                         approvals.c.organization_id == principal.organization_id))).first()
-                if subject:
+                if subject and str(subject[0]) in self._approval_subjects:
                     direct.append((str(subject[0]), str(subject[1])))
             elif entity_type in {"FINDING", "REPORT"}:
                 table_name, identifier = (
@@ -1180,7 +1387,10 @@ class SharedWorkService:
                     }
                     priority = [metrics["overdue_tasks"].desc().nulls_last()]
                 elif name == "approvals":
-                    predicates = (*predicates, table.c.subject_type.in_(self._approval_subjects))
+                    predicates = (
+                        *predicates,
+                        table.c.subject_type.in_(self._approval_subjects),
+                    )
                     metrics = {"pending_approvals": table.c.status == "PENDING"}
                     priority = [metrics["pending_approvals"].desc()]
                 elif name == "findings":
@@ -1717,23 +1927,38 @@ class SharedWorkService:
                 candidate = pending.pop()
                 if candidate == task_id:
                     raise PlatformError(
-                        "TASK_DEPENDENCY_CYCLE", "Task dependency would form a cycle.",
+                        "TASK_DEPENDENCY_CYCLE",
+                        "Task dependency would form a cycle.",
                         status_code=409,
                     )
                 if candidate not in visited:
                     visited.add(candidate)
                     pending.extend(graph.get(candidate, set()))
-            await session.execute(insert(table).values(
-                dependency_id=uuid4().hex, tenant_id=principal.tenant_id,
-                organization_id=principal.organization_id, workspace_id=principal.workspace_id,
-                task_id=task_id, blocked_by_task_id=blocked_by_task_id,
-                linked_by=principal.actor_id, linked_at=datetime.now(UTC),
-            ))
+            await session.execute(
+                insert(table).values(
+                    dependency_id=uuid4().hex,
+                    tenant_id=principal.tenant_id,
+                    organization_id=principal.organization_id,
+                    workspace_id=principal.workspace_id,
+                    task_id=task_id,
+                    blocked_by_task_id=blocked_by_task_id,
+                    linked_by=principal.actor_id,
+                    linked_at=datetime.now(UTC),
+                )
+            )
             return self._projection(current, principal), True
 
     async def _visible_approval_subject(
         self, session: AsyncSession, principal: Principal, subject_type: str, subject_id: str
     ) -> None:
+        if subject_type not in self._approval_subjects:
+            await self._material_subject(
+                session,
+                principal,
+                {"subject_type": subject_type, "subject_id": subject_id},
+                mode="read",
+            )
+            return
         subject = self._approval_subjects.get(subject_type)
         if subject is None:
             raise PlatformError(
@@ -1763,7 +1988,7 @@ class SharedWorkService:
             approvals = await self._table(session, "work_approvals")
             links = await self._table(session, "work_approval_workspaces")
             predicates = list(self._visible(approvals, links, "approval_id", principal))
-            predicates.append(approvals.c.subject_type.in_(self._approval_subjects))
+            predicates.append(approvals.c.subject_type.in_(self.approval_subject_types))
             if status:
                 predicates.append(approvals.c.status == status)
             if subject_type:
@@ -1785,7 +2010,17 @@ class SharedWorkService:
                 .mappings()
                 .all()
             )
-            return [self._projection(dict(row), principal) for row in rows]
+            visible = []
+            for row in rows:
+                if row["requested_action"] is not None:
+                    try:
+                        await self._material_subject(session, principal, dict(row), mode="read")
+                    except PlatformError as exc:
+                        if exc.status_code in {403, 404}:
+                            continue
+                        raise
+                visible.append(self._projection(dict(row), principal))
+            return visible
 
     async def get_approval(self, principal: Principal, approval_id: str) -> dict[str, Any]:
         async with self._session_factory() as session:
@@ -1796,7 +2031,7 @@ class SharedWorkService:
                     await session.execute(
                         select(approvals).where(
                             approvals.c.approval_id == approval_id,
-                            approvals.c.subject_type.in_(self._approval_subjects),
+                            approvals.c.subject_type.in_(self.approval_subject_types),
                             *self._visible(approvals, links, "approval_id", principal),
                         )
                     )
@@ -1806,6 +2041,8 @@ class SharedWorkService:
             )
             if row is None:
                 raise self._not_found()
+            if row["requested_action"] is not None:
+                await self._material_subject(session, principal, dict(row), mode="read")
             return self._projection(dict(row), principal)
 
     async def request_approval(
@@ -1816,6 +2053,23 @@ class SharedWorkService:
             await self._visible_approval_subject(
                 session, principal, payload["subject_type"], payload["subject_id"]
             )
+            snapshot = None
+            if payload["subject_type"] not in self._approval_subjects:
+                if not ({"approval.request", "work.write"} & principal.permissions):
+                    raise PlatformError(
+                        "BUSINESS_APPROVAL_DENIED",
+                        "Approval request permission is required.",
+                        status_code=403,
+                    )
+                snapshot = (
+                    await self._material_subject(session, principal, payload, mode="request")
+                )["snapshot"]
+            elif payload.get("requested_action") is not None:
+                raise PlatformError(
+                    "APPROVAL_SUBJECT_UNSUPPORTED",
+                    "Legacy work subjects cannot authorize business actions.",
+                    status_code=422,
+                )
             approvals = await self._table(session, "work_approvals")
             links = await self._table(session, "work_approval_workspaces")
             approval_id = uuid4().hex
@@ -1829,6 +2083,8 @@ class SharedWorkService:
                             organization_id=principal.organization_id,
                             subject_type=payload["subject_type"],
                             subject_id=payload["subject_id"],
+                            requested_action=payload.get("requested_action"),
+                            subject_snapshot=snapshot,
                             requested_by=principal.actor_id,
                             approver_actor_id=None,
                             status="PENDING",
@@ -1848,6 +2104,8 @@ class SharedWorkService:
             await session.execute(
                 insert(links).values(approval_id=approval_id, workspace_id=principal.workspace_id)
             )
+            if snapshot is not None:
+                await self._audit_material_approval(session, principal, dict(row), "requested")
             return self._projection(dict(row), principal)
 
     async def decide_approval(
@@ -1865,7 +2123,7 @@ class SharedWorkService:
             row = await self._locked_record(
                 session, approvals, links, "approval_id", approval_id, principal
             )
-            if row["subject_type"] not in self._approval_subjects:
+            if row["subject_type"] not in self.approval_subject_types:
                 raise self._not_found()
             if row["requested_by"] == principal.actor_id:
                 raise PlatformError(
@@ -1873,6 +2131,26 @@ class SharedWorkService:
                     "Requester cannot decide their own approval.",
                     status_code=403,
                 )
+            if row["requested_action"] is not None:
+                permission = {
+                    "APPROVED": "approval.approve",
+                    "RETURNED": "approval.return",
+                    "REJECTED": "approval.reject",
+                    "HELD": "approval.hold",
+                }.get(status)
+                if permission is None or permission not in principal.permissions:
+                    raise PlatformError(
+                        "BUSINESS_APPROVAL_DENIED",
+                        "Approval decision permission is required.",
+                        status_code=403,
+                    )
+                subject = await self._material_subject(session, principal, row, mode="decide")
+                if status == "APPROVED" and subject["snapshot"] != row["subject_snapshot"]:
+                    raise PlatformError(
+                        "MATERIAL_APPROVAL_STALE",
+                        "Business content changed after this request.",
+                        status_code=409,
+                    )
             normalized_reason = decision_reason.strip() if decision_reason is not None else None
             if not normalized_reason:
                 normalized_reason = None
@@ -1909,6 +2187,8 @@ class SharedWorkService:
                 .mappings()
                 .one()
             )
+            if row["requested_action"] is not None:
+                await self._audit_material_approval(session, principal, dict(updated), "decided")
             return self._projection(dict(updated), principal), True
 
     @staticmethod

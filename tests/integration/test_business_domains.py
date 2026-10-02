@@ -140,7 +140,19 @@ async def context() -> AsyncIterator[Context]:
                 roles=[role],
                 permissions=[]
                 if label == "none"
-                else [*permissions, "work.read", "work.write", "strategy.read"],
+                else [
+                    *permissions,
+                    "work.read",
+                    "work.write",
+                    "strategy.read",
+                    "approval.read",
+                    "approval.request",
+                    "approval.approve",
+                    "approval.return",
+                    "approval.reject",
+                    "approval.hold",
+                    "document.version",
+                ],
             )
         yield Context(app, client, headers)
     await app.state.database.dispose()

@@ -9,7 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from alos.domains.record_repository import RecordRepository, RecordSpec, authorize, conflict
 from alos.domains.sales.records import PIPELINE_EDGES, SPECS
+from alos.governance.material_approvals import subject_snapshot
 from alos.identity import Principal
+from alos.security.errors import PlatformError
 
 
 class SalesService:
@@ -41,7 +43,14 @@ class SalesService:
     ) -> dict[str, Any]:
         authorize(principal, "sales", "write")
         return await self.repository.mutate(
-            "sales", SPECS[resource], principal, payload, identity, operation, self._rule
+            "sales",
+            SPECS[resource],
+            principal,
+            payload,
+            identity,
+            operation,
+            self._rule,
+            approvals=self.ports.get("work"),
         )
 
     async def _rule(
@@ -87,12 +96,26 @@ class SalesService:
             booking = await self.repository.row(
                 session, "sales", SPECS["bookings"], principal, data["booking_id"]
             )
-            if booking["status"] == "CANCELLED" or any(
-                booking[key] != data[key] for key in ("customer_id", "property_unit_id")
+            if (
+                (values.get("status") == "COMPLETED" and booking["status"] != "CONFIRMED")
+                or booking["status"] == "CANCELLED"
+                or any(booking[key] != data[key] for key in ("customer_id", "property_unit_id"))
             ):
                 raise conflict("Booking references do not match.")
             if data.get("closing_date") and data["closing_date"] < booking["booking_date"]:
                 raise conflict("Closing date precedes booking date.")
+        if (
+            name == "bookings"
+            and values.get("status") == "CONFIRMED"
+            and data.get("amount") is None
+        ):
+            raise conflict("Booking confirmation requires an explicit amount.")
+        if (
+            name == "closings"
+            and values.get("status") == "COMPLETED"
+            and (data.get("amount") is None or not data.get("closing_date"))
+        ):
+            raise conflict("Closing completion requires an explicit amount and date.")
         if name == "bookings" and old is None:
             table = await self.repository.table(session, "sales", "bookings")
             existing = await session.scalar(
@@ -126,8 +149,8 @@ class SalesService:
                 "probability"
             ] <= Decimal(100):
                 raise conflict("Probability must be between zero and one hundred.")
-            if values.get("status") == "WON":
-                raise conflict("Final closing authority is unavailable.")
+            if values.get("status") == "WON" and data.get("stage") != "Booking":
+                raise conflict("Winning requires the recorded Booking pipeline stage.")
         if name == "customer_followups" and values.get("status") == "COMPLETED":
             values["completed_at"] = datetime.now(UTC)
         if name in {"pricings", "pricing_items"}:
@@ -155,11 +178,47 @@ class SalesService:
             await self.repository.workspace(session, principal)
             spec = SPECS["opportunities"]
             row = await self.repository.row(session, "sales", spec, principal, identity, lock=True)
-            if (
-                row["status"] != "OPEN"
-                or stage != PIPELINE_EDGES.get(row["stage"])
-            ):
+            if row["status"] != "OPEN" or stage != PIPELINE_EDGES.get(row["stage"]):
                 raise conflict("Pipeline transition or final authority is unavailable.")
             return await self.repository.write(
                 session, "sales", spec, principal, {"stage": stage}, identity, operation="pipeline"
             )
+
+    async def approval_subject(
+        self,
+        session: AsyncSession,
+        principal: Principal,
+        subject_type: str,
+        identity: str,
+        requested_action: str | None,
+        *,
+        mode: str = "read",
+    ) -> dict[str, Any]:
+        authorize(principal, "sales", "read" if mode == "read" else "write")
+        if mode == "decide" and "DIVISION_LEAD" not in principal.roles:
+            raise PlatformError(
+                "BUSINESS_APPROVAL_DENIED",
+                "Owner division lead authority is required.",
+                status_code=403,
+            )
+        spec = next(
+            (
+                spec
+                for spec in SPECS.values()
+                if any(action.subject_type == subject_type for action in spec.material_actions)
+            ),
+            None,
+        )
+        if spec is None:
+            raise conflict("Unsupported approval subject.")
+        return await subject_snapshot(
+            self.repository,
+            session,
+            "sales",
+            spec,
+            principal,
+            identity,
+            requested_action,
+            mode=mode,
+            children={"pricings": ("pricing_items", "pricing_id")},
+        )

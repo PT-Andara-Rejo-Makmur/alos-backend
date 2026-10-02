@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from alos.domains.finance.records import SPECS
 from alos.domains.record_repository import RecordRepository, RecordSpec, authorize, conflict
+from alos.governance.material_approvals import subject_snapshot
 from alos.identity import Principal
 from alos.security.errors import PlatformError
 
@@ -50,6 +51,7 @@ class FinanceService:
             operation,
             self._rule,
             before_lock=self._prepare,
+            approvals=self.ports.get("work"),
         )
 
     async def _prepare(
@@ -390,4 +392,43 @@ class FinanceService:
             {"outstanding_amount": remaining, "status": "PAID" if remaining == 0 else "OPEN"},
             identity,
             operation="payment_applied",
+        )
+
+    async def approval_subject(
+        self,
+        session: AsyncSession,
+        principal: Principal,
+        subject_type: str,
+        identity: str,
+        requested_action: str | None,
+        *,
+        mode: str = "read",
+    ) -> dict[str, Any]:
+        authorize(principal, "finance", "read" if mode == "read" else "write")
+        if mode == "decide" and "DIVISION_LEAD" not in principal.roles:
+            raise PlatformError(
+                "BUSINESS_APPROVAL_DENIED",
+                "Owner division lead authority is required.",
+                status_code=403,
+            )
+        spec = next(
+            (
+                spec
+                for spec in SPECS.values()
+                if any(action.subject_type == subject_type for action in spec.material_actions)
+            ),
+            None,
+        )
+        if spec is None:
+            raise conflict("Unsupported approval subject.")
+        return await subject_snapshot(
+            self.repository,
+            session,
+            "finance",
+            spec,
+            principal,
+            identity,
+            requested_action,
+            mode=mode,
+            children={"budgets": ("budget_lines", "budget_id")},
         )

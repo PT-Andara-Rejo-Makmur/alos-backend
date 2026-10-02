@@ -7,7 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from alos.domains.property.records import SPECS
 from alos.domains.record_repository import RecordRepository, RecordSpec, authorize, conflict
+from alos.governance.material_approvals import subject_snapshot
 from alos.identity import Principal
+from alos.security.errors import PlatformError
 
 
 class PropertyService:
@@ -39,7 +41,14 @@ class PropertyService:
     ) -> dict[str, Any]:
         authorize(principal, "property", "write")
         return await self.repository.mutate(
-            "property", SPECS[resource], principal, payload, identity, operation, self._rule
+            "property",
+            SPECS[resource],
+            principal,
+            payload,
+            identity,
+            operation,
+            self._rule,
+            approvals=self.ports.get("work"),
         )
 
     async def _rule(
@@ -112,3 +121,42 @@ class PropertyService:
             and data.get("amount_delta") is None
         ):
             raise conflict("Submission requires a recorded amount delta.")
+
+    async def approval_subject(
+        self,
+        session: AsyncSession,
+        principal: Principal,
+        subject_type: str,
+        identity: str,
+        requested_action: str | None,
+        *,
+        mode: str = "read",
+    ) -> dict[str, Any]:
+        authorize(principal, "property", "read" if mode == "read" else "write")
+        if mode == "decide" and "DIVISION_LEAD" not in principal.roles:
+            raise PlatformError(
+                "BUSINESS_APPROVAL_DENIED",
+                "Owner division lead authority is required.",
+                status_code=403,
+            )
+        spec = next(
+            (
+                spec
+                for spec in SPECS.values()
+                if any(action.subject_type == subject_type for action in spec.material_actions)
+            ),
+            None,
+        )
+        if spec is None:
+            raise conflict("Unsupported approval subject.")
+        return await subject_snapshot(
+            self.repository,
+            session,
+            "property",
+            spec,
+            principal,
+            identity,
+            requested_action,
+            mode=mode,
+            children={},
+        )

@@ -11,3 +11,11 @@ class DocumentReferencePort(Protocol):
     async def validate_document_reference(
         self, session: AsyncSession, principal: Principal, document_id: str
     ) -> None: ...
+
+    async def validate_document_version_reference(
+        self,
+        session: AsyncSession,
+        principal: Principal,
+        document_id: str,
+        version: str,
+    ) -> None: ...

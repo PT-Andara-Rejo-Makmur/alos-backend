@@ -390,10 +390,11 @@ async def request_approval(
     values = _validate(contracts, "ApprovalRequest", payload)
     row = await _run(_service(request).request_approval(principal, values))
     projection = await _present(request, principal, contracts, "APPROVAL", row)
-    await _record_mutation(
-        request, principal, correlation_id, entity="approval",
-        record_id=str(row["approval_id"]), action="requested",
-    )
+    if row.get("requested_action") is None:
+        await _record_mutation(
+            request, principal, correlation_id, entity="approval",
+            record_id=str(row["approval_id"]), action="requested",
+        )
     return projection
 
 
@@ -432,7 +433,7 @@ async def _decide_approval(
         decision_reason=values.get("decision_reason"),
     ))
     projection = await _present(request, principal, contracts, "APPROVAL", row)
-    if changed:
+    if changed and row.get("requested_action") is None:
         await _record_mutation(
             request, principal, correlation_id, entity="approval",
             record_id=approval_id, action=action,

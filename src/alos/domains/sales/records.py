@@ -1,8 +1,9 @@
 """Curated migration-owned resources and conservative internal lifecycle."""
 
+from dataclasses import replace
 from typing import Any
 
-from alos.domains.record_repository import RecordSpec
+from alos.domains.record_repository import MaterialAction, RecordSpec
 
 PIPELINE_EDGES = {"Lead": "Qualified", "Qualified": "Survey", "Survey": "Booking"}
 
@@ -129,3 +130,23 @@ SPECS = {
         False,
     ),
 }
+
+# These actions require an independent, action-scoped Shared Work approval.
+SPECS["opportunities"] = replace(
+    SPECS["opportunities"],
+    material_actions=(MaterialAction("SALES_OPPORTUNITY", "WIN_OPPORTUNITY", ("OPEN",), "WON"),),
+)
+SPECS["bookings"] = replace(
+    SPECS["bookings"],
+    material_actions=(
+        MaterialAction("SALES_BOOKING", "CONFIRM_BOOKING", ("PENDING",), "CONFIRMED"),
+    ),
+)
+SPECS["closings"] = replace(
+    SPECS["closings"],
+    material_actions=(MaterialAction("SALES_CLOSING", "COMPLETE_CLOSING", ("OPEN",), "COMPLETED"),),
+)
+SPECS["pricings"] = replace(
+    SPECS["pricings"],
+    material_actions=(MaterialAction("SALES_PRICING", "ACTIVATE_PRICING", ("DRAFT",), "ACTIVE"),),
+)

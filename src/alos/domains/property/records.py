@@ -1,6 +1,8 @@
 """Curated migration-owned resources and conservative internal lifecycle."""
 
-from alos.domains.record_repository import RecordSpec
+from dataclasses import replace
+
+from alos.domains.record_repository import MaterialAction, RecordSpec
 
 SPECS = {
     "property_units": RecordSpec(
@@ -120,3 +122,29 @@ SPECS = {
         False,
     ),
 }
+
+# These actions require an independent, action-scoped Shared Work approval.
+SPECS["property_units"] = replace(
+    SPECS["property_units"],
+    material_actions=(
+        MaterialAction("PROPERTY_UNIT", "RESERVE_UNIT", ("AVAILABLE", "ON_HOLD"), "RESERVED"),
+        MaterialAction("PROPERTY_UNIT", "SELL_UNIT", ("RESERVED",), "SOLD"),
+    ),
+)
+SPECS["change_orders"] = replace(
+    SPECS["change_orders"],
+    material_actions=(
+        MaterialAction("PROPERTY_CHANGE_ORDER", "APPROVE_CHANGE_ORDER", ("SUBMITTED",), "APPROVED"),
+    ),
+)
+SPECS["payment_certificates"] = replace(
+    SPECS["payment_certificates"],
+    material_actions=(
+        MaterialAction(
+            "PROPERTY_PAYMENT_CERTIFICATE",
+            "APPROVE_PAYMENT_CERTIFICATE",
+            ("SUBMITTED",),
+            "APPROVED",
+        ),
+    ),
+)

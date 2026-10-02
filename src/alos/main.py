@@ -276,6 +276,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.it_service = ItService(records, work=app.state.shared_work_service)
     app.state.hr_service = HrService(records, work=app.state.shared_work_service)
     app.state.legal_service = LegalService(records, work=app.state.shared_work_service)
+    app.state.shared_work_service.configure_material_approvals(contracts, {
+        "SALES": app.state.sales_service, "PROPERTY": app.state.property_service,
+        "FINANCE": app.state.finance_service,
+    })
     app.state.executive_service = ExecutiveProjectionService(
         app.state.strategy_service,
         app.state.shared_work_service,
