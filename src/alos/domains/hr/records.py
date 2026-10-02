@@ -233,3 +233,56 @@ SPECS = {
         status_field="status",
     ),
 }
+
+# Internal recorded capabilities identified by the canonical closure audit.
+SPECS["facility_requests"] = RecordSpec(
+    "facility_requests",
+    "facility_request_id",
+    "HrFacilityRequest",
+    "OPEN",
+    {"OPEN": ("IN_PROGRESS", "CANCELLED"), "IN_PROGRESS": ("COMPLETED", "CANCELLED")},
+    frozenset(["facility_code", "title", "description", "needed_on", "resolution_notes"]),
+    frozenset(["title", "description", "needed_on", "resolution_notes"]),
+    immutable=False,
+    transition_authorized=transition_visible,
+)
+SPECS["inventory_items"] = RecordSpec(
+    "inventory_items",
+    "inventory_item_id",
+    "HrInventoryItem",
+    "RECORDED",
+    {},
+    frozenset(["asset_code", "name", "condition", "recorded_on", "notes"]),
+    frozenset([]),
+    immutable=True,
+)
+SPECS["asset_handovers"] = RecordSpec(
+    "asset_handovers",
+    "asset_handover_id",
+    "HrAssetHandover",
+    "RECORDED",
+    {},
+    frozenset(["inventory_item_id", "employee_id", "handover_on", "event", "notes"]),
+    frozenset([]),
+    immutable=True,
+)
+SPECS["maintenance_records"] = RecordSpec(
+    "maintenance_records",
+    "maintenance_record_id",
+    "HrMaintenanceRecord",
+    "RECORDED",
+    {},
+    frozenset(["inventory_item_id", "performed_on", "summary", "result"]),
+    frozenset([]),
+    immutable=True,
+)
+SPECS["service_assessments"] = RecordSpec(
+    "service_assessments",
+    "service_assessment_id",
+    "HrServiceAssessment",
+    "RECORDED",
+    {},
+    frozenset(["facility_code", "assessed_on", "readiness", "notes"]),
+    frozenset([]),
+    immutable=True,
+)

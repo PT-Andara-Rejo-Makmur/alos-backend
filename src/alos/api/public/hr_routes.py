@@ -334,4 +334,54 @@ class HrPersonnelFileTransitionRequest(CanonicalRecordRequest):
 
 MODELS[("personnel_files", "transition")] = HrPersonnelFileTransitionRequest
 
+
+class HrFacilityRequestCreateRequest(CanonicalRecordRequest):
+    schema_uri = "https://schemas.alos.dev/v1/hr/hr-contracts.schema.json#/$defs/HrFacilityRequestCreateRequest"
+
+
+MODELS[("facility_requests", "create")] = HrFacilityRequestCreateRequest
+
+
+class HrFacilityRequestUpdateRequest(CanonicalRecordRequest):
+    schema_uri = "https://schemas.alos.dev/v1/hr/hr-contracts.schema.json#/$defs/HrFacilityRequestUpdateRequest"
+
+
+MODELS[("facility_requests", "update")] = HrFacilityRequestUpdateRequest
+
+
+class HrFacilityRequestTransitionRequest(CanonicalRecordRequest):
+    schema_uri = "https://schemas.alos.dev/v1/hr/hr-contracts.schema.json#/$defs/HrFacilityRequestTransitionRequest"
+
+
+MODELS[("facility_requests", "transition")] = HrFacilityRequestTransitionRequest
+
+
+class HrInventoryItemCreateRequest(CanonicalRecordRequest):
+    schema_uri = "https://schemas.alos.dev/v1/hr/hr-contracts.schema.json#/$defs/HrInventoryItemCreateRequest"
+
+
+MODELS[("inventory_items", "create")] = HrInventoryItemCreateRequest
+
+
+class HrAssetHandoverCreateRequest(CanonicalRecordRequest):
+    schema_uri = "https://schemas.alos.dev/v1/hr/hr-contracts.schema.json#/$defs/HrAssetHandoverCreateRequest"
+
+
+MODELS[("asset_handovers", "create")] = HrAssetHandoverCreateRequest
+
+
+class HrMaintenanceRecordCreateRequest(CanonicalRecordRequest):
+    schema_uri = "https://schemas.alos.dev/v1/hr/hr-contracts.schema.json#/$defs/HrMaintenanceRecordCreateRequest"
+
+
+MODELS[("maintenance_records", "create")] = HrMaintenanceRecordCreateRequest
+
+
+class HrServiceAssessmentCreateRequest(CanonicalRecordRequest):
+    schema_uri = "https://schemas.alos.dev/v1/hr/hr-contracts.schema.json#/$defs/HrServiceAssessmentCreateRequest"
+
+
+MODELS[("service_assessments", "create")] = HrServiceAssessmentCreateRequest
+
+
 router = register_record_routes("hr", SPECS, MODELS)

@@ -136,6 +136,7 @@ class HrService:
             "candidate_id": "candidates",
             "training_id": "trainings",
             "succession_id": "successions",
+            "inventory_item_id": "inventory_items",
         }
         parents = {}
         for field, resource in sorted(references.items()):
@@ -172,4 +173,13 @@ class HrService:
             if parents["employees"]["employment_status"] != "ACTIVE":
                 raise conflict("An active employee record is required.")
         # Employee actor associations remain Identity-owned; HR never changes auth state.
+        if (
+            name == "facility_requests"
+            and values.get("status") == "COMPLETED"
+            and not data.get("resolution_notes")
+        ):
+            raise conflict("Facility completion requires explicit resolution notes.")
+        for field in ("recorded_on", "performed_on", "handover_on", "assessed_on"):
+            if data.get(field) is not None and data[field] > datetime.now(UTC).date():
+                raise conflict("Historical GA evidence cannot be recorded in the future.")
         # Leave approval and hiring/signing decisions have no available command here.
