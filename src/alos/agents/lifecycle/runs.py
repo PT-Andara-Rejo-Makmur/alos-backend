@@ -364,6 +364,18 @@ class AgentRunAuthority:
             raise RunAuthorityError("AgentRunResult is not terminal") from exc
         if target is AuthoritativeRunStatus.RUNNING:
             raise RunAuthorityError("AgentRunResult is not terminal")
+        if current.cancellation_state in {"REQUESTED", "CANCELLED"}:
+            target = AuthoritativeRunStatus.CANCELLED
+            result = {
+                **result,
+                "status": target.value,
+                "error": {
+                    "code": "RUN_CANCELLED",
+                    "message": "Cancellation was requested by Backend authority.",
+                    "correlation_id": current.correlation_id,
+                    "retryable": False,
+                },
+            }
 
         usage = result.get("usage")
         if isinstance(usage, dict):
@@ -423,6 +435,40 @@ class AgentRunAuthority:
         event_type = "run.completed" if target is AuthoritativeRunStatus.COMPLETED else "run.failed"
         await self._record_event(updated, event_type)
         return self._copy(updated)
+
+    async def fail_transport(
+        self, run_id: str, *, code: str, timed_out: bool = False
+    ) -> AuthoritativeRunRecord:
+        """Persist an honest terminal failure when the internal service cannot return a result."""
+        current = await self._store.get(run_id)
+        if current.status.is_terminal:
+            return self._copy(current)
+        for child in await self._store.list():
+            if child.parent_run_id == run_id and not child.status.is_terminal:
+                await self.fail_transport(child.run_id, code=code, timed_out=timed_out)
+        return await self.complete(
+            {
+                "run_id": current.run_id,
+                "root_run_id": current.root_run_id,
+                **({"parent_run_id": current.parent_run_id} if current.parent_run_id else {}),
+                "correlation_id": current.correlation_id,
+                "agent_id": current.agent_id,
+                "agent_version": current.agent_version,
+                "capability_id": current.capability_id,
+                "status": "TIMED_OUT" if timed_out else "FAILED",
+                "output_state": "BLOCKED",
+                "tool_results": [],
+                "evidence_refs": [],
+                "error": {
+                    "code": code,
+                    "message": "Internal runtime failed safely.",
+                    "correlation_id": current.correlation_id,
+                    "retryable": True,
+                },
+                "started_at": (current.started_at or current.created_at).isoformat(),
+                "completed_at": datetime.now(UTC).isoformat(),
+            }
+        )
 
     async def cancel(
         self,
@@ -1166,6 +1212,35 @@ class AgentRunAuthority:
         context: dict[str, Any],
     ) -> None:
         parent_context = self._as_dict(parent.request.get("execution_context"))
+        for key in ("tenant_id", "organization_id", "workspace_id", "actor_id"):
+            if context.get(key) != parent_context.get(key):
+                raise RunAuthorityError(
+                    "child identity does not inherit parent identity",
+                    code="SCOPE_INHERITANCE_DENIED",
+                )
+        for key in ("data_scope", "division_id", "project_id"):
+            if context.get(key) != parent_context.get(key):
+                raise RunAuthorityError(
+                    "child data boundary does not inherit parent boundary",
+                    code="DATA_ACCESS_INHERITANCE_DENIED",
+                )
+        parent_authority = self._as_dict(parent_context.get("authority_context"))
+        child_authority = self._as_dict(context.get("authority_context"))
+        if not self._as_set(child_authority.get("role_refs")).issubset(
+            self._as_set(parent_authority.get("role_refs"))
+        ) or child_authority.get("authority_level") != parent_authority.get("authority_level"):
+            raise RunAuthorityError(
+                "child authority does not inherit parent authority",
+                code="AUTHORITY_INHERITANCE_DENIED",
+            )
+        classification_rank = {"PUBLIC": 0, "INTERNAL": 1, "CONFIDENTIAL": 2, "RESTRICTED": 3}
+        if classification_rank.get(str(context.get("data_classification")), 4) > (
+            classification_rank.get(str(parent_context.get("data_classification")), -1)
+        ):
+            raise RunAuthorityError(
+                "child classification exceeds parent classification",
+                code="DATA_ACCESS_INHERITANCE_DENIED",
+            )
         parent_scope = self._as_set(
             parent_context.get("scope_refs")
             or parent.request.get("scope_refs")
@@ -1219,12 +1294,27 @@ class AgentRunAuthority:
         parent_budget = (
             parent.remaining_budget if parent.remaining_budget is not None else parent.budget_limit
         )
-        child_budget = (
-            context.get("execution_budget")
-            if isinstance(context.get("execution_budget"), dict)
-            else {}
-        )
-        child_max_cost = child_budget.get("max_cost") if isinstance(child_budget, dict) else None
+        child_budget = self._as_dict(context.get("execution_budget"))
+        if parent_budget is not None:
+            child_budget.setdefault("max_cost", parent_budget)
+        child_max_cost = child_budget.get("max_cost")
+        parent_limits = self._as_dict(parent_context.get("execution_budget"))
+        for key in (
+            "max_tokens",
+            "max_steps",
+            "max_tool_calls",
+            "timeout_seconds",
+            "concurrency_limit",
+        ):
+            limit = parent_limits.get(key)
+            if limit is None:
+                continue
+            child_budget.setdefault(key, limit)
+            if child_budget[key] > limit:
+                raise RunAuthorityError(
+                    "child execution limit exceeds parent limit", code="BUDGET_INHERITANCE_DENIED"
+                )
+        context["execution_budget"] = child_budget
         if (
             parent_budget is not None
             and child_max_cost is not None

@@ -1,4 +1,4 @@
-"""Unified authorization enforcement façade for MVP2 command boundaries.
+"""Unified authorization enforcement façade for governed command boundaries.
 
 Combines AuthorizationPolicy, PermissionRegistry, and audit recording
 into a single entry point. Returns typed decisions and rejects

@@ -1,4 +1,4 @@
-"""Positive stage-contract tests for the frozen MVP2 Factory flow (M2-H01-BE-02).
+"""Positive contract tests for the governed factory pipeline.
 
 Requirement -> RequirementUnderstanding -> CapabilityDecision -> CapabilityDraft
 must all be produced as typed, governed Backend output without database detail.

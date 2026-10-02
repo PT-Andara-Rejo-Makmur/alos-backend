@@ -75,7 +75,7 @@ def _decision(
 
 
 @pytest.mark.asyncio
-async def test_h08_registry_tracks_exact_capability_version() -> None:
+async def test_registry_tracks_exact_capability_version() -> None:
     registry = VersionedContractRegistry(
         subject_type="capability",
         schema_id="https://schemas.alos.dev/v1/capability/capability-definition.schema.json",
@@ -155,7 +155,7 @@ async def test_h08_registry_tracks_exact_capability_version() -> None:
 
 
 @pytest.mark.asyncio
-async def test_h08_release_requires_exact_version_and_authority() -> None:
+async def test_release_requires_exact_version_and_authority() -> None:
     audit = InMemoryAuditRepository()
     authority = InMemoryReleaseAuthority(audit)
     correlation = "corr_release_001"
@@ -230,7 +230,7 @@ async def test_h08_release_requires_exact_version_and_authority() -> None:
 
 
 @pytest.mark.asyncio
-async def test_h08_maker_self_approval_is_rejected() -> None:
+async def test_maker_self_approval_is_rejected() -> None:
     audit = InMemoryAuditRepository()
     authority = InMemoryReleaseAuthority(audit)
     correlation = "corr_release_self_approve"
@@ -284,7 +284,7 @@ async def test_h08_maker_self_approval_is_rejected() -> None:
 
 
 @pytest.mark.asyncio
-async def test_h08_failed_assurance_blocks_release() -> None:
+async def test_failed_assurance_blocks_release() -> None:
     audit = InMemoryAuditRepository()
     authority = InMemoryReleaseAuthority(audit)
     correlation = "corr_release_failed_eval"
@@ -329,7 +329,7 @@ async def test_h08_failed_assurance_blocks_release() -> None:
 
 
 @pytest.mark.asyncio
-async def test_h08_release_rollback_keeps_authoritative_version() -> None:
+async def test_release_rollback_keeps_authoritative_version() -> None:
     audit = InMemoryAuditRepository()
     authority = InMemoryReleaseAuthority(audit)
     corr_1 = "corr_release_v1"
@@ -412,7 +412,7 @@ async def test_h08_release_rollback_keeps_authoritative_version() -> None:
 
 
 @pytest.mark.asyncio
-async def test_h08_production_backlog_promotion_remains_authoritative() -> None:
+async def test_production_backlog_promotion_remains_authoritative() -> None:
     from alos.backlog.service import BacklogCandidateRequest, BacklogCandidateService
     from alos.research.models import ResearchDomain, ResearchFinding, ResearchRecommendation
 
@@ -457,7 +457,7 @@ async def test_h08_production_backlog_promotion_remains_authoritative() -> None:
 
 
 @pytest.mark.asyncio
-async def test_h08_role_and_permission_injection_is_rejected() -> None:
+async def test_role_and_permission_injection_is_rejected() -> None:
     audit = InMemoryAuditRepository()
     authority = InMemoryReleaseAuthority(audit)
     correlation = "corr_release_role_injection"

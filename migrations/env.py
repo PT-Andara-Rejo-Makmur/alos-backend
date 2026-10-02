@@ -8,6 +8,7 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from alos.ara import models as ara_models  # noqa: F401
 from alos.config import get_settings
 from alos.persistence import models  # noqa: F401
 from alos.persistence.base import Base

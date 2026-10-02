@@ -52,10 +52,18 @@ class GenesisClient:
         )
 
     async def create_agent_run(
-        self, payload: Mapping[str, Any], *, correlation_id: str
+        self,
+        payload: Mapping[str, Any],
+        *,
+        correlation_id: str,
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         return await self._request(
-            "POST", "/internal/v1/agent-runs", correlation_id=correlation_id, payload=payload
+            "POST",
+            "/internal/v1/agent-runs",
+            correlation_id=correlation_id,
+            payload=payload,
+            timeout_seconds=timeout_seconds,
         )
 
     async def analyze_factory(
@@ -89,14 +97,22 @@ class GenesisClient:
         *,
         correlation_id: str,
         payload: Mapping[str, Any] | None = None,
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         token = self._token.get_secret_value()
         headers = {"X-Correlation-ID": correlation_id}
         if token:
             headers["Authorization"] = f"Bearer {token}"
+        options: dict[str, Any] = {}
+        if timeout_seconds is not None:
+            options["timeout"] = httpx.Timeout(timeout_seconds)
         try:
             response = await self._client.request(
-                method, path, headers=headers, json=dict(payload) if payload is not None else None
+                method,
+                path,
+                headers=headers,
+                json=dict(payload) if payload is not None else None,
+                **options,
             )
             response.raise_for_status()
         except httpx.TimeoutException as exc:

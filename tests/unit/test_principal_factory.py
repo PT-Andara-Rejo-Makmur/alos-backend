@@ -8,7 +8,13 @@ from alos.contracts import CanonicalContractCatalog, ContractValidationError
 
 WORKSPACE = Path(__file__).resolve().parents[3]
 CONTRACTS_ROOT = WORKSPACE / "alos-contracts"
-FIXTURE = CONTRACTS_ROOT / "compatibility" / "fixtures" / "mvp1" / "execution-context.adapted.json"
+FIXTURE = (
+    CONTRACTS_ROOT
+    / "compatibility"
+    / "fixtures"
+    / "authority-bootstrap"
+    / "execution-context.adapted.json"
+)
 
 
 def test_principal_factory_uses_canonical_execution_context() -> None:

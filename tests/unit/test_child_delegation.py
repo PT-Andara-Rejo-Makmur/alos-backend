@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -93,6 +94,61 @@ async def active_agent(contracts: CanonicalContractCatalog, audit: InMemoryAudit
         release_id="release_h06_001",
         correlation_id="corr_h06_activate",
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "boundary",
+    (
+        "tenant_id",
+        "organization_id",
+        "workspace_id",
+        "actor_id",
+        "division_id",
+        "project_id",
+        "data_scope",
+        "data_classification",
+        "role_refs",
+        "authority_level",
+        "max_tokens",
+        "max_steps",
+        "max_tool_calls",
+        "timeout_seconds",
+        "concurrency_limit",
+    ),
+)
+async def test_child_cannot_expand_identity_classification_or_execution_limits(
+    boundary: str,
+) -> None:
+    contracts = CanonicalContractCatalog(CONTRACTS_ROOT)
+    audit = InMemoryAuditRepository()
+    authority = AgentRunAuthority(contracts=contracts, audit=audit)
+    agent = await active_agent(contracts, audit)
+    parent = parent_run_request()
+    context = parent["execution_context"]
+    context.update(data_scope="DIVISION", division_id="division_sales", project_id="project_sales")
+    context["authority_context"]["role_refs"] = ["DIVISION_MEMBER"]
+    context["authority_context"]["authority_level"] = "REQUESTER"
+    context["execution_budget"].update(timeout_seconds=30, concurrency_limit=1)
+    root = await authority.begin(parent, agent=agent)
+    child = deepcopy(parent)
+    child.update(run_id="run_child_expansion", parent_run_id=root.run_id)
+    child_context = child["execution_context"]
+    if boundary in ("role_refs", "authority_level"):
+        child_context["authority_context"][boundary] = (
+            ["IT_ADMIN"] if boundary == "role_refs" else "DIRECTOR_APPROVER"
+        )
+    elif boundary in context["execution_budget"]:
+        child_context["execution_budget"][boundary] += 1
+    elif boundary == "data_classification":
+        child_context[boundary] = "RESTRICTED"
+    elif boundary == "data_scope":
+        child_context[boundary] = "COMPANY"
+    else:
+        child_context[boundary] = "outside"
+    with pytest.raises(RunAuthorityError):
+        await authority.begin(child, agent=agent)
+    assert len(await authority.list_runs()) == 1
 
 
 @pytest.mark.asyncio
@@ -278,7 +334,7 @@ async def test_child_requires_parent_delegation_policy_and_enforces_max_children
 
 
 @pytest.mark.asyncio
-async def test_retry_limit_and_final_cancellation_propagate_to_nested_children() -> None:
+async def test_retry_limit_and_terminal_cancellation_propagate_to_nested_children() -> None:
     contracts = CanonicalContractCatalog(CONTRACTS_ROOT)
     audit = InMemoryAuditRepository()
     authority = AgentRunAuthority(contracts=contracts, audit=audit)

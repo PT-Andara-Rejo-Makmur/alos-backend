@@ -1,4 +1,4 @@
-"""Negative authority tests for the frozen MVP2 Factory flow (M2-H01-BE-02).
+"""Negative authority tests for the governed factory pipeline.
 
 Every fabricated authority (permission, scope, lifecycle, human gate, linkage)
 must fail closed without creating registry state.

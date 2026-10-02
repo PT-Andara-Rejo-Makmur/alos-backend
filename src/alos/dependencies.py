@@ -24,6 +24,7 @@ from alos.security.errors import PlatformError
 from alos.skills.registry import SkillRegistry
 from alos.skills.service import SkillService
 from alos.tools.adapters.diagnostic import DiagnosticEchoAdapter
+from alos.tools.business.catalog import register_business_tools
 from alos.tools.contracts import JsonSchemaToolContractValidator
 from alos.tools.executor.service import ToolExecutor
 from alos.tools.external_research import ExternalResearchToolAdapter
@@ -126,7 +127,7 @@ def get_authorization_enforcer(request: Request) -> AuthorizationEnforcer:
 
 
 def get_context_bundle_builder(request: Request) -> ContextBundleBuilder:
-    return ContextBundleBuilder()
+    return ContextBundleBuilder(registry=get_tool_registry(request))
 
 
 CurrentPrincipalDependency = Annotated[Principal, Depends(get_current_principal)]
@@ -142,9 +143,7 @@ def get_release_authority(request: Request) -> PersistentReleaseAuthority:
     return cast(PersistentReleaseAuthority, request.app.state.release_authority)
 
 
-ReleaseAuthorityDependency = Annotated[
-    PersistentReleaseAuthority, Depends(get_release_authority)
-]
+ReleaseAuthorityDependency = Annotated[PersistentReleaseAuthority, Depends(get_release_authority)]
 
 
 def get_agent_lifecycle(request: Request) -> GovernedAgentLifecycle:
@@ -158,9 +157,7 @@ def get_agent_lifecycle(request: Request) -> GovernedAgentLifecycle:
     return lifecycle
 
 
-AgentLifecycleDependency = Annotated[
-    GovernedAgentLifecycle, Depends(get_agent_lifecycle)
-]
+AgentLifecycleDependency = Annotated[GovernedAgentLifecycle, Depends(get_agent_lifecycle)]
 
 
 def get_contract_catalog(request: Request) -> CanonicalContractCatalog:
@@ -298,6 +295,9 @@ def get_tool_contract_validator(request: Request) -> JsonSchemaToolContractValid
 
 
 def get_tool_registry(request: Request) -> ToolRegistry:
+    existing = getattr(request.app.state, "tool_registry", None)
+    if isinstance(existing, ToolRegistry):
+        return existing
     settings = request.app.state.settings
     registry = ToolRegistry()
     registry.register(
@@ -322,6 +322,8 @@ def get_tool_registry(request: Request) -> ToolRegistry:
             timeout_seconds=15.0,
         )
     )
+    register_business_tools(registry, request.app.state)
+    request.app.state.tool_registry = registry
     return registry
 
 
@@ -380,6 +382,7 @@ def get_tool_executor(
         audit_sink=request.app.state.tool_audit_sink,
         idempotency_store=request.app.state.tool_idempotency_store,
         production=request.app.state.settings.APP_ENV == "production",
+        evidence_registry=request.app.state.evidence_registry,
     )
 
 

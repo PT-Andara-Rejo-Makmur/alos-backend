@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from alos.agents.lifecycle import AuthoritativeRunStatus, RunAuthorityError
 from alos.authentication.internal import verify_internal_token
 from alos.dependencies import DiagnosticPrincipalResolverDependency, ToolExecutorDependency
-from alos.identity import Principal
+from alos.identity import DataScope, Principal
 from alos.observability.correlation import current_correlation_id
 
 router = APIRouter(
@@ -81,20 +81,29 @@ async def execute_tool_request(
         )
         authority_matches = isinstance(run_context, dict) and all(
             context.get(key) == run_context.get(key)
-            for key in ("authority_context", "data_classification", "execution_budget")
+            for key in (
+                "authority_context",
+                "data_classification",
+                "execution_budget",
+                "data_scope",
+                "division_id",
+                "project_id",
+            )
             if key in context or key in run_context
         )
         permission_refs = frozenset(str(item) for item in context.get("permission_refs", []))
         scope_refs = frozenset(str(item) for item in context.get("scope_refs", []))
-        run_permissions = frozenset(
-            str(item) for item in run_context.get("permission_refs", [])
-        ) if isinstance(run_context, dict) else frozenset()
-        run_scopes = frozenset(
-            str(item) for item in run_context.get("scope_refs", [])
-        ) if isinstance(run_context, dict) else frozenset()
-        declared_tool_ids = frozenset(
-            str(item) for item in context.get("allowed_tool_ids", [])
+        run_permissions = (
+            frozenset(str(item) for item in run_context.get("permission_refs", []))
+            if isinstance(run_context, dict)
+            else frozenset()
         )
+        run_scopes = (
+            frozenset(str(item) for item in run_context.get("scope_refs", []))
+            if isinstance(run_context, dict)
+            else frozenset()
+        )
+        declared_tool_ids = frozenset(str(item) for item in context.get("allowed_tool_ids", []))
         run_tool_ids = frozenset(run.authorized_tool_ids) if run is not None else frozenset()
         if (
             run is not None
@@ -117,7 +126,10 @@ async def execute_tool_request(
                         str(item) for item in run_context.get("permission_refs", [])
                     ),
                     scopes=frozenset(str(item) for item in run_context.get("scope_refs", [])),
-                    roles=frozenset(),
+                    roles=frozenset(run_context.get("authority_context", {}).get("role_refs", [])),
+                    data_scope=DataScope(run_context.get("data_scope", "OWN_ASSIGNED")),
+                    division_id=run_context.get("division_id"),
+                    project_id=run_context.get("project_id"),
                 )
     if principal is None and _request.app.state.settings.APP_ENV == "test":
         principal = principal_resolver.resolve(context) if isinstance(context, Mapping) else None

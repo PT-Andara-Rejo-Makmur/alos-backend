@@ -33,9 +33,9 @@ def test_context_bundle_builder_includes_division_and_project_scope() -> None:
     assert bundle.status == "ACTIVE"
     assert bundle.division_id == "division_01"
     assert bundle.project_id == "project_01"
-    assert "capability.read" in bundle.allowed_capabilities
-    assert "diagnostic.echo" in bundle.allowed_tools
-    assert bundle.budget == 250
+    assert bundle.allowed_capabilities == ()
+    assert bundle.allowed_tools == ()
+    assert bundle.budget == 16
     assert bundle.token_limit == 4096
 
 

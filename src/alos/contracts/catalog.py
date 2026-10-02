@@ -26,6 +26,12 @@ class CanonicalContractCatalog:
     """Load schemas without importing implementation code from another repository."""
 
     def __init__(self, contracts_root: Path) -> None:
+        version_file = contracts_root / "VERSION"
+        self.contract_version = (
+            version_file.read_text(encoding="utf-8").strip()
+            if version_file.is_file()
+            else "unknown"
+        )
         documents: dict[str, dict[str, Any]] = {}
         for pattern in ("schemas/**/*.schema.json", "events/**/*.schema.json"):
             for path in contracts_root.glob(pattern):

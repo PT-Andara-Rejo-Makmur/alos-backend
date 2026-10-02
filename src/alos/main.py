@@ -11,6 +11,7 @@ from alos.agents.lifecycle.repository import SqlAgentRunStepStore
 from alos.agents.registry import AgentRegistry
 from alos.api.internal.routes import router as internal_router
 from alos.api.models import HealthResponse, ReadinessResponse
+from alos.api.public.ara_routes import router as ara_router
 from alos.api.public.domain_routes import router as domain_data_router
 from alos.api.public.domain_routes import workspace_navigation_router
 from alos.api.public.executive_routes import router as executive_router
@@ -50,6 +51,7 @@ from alos.domains.strategy import InMemoryStrategyRepository, SqlStrategyReposit
 from alos.domains.strategy.repository import SqlStrategyAuditRepository
 from alos.evidence import EvidenceRegistry, SqlEvidenceRegistry
 from alos.integrations import ExternalRetrievalPolicy, ExternalRetrievalService
+from alos.memory import MemoryService
 from alos.notifications import InMemoryEmailAdapter, NotificationService, SmtpEmailAdapter
 from alos.observability.correlation import CorrelationIdMiddleware
 from alos.persistence.database import Database
@@ -94,6 +96,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = resolved
     app.state.started = False
+    app.state.memory_service = MemoryService()
     app.state.database = Database(resolved.DATABASE_URL)
     app.state.domain_crud_service = DomainCrudService(app.state.database.session_factory)
     app.state.shared_work_service = SharedWorkService(app.state.database.session_factory)
@@ -197,7 +200,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             contracts=contracts,
             audit=registry_audit,
             skills=app.state.skill_registry,
-            allow_test_drafts=resolved.APP_ENV == "test",
+            allow_test_drafts=resolved.APP_ENV == "test"
+            or (resolved.APP_ENV == "development" and resolved.ENABLE_TEST_TOOLS),
             store=(
                 None
                 if resolved.APP_ENV == "test"
@@ -276,10 +280,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.it_service = ItService(records, work=app.state.shared_work_service)
     app.state.hr_service = HrService(records, work=app.state.shared_work_service)
     app.state.legal_service = LegalService(records, work=app.state.shared_work_service)
-    app.state.shared_work_service.configure_material_approvals(contracts, {
-        "SALES": app.state.sales_service, "PROPERTY": app.state.property_service,
-        "FINANCE": app.state.finance_service,
-    })
+    app.state.shared_work_service.configure_material_approvals(
+        contracts,
+        {
+            "SALES": app.state.sales_service,
+            "PROPERTY": app.state.property_service,
+            "FINANCE": app.state.finance_service,
+        },
+    )
     app.state.executive_service = ExecutiveProjectionService(
         app.state.strategy_service,
         app.state.shared_work_service,
@@ -320,6 +328,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     app.include_router(public_router)
+    app.include_router(ara_router)
     app.include_router(domain_data_router)
     app.include_router(shared_work_router)
     app.include_router(workspace_navigation_router)

@@ -6,6 +6,25 @@ from alos.integrations.genesis import GenesisClient, GenesisClientError
 
 
 @pytest.mark.asyncio
+async def test_ara_transport_uses_run_budget_without_changing_other_operation_timeouts() -> None:
+    deadlines = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        deadlines.append(request.extensions["timeout"]["read"])
+        return httpx.Response(200, json={})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://genesis.test", timeout=10
+    ) as http:
+        client = GenesisClient(
+            base_url="http://genesis.test", internal_token=SecretStr("test-token"), client=http
+        )
+        await client.create_agent_run({}, correlation_id="corr_budget", timeout_seconds=30)
+        await client.health(correlation_id="corr_health")
+    assert deadlines == [30, 10]
+
+
+@pytest.mark.asyncio
 async def test_genesis_client_propagates_correlation_and_structures_http_error() -> None:
     seen_correlation: str | None = None
 

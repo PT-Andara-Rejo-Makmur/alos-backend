@@ -47,6 +47,7 @@ class FactoryOrchestrator:
         *,
         principal: Principal,
         correlation_id: str,
+        proposal_only: bool = False,
     ) -> dict[str, Any]:
         public_request = self._validate_client_request(payload, correlation_id)
         if not principal.active:
@@ -161,6 +162,8 @@ class FactoryOrchestrator:
                 )
             self._authorize_draft(definition, principal, correlation_id)
 
+        if proposal_only:
+            return validated_result
         try:
             registered = [
                 await self._capabilities.register(

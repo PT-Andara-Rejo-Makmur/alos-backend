@@ -81,17 +81,9 @@ class MemoryRepository:
                 continue
             if not self._classification_allowed(record.classification, principal):
                 continue
-            if (
-                record.division_id
-                and principal.division_id
-                and record.division_id != principal.division_id
-            ):
+            if record.division_id and record.division_id != principal.division_id:
                 continue
-            if (
-                record.project_id
-                and principal.project_id
-                and record.project_id != principal.project_id
-            ):
+            if record.project_id and record.project_id != principal.project_id:
                 continue
             if query and query.strip() and not self._query_matches(record, query):
                 continue

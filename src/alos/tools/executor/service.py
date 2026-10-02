@@ -16,9 +16,12 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from alos.authorization import AuthorizationPolicy
+from alos.context.policy import maximum_classification
+from alos.evidence import resolve_registry_result
 from alos.identity import Principal
 from alos.persistence.models import ToolIdempotencyRecord
 from alos.tools.adapters.base import ToolInputError
+from alos.tools.business.catalog import BUSINESS_TOOLS, business_tool_allowed
 from alos.tools.contracts import ToolContractValidator
 from alos.tools.registry import (
     IdempotencyPolicy,
@@ -101,9 +104,7 @@ class InMemoryToolIdempotencyStore:
 
 
 class ToolIdempotencyStore(Protocol):
-    def serialize(
-        self, key: tuple[str, str, str]
-    ) -> AbstractAsyncContextManager[None]: ...
+    def serialize(self, key: tuple[str, str, str]) -> AbstractAsyncContextManager[None]: ...
 
     async def get(self, key: tuple[str, str, str]) -> IdempotencyRecord | None: ...
 
@@ -184,6 +185,7 @@ class ToolExecutor:
         audit_sink: ToolAuditSink,
         idempotency_store: ToolIdempotencyStore | None = None,
         production: bool,
+        evidence_registry: Any = None,
     ) -> None:
         self._contract_validator = contract_validator
         self._authorization = authorization
@@ -191,6 +193,7 @@ class ToolExecutor:
         self._audit_sink = audit_sink
         self._idempotency_store = idempotency_store or InMemoryToolIdempotencyStore()
         self._production = production
+        self._evidence_registry = evidence_registry
 
     async def execute(
         self,
@@ -276,8 +279,57 @@ class ToolExecutor:
                 code="SCOPE_DENIED",
                 message="ToolRequest does not declare all required scopes.",
             )
+        if principal is None or context["actor_id"] != principal.actor_id:
+            return await self._finish_error(
+                request,
+                correlation_id,
+                status="DENIED",
+                code="AUTHORIZATION_DENIED",
+                message="Principal context is not authorized.",
+            )
+        if not requested_scopes.issubset(principal.scopes):
+            return await self._finish_error(
+                request,
+                correlation_id,
+                status="DENIED",
+                code="SCOPE_DENIED",
+                message="Principal scope is not authorized.",
+            )
         requested_permissions = frozenset(str(item) for item in context.get("permission_refs", []))
-        if registration.required_permission not in requested_permissions:
+        required_permission = registration.required_permission
+        if tool_id in BUSINESS_TOOLS:
+            ranks = {"PUBLIC": 0, "INTERNAL": 1, "CONFIDENTIAL": 2, "RESTRICTED": 3}
+            authority_context = context.get("authority_context", {})
+            matching_context = (
+                principal is not None
+                and context.get("data_scope") == principal.data_scope.value
+                and all(
+                    context.get(key) == getattr(principal, key)
+                    for key in ("division_id", "project_id")
+                )
+                and set(authority_context.get("role_refs", [])) == set(principal.roles)
+                and ranks.get(str(context.get("data_classification")), 99)
+                <= ranks[maximum_classification(principal)]
+            )
+            if not matching_context:
+                return await self._finish_error(
+                    request,
+                    correlation_id,
+                    status="DENIED",
+                    code="BUSINESS_CONTEXT_DENIED",
+                    message="Business scope or classification is not authorized.",
+                )
+            if principal is None or not business_tool_allowed(tool_id, principal):
+                return await self._finish_error(
+                    request,
+                    correlation_id,
+                    status="DENIED",
+                    code="BUSINESS_AUTHORITY_DENIED",
+                    message="Business authority denied execution.",
+                )
+            if BUSINESS_TOOLS[tool_id][1] == "overview" and "EXECUTIVE" in principal.roles:
+                required_permission = "strategy.read"
+        if required_permission not in requested_permissions:
             return await self._finish_error(
                 request,
                 correlation_id,
@@ -291,7 +343,7 @@ class ToolExecutor:
             tenant_id=str(context["tenant_id"]),
             organization_id=str(context["organization_id"]),
             workspace_id=str(context["workspace_id"]),
-            required_permission=registration.required_permission,
+            required_permission=required_permission,
             required_scopes=registration.required_scopes,
         ):
             return await self._finish_error(
@@ -438,6 +490,39 @@ class ToolExecutor:
         correlation_id: str,
         result: dict[str, Any],
     ) -> ToolExecutionOutcome:
+        if result["status"] == "SUCCESS" and request["tool_id"] in BUSINESS_TOOLS:
+            output = result["output"]
+            context = request["execution_context"]
+            digest = hashlib.sha256(json.dumps(output, sort_keys=True).encode()).hexdigest()
+            source_id = f"source_{request['tool_call_id']}"
+            evidence = {
+                **{
+                    key: context[key]
+                    for key in (
+                        "tenant_id",
+                        "organization_id",
+                        "workspace_id",
+                        "correlation_id",
+                        "scope_refs",
+                        "data_classification",
+                    )
+                },
+                "run_id": request["run_id"],
+                "source_id": source_id,
+                "evidence_id": f"evidence_{request['tool_call_id']}",
+                "uri": f"urn:alos:business:{request['tool_id']}:{source_id}",
+                "captured_at": output["captured_at"],
+                "content_hash": f"sha256:{digest}",
+                "source_version": digest,
+                "anchor": "data",
+                "source_type": "INTERNAL",
+                "freshness": "CURRENT",
+                "validation_status": "VALID",
+                "instruction_authority": False,
+            }
+            if self._evidence_registry is not None:
+                evidence = await resolve_registry_result(self._evidence_registry.register(evidence))
+            result["source_refs"], result["evidence_refs"] = [source_id], [evidence]
         self._contract_validator.validate_result(result)
         await self._audit(request, correlation_id, str(result["status"]))
         return ToolExecutionOutcome(correlation_id=correlation_id, result=result)

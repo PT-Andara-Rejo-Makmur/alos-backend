@@ -15,11 +15,11 @@ from alos.skills.registry import SkillRegistry
 
 WORKSPACE = Path(__file__).resolve().parents[3]
 CONTRACTS_ROOT = WORKSPACE / "alos-contracts"
-MVP1_FIXTURES = CONTRACTS_ROOT / "compatibility" / "fixtures" / "mvp1"
+AUTHORITY_FIXTURES = CONTRACTS_ROOT / "compatibility" / "fixtures" / "authority-bootstrap"
 
 
 def load_fixture(name: str) -> dict[str, Any]:
-    payload = json.loads((MVP1_FIXTURES / name).read_text(encoding="utf-8"))
+    payload = json.loads((AUTHORITY_FIXTURES / name).read_text(encoding="utf-8"))
     return {key: value for key, value in payload.items() if key != "$schema"}
 
 
