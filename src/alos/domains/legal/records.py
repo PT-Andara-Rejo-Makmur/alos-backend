@@ -169,3 +169,35 @@ SPECS = {
         status_field="status",
     ),
 }
+
+# Internal recorded capabilities identified by the canonical closure audit.
+SPECS["legal_reviews"] = RecordSpec(
+    "legal_reviews",
+    "legal_review_id",
+    "LegalReview",
+    "OPEN",
+    {"OPEN": ("IN_REVIEW",), "IN_REVIEW": ("OPEN", "REVIEWED")},
+    frozenset(["contract_id", "title", "review_summary", "assessment"]),
+    frozenset(["title", "review_summary", "assessment"]),
+    immutable=False,
+    transition_authorized=transition_visible,
+)
+SPECS["contract_revisions"] = RecordSpec(
+    "contract_revisions",
+    "contract_revision_id",
+    "LegalContractRevision",
+    "RECORDED",
+    {},
+    frozenset(
+        [
+            "contract_id",
+            "document_id",
+            "document_version",
+            "revision_number",
+            "summary",
+            "recorded_on",
+        ]
+    ),
+    frozenset([]),
+    immutable=True,
+)

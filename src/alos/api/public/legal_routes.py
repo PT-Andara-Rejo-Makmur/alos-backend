@@ -236,4 +236,33 @@ class LegalControlTransitionRequest(CanonicalRecordRequest):
 
 MODELS[("controls", "transition")] = LegalControlTransitionRequest
 
+
+class LegalReviewCreateRequest(CanonicalRecordRequest):
+    schema_uri = "https://schemas.alos.dev/v1/legal/legal-contracts.schema.json#/$defs/LegalReviewCreateRequest"
+
+
+MODELS[("legal_reviews", "create")] = LegalReviewCreateRequest
+
+
+class LegalReviewUpdateRequest(CanonicalRecordRequest):
+    schema_uri = "https://schemas.alos.dev/v1/legal/legal-contracts.schema.json#/$defs/LegalReviewUpdateRequest"
+
+
+MODELS[("legal_reviews", "update")] = LegalReviewUpdateRequest
+
+
+class LegalReviewTransitionRequest(CanonicalRecordRequest):
+    schema_uri = "https://schemas.alos.dev/v1/legal/legal-contracts.schema.json#/$defs/LegalReviewTransitionRequest"
+
+
+MODELS[("legal_reviews", "transition")] = LegalReviewTransitionRequest
+
+
+class LegalContractRevisionCreateRequest(CanonicalRecordRequest):
+    schema_uri = "https://schemas.alos.dev/v1/legal/legal-contracts.schema.json#/$defs/LegalContractRevisionCreateRequest"
+
+
+MODELS[("contract_revisions", "create")] = LegalContractRevisionCreateRequest
+
+
 router = register_record_routes("legal", SPECS, MODELS)

@@ -1,7 +1,9 @@
 """Legal owns its operational records, scope and conservative internal policy."""
 
+from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from alos.contracts import ContractValidationError
@@ -151,4 +153,30 @@ class LegalService:
                 session, "legal", SPECS[resource], principal, data["subject_id"], lock=True
             )
         # property_ref is opaque recorded metadata: no fabricated FK or Property write port.
+        if name in {"legal_reviews", "contract_revisions"}:
+            await self.repository.row(
+                session, "legal", SPECS["contracts"], principal, data["contract_id"], lock=True
+            )
+        if name == "legal_reviews" and values.get("status") == "REVIEWED":
+            if not data.get("review_summary") or not data.get("assessment"):
+                raise conflict("Legal review requires an explicit assessment and summary.")
+            values["reviewed_by"] = principal.actor_id
+            values["reviewed_at"] = datetime.now(UTC)
+        if name == "contract_revisions":
+            await self.work.validate_document_version_reference(
+                session, principal, data["document_id"], data["document_version"]
+            )
+            if data["recorded_on"] > datetime.now(UTC).date():
+                raise conflict("Contract revision evidence cannot be recorded in the future.")
+        if name == "contracts" and operation == "update":
+            revisions = await self.repository.table(session, "legal", "contract_revisions")
+            if await session.scalar(
+                select(revisions.c.contract_revision_id)
+                .where(
+                    *self.repository.scope(revisions, principal),
+                    revisions.c.contract_id == data["contract_id"],
+                )
+                .limit(1)
+            ):
+                raise conflict("A contract with revision evidence cannot be overwritten.")
         # Risk likelihood, impact and rating are explicit inputs; no derived score exists.
