@@ -8,6 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 from alos.agents.lifecycle import AgentRunAuthority, RunAuthorityError
+from alos.agents.registry import AgentRegistry
 from alos.ara.delegation import read_child
 from alos.ara.repository import AraRepository
 from alos.ara.review import review_proposal
@@ -28,8 +29,8 @@ from alos.tools.registry import ToolRegistry
 
 ARA_SCHEMA = "https://schemas.alos.dev/v1/ara/"
 LIMITATIONS = [
-    "Mode deterministik terbatas pada skenario bisnis yang terdaftar.",
-    "Production Model Provider: Belum Terhubung.",
+    "Fakta dibatasi pada sumber canonical yang diverifikasi.",
+    "Tindakan material memerlukan tinjauan manusia.",
 ]
 
 
@@ -121,6 +122,7 @@ class AraOrchestrator:
         memory: MemoryService | None = None,
         evidence_registry: Any = None,
         factory: FactoryOrchestrator | None = None,
+        agents: AgentRegistry | None = None,
     ) -> None:
         self.repository, self.contracts = repository, contracts
         self.authority, self.genesis, self.registry = authority, genesis, registry
@@ -128,6 +130,48 @@ class AraOrchestrator:
         self.memory = memory
         self.evidence_registry = evidence_registry
         self.factory = factory
+        self.agents = agents
+
+    @property
+    def runtime_mode(self) -> str:
+        return "DETERMINISTIC_TEST" if self.test_enabled else "NORMAL"
+
+    def production_agent(
+        self, principal: Principal, agent_id: str = "ara.workspace-assistant"
+    ) -> RegistryEntry:
+        if self.agents is None:
+            raise ValueError("Production ARA requires a released ACTIVE Agent definition")
+        candidates = [
+            entry
+            for entry in self.agents.list_authorized_entries(principal=principal)
+            if entry.subject_id == agent_id and entry.release_id
+        ]
+        if len(candidates) != 1:
+            raise ValueError(
+                "Production ARA requires exactly one authorized released ACTIVE version"
+            )
+        entry = candidates[0]
+        if entry.payload.get("model_policy_ref") not in {
+            "ara.production",
+            "policy.fast",
+            "policy.standard",
+            "policy.reasoning",
+            "policy.coding",
+            "policy.critical",
+        }:
+            raise ValueError("Production ARA requires a production model policy")
+        if "business.question_answering" not in entry.payload.get("capability_ids", []):
+            raise ValueError("Production ARA requires the canonical business capability")
+        if not all(
+            entry.payload.get("execution_budget", {}).get(key, 0) > 0
+            for key in ("max_tokens", "max_steps", "timeout_seconds")
+        ) or "max_tool_calls" not in entry.payload.get("execution_budget", {}):
+            raise ValueError("Production ARA requires finite approved execution limits")
+        if not set(entry.payload.get("tool_ids", [])).issubset(BUSINESS_TOOLS):
+            raise ValueError(
+                "ARA production definitions must contain only canonical business reads"
+            )
+        return entry
 
     def validate(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self.contracts.validate(ARA_SCHEMA + name + ".schema.json", payload)
@@ -189,7 +233,7 @@ class AraOrchestrator:
                 "allowed_tool_ids": list(context.allowed_tools),
                 "allowed_capability_ids": list(context.allowed_capabilities),
                 "execution_budget": ARA_BUDGET,
-                "runtime_mode": "DETERMINISTIC_TEST",
+                "runtime_mode": self.runtime_mode,
                 "production_provider_connected": False,
             },
         )
@@ -221,7 +265,9 @@ class AraOrchestrator:
         message = data["message"].strip()
         if not message:
             raise PlatformError("ARA_INPUT_INVALID", "Pesan tidak boleh kosong.", status_code=422)
-        await self.repository.reserve(principal, thread_id, message, run_id, correlation_id)
+        await self.repository.reserve(
+            principal, thread_id, message, run_id, correlation_id, self.runtime_mode
+        )
         await self.record(principal, run_id, "ara.run_requested", correlation_id, "REQUESTED")
         memories = await self.conversation_memory(principal, thread_id)
         requested = needed_tools(message)
@@ -288,12 +334,31 @@ class AraOrchestrator:
                 answer = response(
                     "NEEDS_INFO", "Pilih referensi sumber dan pengenal bisnis yang ingin dibaca."
                 )
-            elif not self.test_enabled:
+            elif (
+                not self.test_enabled
+                and (
+                    await self.genesis.provider_readiness(
+                        correlation_id=correlation_id,
+                        policy_ref=self.production_agent(principal).payload["model_policy_ref"],
+                    )
+                ).get("status")
+                != "CONNECTED"
+            ):
                 raise GenesisClientError(
                     "MODEL_ROUTE_UNAVAILABLE", "Runtime belum terhubung.", correlation_id, True
                 )
             else:
-                async with asyncio.timeout(ARA_BUDGET["timeout_seconds"]):
+                timeout = (
+                    ARA_BUDGET["timeout_seconds"]
+                    if self.test_enabled
+                    else min(
+                        ARA_BUDGET["timeout_seconds"],
+                        self.production_agent(principal).payload["execution_budget"][
+                            "timeout_seconds"
+                        ],
+                    )
+                )
+                async with asyncio.timeout(timeout):
                     answer, status = await self._execute(
                         principal, thread_id, message, data, run_id, correlation_id, context
                     )
@@ -322,6 +387,7 @@ class AraOrchestrator:
                 pass
         answer = self.validate("ara-response-projection", answer)
         result = await self.repository.finish(principal, thread_id, run_id, answer, status)
+        result["runtime_mode"] = self.runtime_mode
         await self.record(
             principal,
             run_id,
@@ -394,6 +460,31 @@ class AraOrchestrator:
             correlation_id=correlation_id,
             created_at=now,
         )
+        if not self.test_enabled:
+            # Production never manufactures ACTIVE authority from a DRAFT or model decision.
+            agent = self.production_agent(principal)
+            definition = agent.payload
+            digest = agent.digest
+            if set(context.allowed_tools) - set(definition.get("tool_ids", [])):
+                return response(
+                    "DENIED", "Sumber di luar definisi agent yang disetujui."
+                ), "COMPLETED"
+            approved_budget = definition.get("execution_budget", {})
+            if not all(
+                key in approved_budget
+                for key in ("max_tokens", "max_steps", "max_tool_calls", "timeout_seconds")
+            ):
+                raise ValueError("Production ARA requires a finite approved token budget")
+            budget = {
+                key: min(value, approved_budget[key])
+                for key, value in budget.items()
+                if key in approved_budget
+            }
+            if "max_cost" not in approved_budget:
+                budget.pop("max_cost", None)
+            else:
+                budget["max_cost"] = approved_budget["max_cost"]
+            delegate = delegate and bool(definition.get("delegation_policy", {}).get("enabled"))
         execution = {
             **{
                 key: getattr(principal, key)
@@ -454,12 +545,12 @@ class AraOrchestrator:
             "run_id": run_id,
             "root_run_id": run_id,
             "agent_id": definition["agent_id"],
-            "agent_version": "1.0.0",
+            "agent_version": agent.version,
             "capability_id": "business.question_answering",
             "execution_context": execution,
             "context_bundle": bundle,
             "requested_tool_ids": list(context.allowed_tools),
-            "execution_mode": "TEST",
+            "execution_mode": "TEST" if self.test_enabled else "NORMAL",
             "input": {
                 "message": message,
                 "thread_id": thread_id,
@@ -514,6 +605,9 @@ class AraOrchestrator:
                     parent=run_request,
                     parent_result=result,
                     definition=definition,
+                    active_agent=self.production_agent(principal, "ara.business-reader")
+                    if not self.test_enabled
+                    else None,
                 )
             except Exception:
                 await self.authority.fail_transport(run_id, code="DELEGATION_FAILED")
@@ -647,14 +741,37 @@ class AraOrchestrator:
                     }
                 ],
             }
+            research_execution = execution
+            if not self.test_enabled:
+                participants = [result, *([delegated] if delegated is not None else [])]
+                spent_tokens = sum(
+                    item.get("usage", {}).get(key, 0)
+                    for item in participants
+                    for key in ("input_tokens", "output_tokens")
+                )
+                remaining_tokens = budget["max_tokens"] - spent_tokens
+                if remaining_tokens <= 0:
+                    raise ValueError("No parent token budget remains for research")
+                remaining_budget = {**budget, "max_tokens": remaining_tokens}
+                if "max_cost" in budget:
+                    remaining_budget["max_cost"] = max(
+                        0,
+                        budget["max_cost"]
+                        - sum(
+                            item.get("usage", {}).get("estimated_cost", 0) for item in participants
+                        ),
+                    )
+                research_execution = {**execution, "execution_budget": remaining_budget}
+                research_bundle["execution_budget"] = remaining_budget
             research = await self.genesis.execute_research(
                 {
                     "research_id": f"research_{uuid4().hex}",
                     "run_id": run_id,
+                    "execution_mode": run_request["execution_mode"],
                     "correlation_id": correlation_id,
                     "domain": "MANAGEMENT",
                     "question": message,
-                    "execution_context": execution,
+                    "execution_context": research_execution,
                     "scope": list(context.scope_refs),
                     "context_bundle": research_bundle,
                 },

@@ -20,6 +20,7 @@ async def read_child(
     parent: dict[str, Any],
     parent_result: dict[str, Any],
     definition: dict[str, Any],
+    active_agent: RegistryEntry | None = None,
 ) -> dict[str, Any]:
     context = copy.deepcopy(parent["execution_context"])
     tool = next(
@@ -76,6 +77,37 @@ async def read_child(
         correlation_id=context["correlation_id"],
         created_at=datetime.now(UTC),
     )
+    if parent.get("execution_mode") == "NORMAL":
+        if (
+            active_agent is None
+            or active_agent.state is not RegistryState.ACTIVE
+            or not active_agent.release_id
+        ):
+            raise ValueError("Production child requires an existing released ACTIVE definition")
+        entry = active_agent
+        child_definition = entry.payload
+        digest = entry.digest
+        if tool not in child_definition.get("tool_ids", []):
+            raise ValueError("Child read is outside its released definition")
+        if "max_cost" in parent["execution_context"][
+            "execution_budget"
+        ] and "max_cost" in child_definition.get("execution_budget", {}):
+            context["execution_budget"]["max_cost"] = max(
+                0,
+                parent["execution_context"]["execution_budget"]["max_cost"]
+                - parent_result.get("usage", {}).get("estimated_cost", 0),
+            )
+        for key in list(context["execution_budget"]):
+            parent_limit = parent["execution_context"]["execution_budget"].get(key)
+            child_limit = child_definition.get("execution_budget", {}).get(key)
+            if key == "max_cost" and (parent_limit is None or child_limit is None):
+                context["execution_budget"].pop(key)
+            elif parent_limit is None or child_limit is None:
+                raise ValueError("Production child requires bounded approved limits")
+            else:
+                context["execution_budget"][key] = min(
+                    context["execution_budget"][key], parent_limit, child_limit
+                )
     run_id = f"run_{uuid4().hex}"
     bundle = copy.deepcopy(parent["context_bundle"])
     bundle.update(
@@ -88,12 +120,12 @@ async def read_child(
         "root_run_id": parent["root_run_id"],
         "parent_run_id": parent["run_id"],
         "agent_id": child_definition["agent_id"],
-        "agent_version": "1.0.0",
+        "agent_version": entry.version,
         "capability_id": parent["capability_id"],
         "execution_context": context,
         "context_bundle": bundle,
         "requested_tool_ids": [tool],
-        "execution_mode": "TEST",
+        "execution_mode": parent.get("execution_mode", "TEST"),
         "input": {
             "message": "Read canonical source",
             "thread_id": parent["input"]["thread_id"],

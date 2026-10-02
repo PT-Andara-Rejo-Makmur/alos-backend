@@ -54,5 +54,8 @@ class AraRunRecord(Base):
     thread_id: Mapped[str] = mapped_column(ForeignKey("core.ara_threads.thread_id"), index=True)
     correlation_id: Mapped[str] = mapped_column(String(128))
     status: Mapped[str] = mapped_column(String(32))
+    runtime_mode: Mapped[str] = mapped_column(
+        String(32), default="DETERMINISTIC_TEST", server_default="DETERMINISTIC_TEST"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     response: Mapped[dict[str, Any] | None] = mapped_column(JSON)

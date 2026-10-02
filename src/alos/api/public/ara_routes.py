@@ -38,6 +38,7 @@ def service(request: Request, contracts: Any, genesis: Any) -> AraOrchestrator:
             capabilities=request.app.state.factory_capability_registry,
             agents=request.app.state.factory_agent_registry,
         ),
+        agents=request.app.state.factory_agent_registry,
     )
 
 
@@ -60,8 +61,25 @@ async def authority(
     orchestrator = service(request, contracts, genesis)
     result = orchestrator.authority_projection(principal)
     try:
+        released = False
+        policy_ref = "ara.production"
+        if not orchestrator.test_enabled:
+            try:
+                policy_ref = orchestrator.production_agent(principal).payload["model_policy_ref"]
+                released = True
+            except ValueError:
+                pass
         await genesis.health(correlation_id=current_correlation_id())
-        result["service_available"] = orchestrator.test_enabled
+        readiness = await genesis.provider_readiness(
+            correlation_id=current_correlation_id(), policy_ref=policy_ref
+        )
+        result["production_provider_connected"] = readiness.get("status") == "CONNECTED" and all(
+            readiness.get(key) is True
+            for key in ("configured", "reachable", "authenticated", "model_selected")
+        )
+        result["service_available"] = orchestrator.test_enabled or (
+            released and result["production_provider_connected"]
+        )
     except Exception:
         result["service_available"] = False
     return result

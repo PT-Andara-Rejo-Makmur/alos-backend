@@ -95,7 +95,13 @@ class AraRepository:
             return [project(row) for row in reversed(list(rows))]
 
     async def reserve(
-        self, principal: Principal, thread_id: str, message: str, run_id: str, correlation_id: str
+        self,
+        principal: Principal,
+        thread_id: str,
+        message: str,
+        run_id: str,
+        correlation_id: str,
+        runtime_mode: str = "DETERMINISTIC_TEST",
     ) -> None:
         async with self.factory.begin() as session:
             thread = await self._thread(session, principal, thread_id, lock=True)
@@ -118,6 +124,7 @@ class AraRepository:
                     thread_id=thread_id,
                     correlation_id=correlation_id,
                     status="RUNNING",
+                    runtime_mode=runtime_mode,
                     created_at=now,
                 )
             )
@@ -161,7 +168,7 @@ class AraRepository:
                 )
             )
             thread.active_run_id, thread.updated_at = None, now
-        return {**project(run), "runtime_mode": "DETERMINISTIC_TEST"}
+        return project(run)
 
     async def run(self, principal: Principal, thread_id: str, run_id: str) -> dict[str, Any]:
         async with self.factory() as session:
@@ -169,7 +176,7 @@ class AraRepository:
             row = await session.get(AraRunRecord, run_id)
             if row is None or row.thread_id != thread_id:
                 raise PlatformError("ARA_RUN_NOT_FOUND", "Run tidak tersedia.", status_code=404)
-            return {**project(row), "runtime_mode": "DETERMINISTIC_TEST"}
+            return project(row)
 
     async def persist_advisory(
         self, principal: Principal, response: dict[str, Any], contract_version: str

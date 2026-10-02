@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 from pydantic import SecretStr
@@ -49,6 +50,15 @@ class GenesisClient:
     async def diagnostic(self, *, correlation_id: str) -> dict[str, Any]:
         return await self._request(
             "GET", "/internal/v1/system/integration", correlation_id=correlation_id
+        )
+
+    async def provider_readiness(
+        self, *, correlation_id: str, policy_ref: str = "ara.production"
+    ) -> dict[str, Any]:
+        return await self._request(
+            "GET",
+            "/internal/v1/models/readiness?" + urlencode({"policy_ref": policy_ref}),
+            correlation_id=correlation_id,
         )
 
     async def create_agent_run(
