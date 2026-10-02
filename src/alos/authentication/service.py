@@ -146,6 +146,7 @@ def _resolve_default_permissions(
 ) -> tuple[str, ...]:
     resolved = set(provided_permissions or [])
     domain = (division_code or "").strip().lower()
+    domain = {"hr_ga": "hr", "hrga": "hr"}.get(domain, domain)
     if any(role in {"DIVISION_LEAD", "DIVISION_MEMBER"} for role in role_refs):
         resolved.update(DEFAULT_DOMAIN_PERMISSIONS.get(domain, ()))
     if "IT_ADMIN" in role_refs and workspace_type == "IT_OPERATIONS":

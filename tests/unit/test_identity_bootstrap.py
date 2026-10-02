@@ -119,7 +119,18 @@ def test_workspace_metadata_limits_default_permissions() -> None:
 
 
 @pytest.mark.asyncio
-async def test_provision_uses_backend_workspace_division_for_arbitrary_key() -> None:
+@pytest.mark.parametrize(
+    ("division", "role", "read_permission"),
+    [("FINANCE", "DIVISION_MEMBER", "finance.read")]
+    + [
+        (division, role, "hr.read")
+        for division in ("HR", "HR_GA", "HRGA")
+        for role in ("DIVISION_MEMBER", "DIVISION_LEAD")
+    ],
+)
+async def test_provision_uses_backend_workspace_division_for_arbitrary_key(
+    division: str, role: str, read_permission: str
+) -> None:
     repository = InMemoryAuthRepository()
     service = AuthService(repository)
     await service.register_for_test(
@@ -132,7 +143,7 @@ async def test_provision_uses_backend_workspace_division_for_arbitrary_key() -> 
             "workspace_key": "arbitrary-key",
             "workspace_name": "Finance",
             "workspace_type": "BUSINESS",
-            "division_code": "FINANCE",
+            "division_code": division,
             "role_refs": ["DIVISION_LEAD"],
         }
     )
@@ -152,9 +163,11 @@ async def test_provision_uses_backend_workspace_division_for_arbitrary_key() -> 
             "workspace_id": "workspace_finance",
             "workspace_key": "it",
             "division_code": "IT",
-            "role_refs": ["DIVISION_MEMBER"],
+            "role_refs": [role],
         }
     )
     permissions = account["workspace_access"][0]["permission_refs"]
-    assert "finance.read" in permissions
+    assert read_permission in permissions
     assert "it.read" not in permissions
+    assert "identity.accounts.manage" not in permissions
+    assert "sales.write" not in permissions

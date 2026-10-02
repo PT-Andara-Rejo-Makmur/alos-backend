@@ -30,7 +30,9 @@ EXPECTED = frozenset(
 )
 
 
-@pytest.mark.parametrize("division", [None, "FINANCE", "SALES", "PROPERTY", "LEGAL", "HR", "IT"])
+@pytest.mark.parametrize(
+    "division", [None, "FINANCE", "SALES", "PROPERTY", "LEGAL", "HR", "HR_GA", "HRGA", "IT"]
+)
 def test_executive_defaults_do_not_grant_identity_or_business_write(division):
     assert (
         frozenset(_resolve_default_permissions(division, "EXECUTIVE", ("EXECUTIVE",))) == EXPECTED
