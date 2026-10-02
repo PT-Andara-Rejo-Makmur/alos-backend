@@ -169,6 +169,8 @@ def test_invalid_conversation_memory_is_not_admitted(case: str) -> None:
         organization_id=actor.organization_id,
         workspace_id=actor.workspace_id,
         actor_id=actor.actor_id,
+        division_id=actor.division_id,
+        project_id=actor.project_id,
         scope_refs=("scope.ara",),
         content="Must not be admitted",
         created_at=datetime.now(UTC),
