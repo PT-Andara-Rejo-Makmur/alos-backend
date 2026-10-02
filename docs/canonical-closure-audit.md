@@ -1,6 +1,12 @@
 # Canonical closure audit
 
-Audit date: 2026-10-02. All repositories were fetched; `development` and working trees were clean.
+## Historical pre-implementation audit
+
+The snapshot and GAP decisions in this section describe the state before migrations
+0029–0031 and their implementations. They are retained as historical evidence;
+they are not the current migration head or current capability status.
+
+Historical audit date: 2026-10-02. All repositories were fetched; `development` and working trees were clean.
 
 | Repository | Audited HEAD | Latest CI |
 |---|---|---|
@@ -42,3 +48,78 @@ Migration chain is linear through `0028_password_reset_challenges`. Existing mig
 Material action scope: win opportunity, confirm booking, complete closing, activate pricing; reserve/sell unit, approve change order/payment certificate; approve/activate/close budget. Existing Finance reconciliation/tax/month closure invariants must be audited separately and preserved. No monetary threshold will be invented. Approval binds the scoped record, requested action and current content snapshot. Decision does not mutate the business record. Execution locks and consumes approval in the same transaction as business write, audit and projection validation. Human decision requires existing approval permission plus owner-domain write/lead authority; requester self-decision remains denied.
 
 The final report must replace GAP with evidenced outcomes, retain deferred sources, cite exact pushed HEADs and CI, and recommend READY only after all closure checks pass.
+
+## Current acceptance audit — 2026-10-02
+
+The final-acceptance checkout was fetched on `development` at the following heads:
+contracts `fc5c08854c6f1ce17e9efe0adfee3b2a98aab1bc`, backend
+`be3ccbb61e82efd49556cbd71634dc25b9d87c33`, web
+`7f91feabb43163e4655c554014c6e6933c861ea1`, infra
+`1db7d3a87afb7426255fe2e0ff58df8b6e578c49`, and read-only GENESIS
+`1ffb055a82cc04d668a7582c0a38af03614fcb57`.
+
+The current linear, append-only migration head is
+`0031_legal_reviews_revisions`, following `0028_password_reset_challenges`,
+`0029_material_approvals`, and `0030_ga_records`. Fresh and incremental
+PostgreSQL migration verification passed. No historical migration was edited.
+
+| Previously recorded GAP | Current implementation and acceptance evidence |
+|---|---|
+| Action-scoped material approvals | Implemented. All 11 owner actions passed browser request, independent decision, explicit execution, PostgreSQL state/audit/consumption verification, readback, refresh, and consumed-replay rejection. PROJECT/TASK compatibility remains covered by the existing integration suite. |
+| Facility request | Implemented. Browser create and explicit IN_PROGRESS/COMPLETED lifecycle passed; completion without resolution notes was rejected. |
+| Recorded inventory, asset handover, maintenance, service assessment | Implemented. Browser creation, immutable event rejection, scoped persistence, atomic audit, readback, and refresh passed. These records do not infer readiness or silently mutate Identity/Finance. |
+| Legal Review | Implemented. Browser create and review lifecycle passed; missing assessment and unauthorized reviewer were rejected. REVIEWED left the associated contract in DRAFT. |
+| Contract revision | Implemented. Browser creation references an existing immutable Document Version; canonical persistence, audit, readback, refresh and prohibited PATCH were verified. Signature/execution authority remains unavailable. |
+
+The initial automated checkout gates passed: 208 Contracts tests, 639 Backend
+tests, and 492 Web tests. The migration subset is included in the Backend count.
+The isolated integration smoke also passed, including deterministic Backend ↔
+GENESIS behavior. Initial browser acceptance covered creation of 89 business
+resource types, all 11 material actions, and scoped security negatives.
+
+The first defect register was completed before runtime code changes. It recorded
+one P1 Identity HR workspace permission defect, two P2 Web form defects, and two
+P3 presentation/documentation defects. HR_GA/HRGA division aliases are normalized
+to the existing HR permission policy; this does not grant IT or Executive business
+write authority. Existing memberships are not silently rewritten: any access
+correction must use the governed Identity membership flow.
+
+The fresh final rerun used Backend runtime commit `3c7932b` and Web `c07914f`.
+Package-wide verification passed: 208 Contracts, 647 Backend, and 503 Web tests
+(1,358 total, without double-counting targeted/migration subsets). Ruff, Mypy,
+schema/examples/OpenAPI/generation/compatibility, lint, typecheck, production
+build, all Compose configurations, 26 topology invariants, restore proof,
+fresh migration and deterministic Backend ↔ GENESIS integration passed.
+
+The final browser/API acceptance evidence contains 429 passing case results,
+including 89 business resource creation chains, 64 update/retained-lock checks,
+89 security boundary bundles (1,335 negative HTTP requests), all 11 material
+actions, GA/Legal lifecycles, Identity governance, Strategy and Shared Work.
+Each business resource creation was checked through the UI/BFF request, scoped
+PostgreSQL row and audit, API projection and refreshed UI. Controlled atomic
+rollback, stale approval, concurrency, period locking, partial-source errors and
+cross-domain reference rejection additionally passed the real PostgreSQL suite.
+Credential setup/reset have API/BFF and PostgreSQL integration evidence; these
+are not described as browser DOM credential-entry acceptance.
+
+The supplemental register recorded two P2 Identity presentation defects and one
+P1 membership dialog initialization defect before their fixes. The Web fix
+refreshes the selected account, explains unavailable supporting-evidence capture,
+and initializes add/edit/revoke dialogs from their actual selected membership.
+The final browser rerun verified add/edit/live detail/refresh, active workspace
+selection, retained membership revocation, specific-session revocation, account
+suspension/reactivation and secret-free history. Suspended login correctly
+returns the canonical 401 INVALID_CREDENTIALS without exposing account state.
+
+All eight registered defects are closed: initial P0/P1/P2/P3 counts were
+0/2/4/2; remaining counts are 0/0/0/0. Final evidence files are
+`FINAL-ACCEPTANCE-REPORT.md`, `FINAL-ACCEPTANCE-MATRIX.md`,
+`defect-register-closed.md`, and the corresponding `*-closure.json` case results
+in the local acceptance artifact directory dated 2026-10-02. The final report
+records exact final pushed HEADs and CI results separately, including the
+documentation-only closure commit, so those hashes are not self-referential.
+
+Deferred external connectors, Strategy Initiative execution without its canonical
+integration, HR final decisions without authority, verified Legal signature/
+execution, and AI production capabilities retain their existing unavailable or
+deferred status. No historical migration or GENESIS source was changed.
