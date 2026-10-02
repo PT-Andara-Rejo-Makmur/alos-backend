@@ -1,10 +1,10 @@
 """Real PostgreSQL conversation persistence and every isolation dimension."""
 
-import os
 from dataclasses import replace
 from uuid import uuid4
 
 import pytest
+from test_postgres_migrations import _database_url, _recreate_database, _upgrade
 
 from alos.ara.orchestration import response
 from alos.ara.repository import AraRepository
@@ -15,11 +15,11 @@ from alos.security.errors import PlatformError
 
 @pytest.mark.asyncio
 async def test_conversation_refresh_and_boundary_isolation() -> None:
-    database = Database(
-        os.environ.get(
-            "ALOS_TEST_DATABASE_URL", "postgresql+asyncpg://alos:alos@127.0.0.1:5432/alos_test"
-        )
-    )
+    database_name = "alos_ara_persistence_test"
+    await _recreate_database(database_name)
+    url = _database_url(database_name)
+    _upgrade(url, "head")
+    database = Database(url)
     repository = AraRepository(database.session_factory)
     principal = Principal(
         actor_id=f"actor_{uuid4().hex}",
