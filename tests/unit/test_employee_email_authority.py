@@ -113,8 +113,8 @@ async def test_cross_boundary_employee_is_denied(authority, boundary) -> None:
         ("email", ""),
         ("email", "bad@@example.com"),
         ("join_date", None),
-        ("join_date", (datetime.now(UTC).date() + timedelta(days=1)).isoformat()),
-        ("end_date", (datetime.now(UTC).date() - timedelta(days=1)).isoformat()),
+        pytest.param("join_date", timedelta(days=2), id="future-join-date"),
+        pytest.param("end_date", timedelta(days=-1), id="past-end-date"),
         ("employment_status", "INACTIVE"),
         ("actor_id", "actor_existing"),
     ],
@@ -122,6 +122,9 @@ async def test_cross_boundary_employee_is_denied(authority, boundary) -> None:
 async def test_candidates_and_provision_revalidate_legacy_employee(authority, field, value) -> None:
     service, repository, _ = authority
     await service.import_employee(employee())
+    # Resolve date offsets during execution, not before a long migrated suite.
+    if isinstance(value, timedelta):
+        value = (datetime.now(UTC).date() + value).isoformat()
     repository._employees["employee_test"][field] = value
     assert (
         await service.provisioning_candidates(tenant_id="tenant_test", organization_id="org_test")
