@@ -335,7 +335,7 @@ class VersionedContractRegistry:
             )
         )
 
-    def latest_entry(
+    def highest_version_entry(
         self,
         *,
         tenant_id: str,

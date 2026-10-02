@@ -87,7 +87,7 @@ class SkillService:
         skill_id: str,
         version: str | None = None,
     ) -> dict[str, Any]:
-        target_version = version or self._latest_version(
+        target_version = version or self._highest_version(
             principal=principal,
             skill_id=skill_id,
         )
@@ -170,7 +170,7 @@ class SkillService:
             "correlation_id": correlation_id,
         }
 
-    def _latest_version(self, *, principal: Principal, skill_id: str) -> str:
+    def _highest_version(self, *, principal: Principal, skill_id: str) -> str:
         versions = self.get_versions(principal=principal, skill_id=skill_id)
         if not versions:
             raise RegistryNotFoundError("skill definition was not found")
