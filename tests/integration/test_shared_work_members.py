@@ -131,6 +131,8 @@ async def test_workspace_member_directory_is_scoped_and_filters_ineligible_accou
             assert members[eligible_id]["workspace_id"] == "workspace_members"
             assert members[eligible_id]["display_name"] == "eligible"
             assert members[reader_id]["task_assignable"] is False
+            assert members[eligible_id]["project_assignable"] is False
+            assert members[reader_id]["project_assignable"] is False
             assert (await client.get(path, headers=eligible)).status_code == 200
 
             definition_owner, owner_id = await _register(
@@ -492,6 +494,112 @@ async def test_workspace_member_directory_is_scoped_and_filters_ineligible_accou
             assert (await client.get(
                 relation_path + "/evidence", headers=remote_reader
             )).status_code == 404
+    finally:
+        if app is not None:
+            await app.state.database.dispose()
+        admin = await asyncpg.connect(_database_url("postgres").replace("+asyncpg", ""))
+        try:
+            await admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+        finally:
+            await admin.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("permissions", "assignable"),
+    [
+        (["project.read"], True),
+        (["work.read"], True),
+        (["task.read", "finding.read"], False),
+        (["project.create"], False),
+    ],
+)
+async def test_project_owner_directory_matches_existing_authority(
+    permissions: list[str], assignable: bool,
+) -> None:
+    name = f"alos_project_members_{uuid.uuid4().hex[:10]}"
+    admin = await asyncpg.connect(_database_url("postgres").replace("+asyncpg", ""))
+    try:
+        await admin.execute(f'CREATE DATABASE "{name}"')
+    finally:
+        await admin.close()
+    app = None
+    try:
+        await asyncio.to_thread(
+            subprocess.run, [sys.executable, "-m", "alembic", "upgrade", "head"],
+            cwd=BACKEND_ROOT, env={**os.environ, "DATABASE_URL": _database_url(name)},
+            check=True, capture_output=True, text=True,
+        )
+        app = create_app(Settings(
+            _env_file=None, APP_ENV="development", DATABASE_URL=_database_url(name),
+            ALOS_CONTRACTS_PATH=CONTRACTS_ROOT, ENABLE_TEST_REGISTRATION=True,
+        ))
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            creator, creator_id = await _register(
+                client, "project-creator@alos.test",
+                ["project.create", "project.read", "project.update"],
+            )
+            candidate, candidate_id = await _register(
+                client, "project-candidate@alos.test", permissions,
+            )
+            directory = await client.get("/api/v1/workspace-members", headers=creator)
+            assert directory.status_code == 200, directory.text
+            members = {item["actor_id"]: item for item in directory.json()}
+            assert members[candidate_id]["project_assignable"] is assignable
+            assert members[candidate_id]["role_refs"] == members[creator_id]["role_refs"]
+            assert members[candidate_id]["workspace_id"] == "workspace_members"
+            assert members[candidate_id]["display_name"] == "project-candidate"
+
+            default = await client.post(
+                "/api/v1/projects", headers=creator,
+                json={"code": "DEFAULT", "name": "Creator-owned Project"},
+            )
+            assert default.status_code == 201, default.text
+            assert default.json()["owner_actor_id"] == creator_id
+            project_path = f"/api/v1/projects/{default.json()['project_id']}"
+            assigned = await client.post(
+                "/api/v1/projects", headers=creator,
+                json={"code": "ASSIGNED", "name": "Assigned Project",
+                      "owner_actor_id": candidate_id},
+            )
+            assert assigned.status_code == (201 if assignable else 404), assigned.text
+            if assignable:
+                assert assigned.json()["owner_actor_id"] == candidate_id
+
+            changed = await client.patch(
+                project_path, headers=creator, json={"owner_actor_id": candidate_id},
+            )
+            assert changed.status_code == (200 if assignable else 404), changed.text
+            current = await client.get(project_path, headers=creator)
+            assert current.json()["owner_actor_id"] == (
+                candidate_id if assignable else creator_id
+            )
+            if assignable:
+                postgres = await asyncpg.connect(_database_url(name).replace("+asyncpg", ""))
+                try:
+                    await postgres.execute(
+                        "UPDATE core.actors SET active=false WHERE actor_id=$1", candidate_id,
+                    )
+                finally:
+                    await postgres.close()
+                directory = await client.get("/api/v1/workspace-members", headers=creator)
+                assert candidate_id not in {item["actor_id"] for item in directory.json()}
+                preserved = await client.patch(
+                    project_path, headers=creator, json={"name": "Updated other fields"},
+                )
+                assert preserved.status_code == 200, preserved.text
+                assert preserved.json()["owner_actor_id"] == candidate_id
+            elif permissions == ["project.create"]:
+                # Creator-only eligibility is existing authority, not replacement eligibility.
+                self_assigned = await client.post(
+                    "/api/v1/projects", headers=candidate,
+                    json={"code": "SELF", "name": "Explicit creator assignment",
+                          "owner_actor_id": candidate_id},
+                )
+                assert self_assigned.status_code == 201, self_assigned.text
+                assert self_assigned.json()["owner_actor_id"] == candidate_id
     finally:
         if app is not None:
             await app.state.database.dispose()

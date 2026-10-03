@@ -282,6 +282,7 @@ class SharedWorkService:
                     "workspace_id": principal.workspace_id,
                     "role_refs": row["role_refs"],
                     "active": True,
+                    "project_assignable": bool({"project.read", "work.read"} & permission_refs),
                     "task_assignable": bool({"task.read", "work.read"} & permission_refs),
                     "finding_assignable": bool({"finding.read", "work.read"} & permission_refs),
                 }
