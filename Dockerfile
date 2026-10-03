@@ -18,6 +18,7 @@ COPY src ./src
 RUN --mount=type=cache,target=/root/.cache/pip python -m pip install --no-deps --no-build-isolation .
 COPY migrations ./migrations
 COPY alembic.ini ./
+RUN mkdir -p /data/documents && chown alos:alos /data/documents
 COPY --from=contracts schemas /contracts/schemas
 COPY --from=contracts events /contracts/events
 COPY --from=contracts VERSION /contracts/VERSION

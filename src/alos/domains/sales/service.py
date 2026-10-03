@@ -11,6 +11,7 @@ from alos.domains.record_repository import RecordRepository, RecordSpec, authori
 from alos.domains.sales.records import PIPELINE_EDGES, SPECS
 from alos.governance.material_approvals import subject_snapshot
 from alos.identity import Principal
+from alos.processes.guard import require_reviews
 from alos.security.errors import PlatformError
 
 
@@ -32,6 +33,13 @@ class SalesService:
     async def overview(self, principal: Principal, *, executive: bool = False) -> dict[str, Any]:
         authorize(principal, "sales", "read", executive=executive)
         return await self.repository.summary("sales", SPECS, principal, company=executive)
+
+    async def business_summary(self, principal: Principal) -> dict[str, Any]:
+        from alos.projections.business import business_summary
+
+        return await business_summary(
+            self.repository, principal, "sales", executive="EXECUTIVE" in principal.roles
+        )
 
     async def mutate(
         self,
@@ -64,9 +72,14 @@ class SalesService:
     ) -> None:
         data = {**(old or {}), **values}
         name = spec.table
+        if name == "bookings" and values.get("status") == "CONFIRMED":
+            await require_reviews(
+                self.repository, session, principal, "BOOKING", data[spec.identifier]
+            )
         if (
             old
-            and old.get("status") in {"INACTIVE", "CANCELLED", "LOST", "WON", "COMPLETED", "CLOSED"}
+            and old.get("status")
+            in {"INACTIVE", "CANCELLED", "LOST", "WON", "COMPLETED", "CLOSED", "AKAD_COMPLETED"}
             and operation == "update"
         ):
             raise conflict("Terminal records cannot be edited.")
@@ -94,16 +107,53 @@ class SalesService:
                 raise conflict("Property unit is not available.")
         if data.get("booking_id"):
             booking = await self.repository.row(
-                session, "sales", SPECS["bookings"], principal, data["booking_id"]
+                session, "sales", SPECS["bookings"], principal, data["booking_id"], lock=True
             )
             if (
                 (values.get("status") == "COMPLETED" and booking["status"] != "CONFIRMED")
                 or booking["status"] == "CANCELLED"
-                or any(booking[key] != data[key] for key in ("customer_id", "property_unit_id"))
+                or (
+                    name == "closings"
+                    and any(
+                        booking[key] != data[key] for key in ("customer_id", "property_unit_id")
+                    )
+                )
             ):
                 raise conflict("Booking references do not match.")
             if data.get("closing_date") and data["closing_date"] < booking["booking_date"]:
                 raise conflict("Closing date precedes booking date.")
+            if name == "financing_contexts" and booking["status"] != "CONFIRMED":
+                raise conflict("Konteks pembayaran membutuhkan Booking yang telah dikonfirmasi.")
+        if name == "financing_contexts":
+            from alos.domains.sales.financing import validate_financing
+
+            await validate_financing(
+                self.repository, self.ports["work"], session, principal, data, values, old
+            )
+        if name == "closings" and values.get("status") == "COMPLETED":
+            table = await self.repository.table(session, "sales", "financing_contexts")
+            financing = (
+                (
+                    await session.execute(
+                        select(table)
+                        .where(
+                            *self.repository.scope(table, principal),
+                            table.c.booking_id == data["booking_id"],
+                        )
+                        .with_for_update(read=True)
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if (
+                financing
+                and financing["payment_method"] == "KPR"
+                and financing["status"] != "AKAD_COMPLETED"
+            ):
+                raise conflict("KPR dan akad harus selesai sebelum Closing.")
+        if name == "bookings" and old and old["status"] == "CONFIRMED" and operation == "update":
+            raise conflict("Booking yang dikonfirmasi tidak dapat diubah.")
         if (
             name == "bookings"
             and values.get("status") == "CONFIRMED"
@@ -140,6 +190,14 @@ class SalesService:
             raise conflict("Qualification requires a canonical customer.")
         if name == "leads" and old is None:
             values["owner_actor_id"] = principal.actor_id
+        if name == "bookings" and values.get("status") == "CONFIRMED":
+            await self.ports["units"].synchronize_booking(
+                session, principal, data["property_unit_id"], data["booking_id"]
+            )
+        if name == "closings" and values.get("status") == "COMPLETED":
+            await self.ports["units"].synchronize_booking(
+                session, principal, data["property_unit_id"], data["booking_id"], sold=True
+            )
         if name == "customer_complaints" and old is None:
             values["assigned_to"] = principal.actor_id
         if name == "opportunities":
@@ -211,6 +269,8 @@ class SalesService:
         )
         if spec is None:
             raise conflict("Unsupported approval subject.")
+        if mode in {"decide", "execute"} and spec.table == "bookings":
+            await require_reviews(self.repository, session, principal, "BOOKING", identity)
         return await subject_snapshot(
             self.repository,
             session,

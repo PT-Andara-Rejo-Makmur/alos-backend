@@ -94,14 +94,22 @@ class LegalService:
     ) -> None:
         data = {**(old or {}), **values}
         name = spec.table
-        if old and old.get(spec.status_field) in {
-            "ARCHIVED",
-            "CLOSED",
-            "COMPLETED",
-            "CANCELLED",
-            "REVIEWED",
-            "WITHDRAWN",
-        }:
+        if (
+            operation == "update"
+            and old
+            and old.get(spec.status_field)
+            in {
+                "ARCHIVED",
+                "CLOSED",
+                "COMPLETED",
+                "CANCELLED",
+                "REVIEWED",
+                "WITHDRAWN",
+                "ACTIVE",
+                "EXPIRED",
+                "TERMINATED",
+            }
+        ):
             raise conflict("Terminal recorded evidence cannot be edited.")
         for start, end in (
             ("start_date", "end_date"),
@@ -118,6 +126,19 @@ class LegalService:
                 raise conflict("Recorded date range is invalid.")
         if data.get("document_id"):
             await self.work.validate_document_reference(session, principal, data["document_id"])
+        if name == "contracts" and values.get("status") == "ACTIVE":
+            documents = await self.repository.table(session, "core", "documents")
+            approved = await session.scalar(
+                select(documents.c.document_id).where(
+                    *self.repository.scope(documents, principal),
+                    documents.c.document_id == data.get("document_id"),
+                    documents.c.status == "APPROVED",
+                )
+            )
+            if approved is None or not data.get("start_date"):
+                raise conflict(
+                    "Pencatatan kontrak aktif membutuhkan dokumen disetujui dan tanggal mulai."
+                )
         if old is None:
             # Ownership means the author of this internal record, never decision authority.
             table = await self.repository.table(session, "legal", name)

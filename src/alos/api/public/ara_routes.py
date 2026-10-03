@@ -2,12 +2,15 @@
 
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 
+from alos.api.public.record_routes import CanonicalRecordRequest, response
+from alos.ara.actions import execution_receipt, reviewed_task
 from alos.ara.orchestration import AraOrchestrator
 from alos.ara.repository import AraRepository
 from alos.contracts import ContractValidationError
 from alos.dependencies import (
+    AuthorizationEnforcerDependency,
     ContractCatalogDependency,
     CurrentPrincipalDependency,
     GenesisClientDependency,
@@ -18,6 +21,67 @@ from alos.observability.correlation import current_correlation_id
 from alos.security.errors import PlatformError
 
 router = APIRouter(prefix="/api/v1/ara", tags=["ara"])
+
+
+class AraTaskExecutionRequest(CanonicalRecordRequest):
+    schema_uri = "https://schemas.alos.dev/v1/ara/ara-task-execution-request.schema.json"
+
+
+@router.post("/threads/{thread_id}/runs/{run_id}/proposals/{proposal_id}/task", status_code=201)
+async def execute_reviewed_task(
+    thread_id: str,
+    run_id: str,
+    proposal_id: str,
+    payload: AraTaskExecutionRequest,
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    contracts: ContractCatalogDependency,
+    authorization: AuthorizationEnforcerDependency,
+) -> Any:
+    decision = await authorization.enforce(
+        principal=principal,
+        required_permission="task.create"
+        if "task.create" in principal.permissions
+        else "work.write",
+        correlation_id=current_correlation_id(),
+        command="ara.proposal.task.execute",
+    )
+    if not decision.is_allowed:
+        raise PlatformError(
+            "ARA_ACTION_DENIED", "Kewenangan membuat tugas diperlukan.", status_code=403
+        )
+    result = await reviewed_task(
+        request.app.state.process_service.repository,
+        request.app.state.shared_work_service,
+        principal,
+        thread_id,
+        run_id,
+        proposal_id,
+        payload.validated(contracts),
+    )
+    return response(
+        contracts,
+        "https://schemas.alos.dev/v1/ara/ara-task-execution-receipt.schema.json",
+        result,
+        status=201,
+    )
+
+
+@router.get("/threads/{thread_id}/runs/{run_id}/proposals/{proposal_id}/task")
+async def reviewed_task_receipt(
+    thread_id: str,
+    run_id: str,
+    proposal_id: str,
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    contracts: ContractCatalogDependency,
+) -> Any:
+    result = await execution_receipt(
+        request.app.state.process_service.repository, principal, thread_id, run_id, proposal_id
+    )
+    return response(
+        contracts, "https://schemas.alos.dev/v1/ara/ara-task-execution-receipt.schema.json", result
+    )
 
 
 def service(request: Request, contracts: Any, genesis: Any) -> AraOrchestrator:
@@ -182,3 +246,22 @@ async def cancel(
         "CANCEL_REQUESTED",
     )
     return {**row, "status": "CANCEL_REQUESTED"}
+
+
+@router.get("/threads/{thread_id}/runs/{run_id}/progress")
+async def progress(
+    thread_id: str,
+    run_id: str,
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    contracts: ContractCatalogDependency,
+    after: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    result = await AraRepository(request.app.state.database.session_factory).progress(
+        principal, thread_id, run_id, after
+    )
+    contracts.validate(
+        "https://schemas.alos.dev/v1/ara/ara-progress-projection.schema.json",
+        result,
+    )
+    return result

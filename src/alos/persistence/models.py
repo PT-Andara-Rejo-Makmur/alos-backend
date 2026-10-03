@@ -531,6 +531,7 @@ class SourceVersionAuthorityRecord(Base):
     source_version: Mapped[str] = mapped_column(String(100))
     storage_uri: Mapped[str] = mapped_column(Text)
     content_hash: Mapped[str] = mapped_column(String(71))
+    extracted_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), index=True)
     verified_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

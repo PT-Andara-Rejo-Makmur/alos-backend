@@ -10,7 +10,8 @@ def transition_visible(status: str, principal: Principal) -> bool:
         and "hr.write" in principal.permissions
     )
     return operational and (
-        status not in {"CLOSED", "REVIEWED", "ACTIVE", "INACTIVE"}
+        status
+        not in {"CLOSED", "REVIEWED", "ACTIVE", "INACTIVE", "APPROVED", "REJECTED", "OFFERED"}
         or "DIVISION_LEAD" in principal.roles
     )
 
@@ -67,7 +68,7 @@ SPECS = {
         "leave_request_id",
         "HrLeaveRequest",
         "PENDING",
-        {"PENDING": ("WITHDRAWN",), "WITHDRAWN": ()},
+        {"PENDING": ("WITHDRAWN", "APPROVED", "REJECTED"), "WITHDRAWN": ()},
         frozenset(["employee_id", "end_date", "leave_type", "reason", "start_date"]),
         frozenset(["end_date", "leave_type", "reason", "start_date"]),
         False,
@@ -80,8 +81,27 @@ SPECS = {
         "HrRecruitment",
         "OPEN",
         {"OPEN": ("ON_HOLD", "CLOSED"), "ON_HOLD": ("OPEN", "CLOSED"), "CLOSED": ()},
-        frozenset(["department_code", "employment_type", "opened_at", "position_title"]),
-        frozenset(["department_code", "employment_type", "position_title"]),
+        frozenset(
+            [
+                "department_code",
+                "employment_type",
+                "opened_at",
+                "position_title",
+                "requesting_workspace_id",
+                "reason",
+                "headcount",
+            ]
+        ),
+        frozenset(
+            [
+                "department_code",
+                "employment_type",
+                "position_title",
+                "requesting_workspace_id",
+                "reason",
+                "headcount",
+            ]
+        ),
         False,
         transition_authorized=transition_visible,
         status_field="status",
@@ -91,7 +111,12 @@ SPECS = {
         "candidate_id",
         "HrCandidate",
         "APPLIED",
-        {"APPLIED": ("SCREENING",), "SCREENING": ("INTERVIEW",), "INTERVIEW": ()},
+        {
+            "APPLIED": ("SCREENING", "REJECTED", "WITHDRAWN"),
+            "SCREENING": ("INTERVIEW", "REJECTED", "WITHDRAWN"),
+            "INTERVIEW": ("OFFERED", "REJECTED", "WITHDRAWN"),
+            "OFFERED": ("REJECTED", "WITHDRAWN"),
+        },
         frozenset(["email", "full_name", "phone", "recruitment_id", "source"]),
         frozenset(["email", "full_name", "phone", "source"]),
         False,
@@ -116,8 +141,8 @@ SPECS = {
         "HrOnboarding",
         "OPEN",
         {"OPEN": ("IN_PROGRESS",), "IN_PROGRESS": ("COMPLETED",), "COMPLETED": ()},
-        frozenset(["employee_id", "start_date", "target_completion_date"]),
-        frozenset(["start_date", "target_completion_date"]),
+        frozenset(["employee_id", "start_date", "target_completion_date", "facility_request_id"]),
+        frozenset(["start_date", "target_completion_date", "facility_request_id"]),
         False,
         transition_authorized=transition_visible,
         status_field="status",
@@ -204,18 +229,35 @@ SPECS = {
         "employment_contract_id",
         "HrEmploymentContract",
         "DRAFT",
-        {"DRAFT": ("IN_REVIEW",), "IN_REVIEW": ("DRAFT",)},
+        {
+            "DRAFT": ("IN_REVIEW", "CANCELLED"),
+            "IN_REVIEW": ("DRAFT", "APPROVED", "CANCELLED"),
+            "APPROVED": ("ACTIVE", "CANCELLED"),
+            "ACTIVE": ("EXPIRED",),
+            "EXPIRED": (),
+            "CANCELLED": (),
+        },
         frozenset(
             [
                 "contract_number",
                 "contract_type",
+                "legal_review_required",
                 "document_id",
                 "employee_id",
                 "end_date",
                 "start_date",
             ]
         ),
-        frozenset(["contract_number", "contract_type", "end_date", "start_date"]),
+        frozenset(
+            [
+                "contract_number",
+                "contract_type",
+                "end_date",
+                "start_date",
+                "document_id",
+                "legal_review_required",
+            ]
+        ),
         False,
         transition_authorized=transition_visible,
         status_field="status",

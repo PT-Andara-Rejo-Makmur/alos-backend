@@ -12,6 +12,9 @@ from alos.agents.registry import AgentRegistry
 from alos.api.internal.routes import router as internal_router
 from alos.api.models import HealthResponse, ReadinessResponse
 from alos.api.public.ara_routes import router as ara_router
+from alos.api.public.business_routes import router as business_router
+from alos.api.public.capability_request_routes import router as capability_request_router
+from alos.api.public.document_upload_routes import router as document_upload_router
 from alos.api.public.domain_routes import router as domain_data_router
 from alos.api.public.domain_routes import workspace_navigation_router
 from alos.api.public.executive_routes import router as executive_router
@@ -20,6 +23,7 @@ from alos.api.public.hr_routes import router as hr_router
 from alos.api.public.it_routes import router as it_router
 from alos.api.public.legal_routes import router as legal_router
 from alos.api.public.marketing_routes import router as marketing_router
+from alos.api.public.process_routes import router as process_router
 from alos.api.public.property_routes import router as property_router
 from alos.api.public.release_routes import router as release_router
 from alos.api.public.routes import router as public_router
@@ -33,6 +37,8 @@ from alos.authentication.service import AuthService
 from alos.capabilities.registry import CapabilityRegistry
 from alos.config import Settings, get_settings
 from alos.contracts import CanonicalContractCatalog
+from alos.documents.ingestion import DocumentIngestionService
+from alos.documents.object_store import DocumentObjectStore
 from alos.domains.crud import DomainCrudService
 from alos.domains.executive.service import ExecutiveProjectionService
 from alos.domains.finance.service import FinanceService
@@ -56,6 +62,7 @@ from alos.notifications import InMemoryEmailAdapter, NotificationService, SmtpEm
 from alos.observability.correlation import CorrelationIdMiddleware
 from alos.persistence.database import Database
 from alos.persistence.registry import SqlRegistryStore
+from alos.processes.service import ProcessService
 from alos.registry import InMemoryRegistryStore
 from alos.releases import GovernedAgentLifecycle, PersistentReleaseAuthority
 from alos.security.errors import install_error_handlers
@@ -79,6 +86,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await app.state.agent_registry.hydrate()
             if isinstance(app.state.skill_registry, SkillRegistry):
                 await app.state.skill_registry.hydrate()
+            if isinstance(app.state.factory_capability_registry, CapabilityRegistry):
+                await app.state.factory_capability_registry.hydrate()
             app.state.registry_hydrated = True
         try:
             yield
@@ -181,7 +190,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         else None
     )
     app.state.factory_capability_registry = (
-        CapabilityRegistry(contracts, registry_audit) if contracts is not None else None
+        CapabilityRegistry(contracts, registry_audit, store=app.state.registry_store)
+        if contracts is not None
+        else None
     )
     app.state.factory_agent_registry = agent_registry
     app.state.agent_lifecycle = (
@@ -261,6 +272,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         strategy_repository, strategy_audit, auth_repository.workspace
     )
     records = RecordRepository(app.state.database.session_factory, contracts)
+    from alos.projections.metrics import BusinessMetricService
+
+    app.state.business_metric_service = BusinessMetricService(records, app.state.strategy_service)
+    app.state.strategy_service.domain_source_validator = app.state.business_metric_service.validate
+    app.state.strategy_service.domain_actual_calculator = (
+        app.state.business_metric_service.calculate
+    )
+    app.state.process_service = ProcessService(records)
+    app.state.documents_service = DocumentIngestionService(
+        records,
+        app.state.shared_work_service,
+        DocumentObjectStore(resolved.DOCUMENT_OBJECT_ROOT),
+        resolved.DOCUMENT_UPLOAD_MAX_BYTES,
+    )
     sales_refs = SalesReferences(records)
     marketing_refs = MarketingReferences(records)
     unit_refs = PropertyUnitReferences(records, app.state.shared_work_service)
@@ -329,15 +354,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(public_router)
     app.include_router(ara_router)
+    app.include_router(business_router)
     app.include_router(domain_data_router)
     app.include_router(shared_work_router)
+    app.include_router(document_upload_router)
     app.include_router(workspace_navigation_router)
     app.include_router(release_router)
+    app.include_router(capability_request_router)
     app.include_router(strategy_router)
     app.include_router(executive_router)
     app.include_router(sales_router)
     app.include_router(marketing_router)
     app.include_router(property_router)
+    app.include_router(process_router)
     app.include_router(finance_router)
     app.include_router(it_router)
     app.include_router(hr_router)

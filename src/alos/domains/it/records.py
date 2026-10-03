@@ -10,7 +10,8 @@ def transition_visible(status: str, principal: Principal) -> bool:
         and "it.write" in principal.permissions
     )
     return operational and (
-        status not in {"CLOSED", "REVIEWED"} or "DIVISION_LEAD" in principal.roles
+        status not in {"CLOSED", "REVIEWED", "READY", "DEPLOYED", "VERIFIED"}
+        or bool(principal.roles & {"DIVISION_LEAD", "IT_ADMIN"})
     )
 
 
@@ -108,11 +109,23 @@ SPECS = {
         "PLANNED",
         {
             "PLANNED": ("IN_REVIEW", "CANCELLED"),
-            "IN_REVIEW": ("PLANNED", "CANCELLED"),
+            "IN_REVIEW": ("PLANNED", "CANCELLED", "READY"),
+            "READY": ("DEPLOYED", "CANCELLED"),
+            "DEPLOYED": ("VERIFIED", "FAILED", "ROLLED_BACK"),
+            "FAILED": ("ROLLED_BACK",),
             "CANCELLED": (),
         },
-        frozenset(["environment_id", "repository_id", "version"]),
-        frozenset(["version"]),
+        frozenset(
+            [
+                "environment_id",
+                "repository_id",
+                "version",
+                "ci_run_id",
+                "deployment_reference",
+                "verification_notes",
+            ]
+        ),
+        frozenset(["version", "ci_run_id", "deployment_reference", "verification_notes"]),
         False,
         transition_authorized=transition_visible,
         status_field="status",

@@ -10,7 +10,8 @@ def transition_visible(status: str, principal: Principal) -> bool:
         and "legal.write" in principal.permissions
     )
     return operational and (
-        status not in {"CLOSED", "REVIEWED"} or "DIVISION_LEAD" in principal.roles
+        status not in {"CLOSED", "REVIEWED", "ACTIVE", "TERMINATED", "ARCHIVED"}
+        or "DIVISION_LEAD" in principal.roles
     )
 
 
@@ -32,7 +33,14 @@ SPECS = {
         "contract_id",
         "LegalContract",
         "DRAFT",
-        {"DRAFT": ("IN_REVIEW",), "IN_REVIEW": ("DRAFT",)},
+        {
+            "DRAFT": ("IN_REVIEW",),
+            "IN_REVIEW": ("DRAFT", "REVIEWED"),
+            "REVIEWED": ("ACTIVE", "ARCHIVED"),
+            "ACTIVE": ("EXPIRED", "TERMINATED"),
+            "EXPIRED": ("ARCHIVED",),
+            "TERMINATED": ("ARCHIVED",),
+        },
         frozenset(
             [
                 "contract_number",

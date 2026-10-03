@@ -4,8 +4,14 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from alos.agents.lifecycle import AuthoritativeRunStatus, RunAuthorityError
+from alos.api.public.record_routes import CanonicalRecordRequest
+from alos.ara.repository import AraRepository
 from alos.authentication.internal import verify_internal_token
-from alos.dependencies import DiagnosticPrincipalResolverDependency, ToolExecutorDependency
+from alos.dependencies import (
+    ContractCatalogDependency,
+    DiagnosticPrincipalResolverDependency,
+    ToolExecutorDependency,
+)
 from alos.identity import DataScope, Principal
 from alos.observability.correlation import current_correlation_id
 
@@ -14,6 +20,29 @@ router = APIRouter(
     tags=["internal"],
     dependencies=[Depends(verify_internal_token)],
 )
+
+
+class ProgressRequest(CanonicalRecordRequest):
+    schema_uri = "https://schemas.alos.dev/v1/ara/ara-progress-request.schema.json"
+
+
+@router.post("/agent-runs/{run_id}/progress")
+async def record_run_progress(
+    run_id: str, payload: ProgressRequest, request: Request, contracts: ContractCatalogDependency
+) -> dict[str, bool]:
+    values = payload.validated(contracts)
+    record = await request.app.state.agent_run_authority.get(run_id)
+    if record.correlation_id != values["correlation_id"]:
+        raise HTTPException(status_code=404, detail="run not found")
+    if record.status is not AuthoritativeRunStatus.RUNNING:
+        return {"accepted": False}
+    await AraRepository(request.app.state.database.session_factory).append_progress(
+        run_id,
+        record.correlation_id,
+        values["kind"],
+        "runtime." + values["event_key"],
+    )
+    return {"accepted": True}
 
 
 @router.get("/health", include_in_schema=False)

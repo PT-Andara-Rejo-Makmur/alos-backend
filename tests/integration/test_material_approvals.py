@@ -323,12 +323,13 @@ async def test_sales_win_closing_and_pricing_content_snapshot(context: Context) 
     await decide(context, win)
     await execute(context, "sales", "opportunities", opportunity["opportunity_id"], "WON", win)
     pricing = await context.create("sales", "pricings", {"name": "Recorded pricing"})
+    pricing_unit = await context.create("property", "property-units", {"unit_code": uuid4().hex})
     item = await context.create(
         "sales",
         "pricing-items",
         {
             "pricing_id": pricing["pricing_id"],
-            "property_unit_id": booked["property_unit_id"],
+            "property_unit_id": pricing_unit["property_unit_id"],
             "price": "10.01",
         },
     )

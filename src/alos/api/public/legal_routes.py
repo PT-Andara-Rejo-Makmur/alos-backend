@@ -1,6 +1,12 @@
 """Dedicated canonical schema adapters; resource policy lives in the owner service."""
 
-from alos.api.public.record_routes import CanonicalRecordRequest, register_record_routes
+from typing import Any
+
+from fastapi import Request
+
+from alos.api.public.record_routes import CanonicalRecordRequest, register_record_routes, response
+from alos.dependencies import ContractCatalogDependency, CurrentPrincipalDependency
+from alos.domains.legal.origins import link_contract
 from alos.domains.legal.records import SPECS
 
 MODELS: dict[tuple[str, str], type[CanonicalRecordRequest]] = {}
@@ -266,3 +272,30 @@ MODELS[("contract_revisions", "create")] = LegalContractRevisionCreateRequest
 
 
 router = register_record_routes("legal", SPECS, MODELS)
+
+
+class LegalContractBusinessOriginRequest(CanonicalRecordRequest):
+    schema_uri = "https://schemas.alos.dev/v1/legal/legal-contracts.schema.json#/$defs/LegalContractBusinessOriginRequest"
+
+
+@router.post("/contracts/{identity}/business-origin")
+async def business_origin(
+    identity: str,
+    payload: LegalContractBusinessOriginRequest,
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    contracts: ContractCatalogDependency,
+) -> Any:
+    values = payload.validated(contracts)
+    result = await link_contract(
+        request.app.state.process_service,
+        principal,
+        identity,
+        values["process_id"],
+        values["reason"],
+    )
+    return response(
+        contracts,
+        "https://schemas.alos.dev/v1/business/business-contracts.schema.json#/$defs/BusinessRelationshipOverview",
+        result,
+    )

@@ -309,15 +309,21 @@ class SharedWorkService:
         projection = {**jsonable_encoder(row), "workspace_ids": [principal.workspace_id]}
         if row.get("requested_action") is not None:
             domain = str(row["subject_type"]).split("_", 1)[0].lower()
-            can_decide = (row.get("status") == "PENDING"
+            can_decide = (
+                row.get("status") == "PENDING"
                 and row.get("requested_by") != principal.actor_id
                 and "DIVISION_LEAD" in principal.roles
-                and f"{domain}.write" in principal.permissions)
+                and f"{domain}.write" in principal.permissions
+            )
             projection["allowed_decisions"] = [
-                decision for decision, permission in (
-                    ("APPROVED", "approval.approve"), ("RETURNED", "approval.return"),
-                    ("REJECTED", "approval.reject"), ("HOLD", "approval.hold"),
-                ) if can_decide and permission in principal.permissions
+                decision
+                for decision, permission in (
+                    ("APPROVED", "approval.approve"),
+                    ("RETURNED", "approval.return"),
+                    ("REJECTED", "approval.reject"),
+                    ("HOLD", "approval.hold"),
+                )
+                if can_decide and permission in principal.permissions
             ]
         return projection
 
@@ -408,30 +414,40 @@ class SharedWorkService:
             if entity_type in {"TASK", "APPROVAL", "DOCUMENT"}:
                 document_links = await self._table(session, "shared_work_document_links")
                 if entity_type == "DOCUMENT":
-                    link_rows = (await session.execute(
-                        select(document_links.c.document_id, document_links.c.target_type,
-                               func.count()).where(
-                            document_links.c.tenant_id == principal.tenant_id,
-                            document_links.c.organization_id == principal.organization_id,
-                            document_links.c.workspace_id == principal.workspace_id,
-                            document_links.c.document_id.in_(ids),
-                        ).group_by(document_links.c.document_id,
-                                   document_links.c.target_type)
-                    )).all()
+                    link_rows = (
+                        await session.execute(
+                            select(
+                                document_links.c.document_id,
+                                document_links.c.target_type,
+                                func.count(),
+                            )
+                            .where(
+                                document_links.c.tenant_id == principal.tenant_id,
+                                document_links.c.organization_id == principal.organization_id,
+                                document_links.c.workspace_id == principal.workspace_id,
+                                document_links.c.document_id.in_(ids),
+                            )
+                            .group_by(document_links.c.document_id, document_links.c.target_type)
+                        )
+                    ).all()
                     document_link_counts = {
                         (str(document_id), str(target_type)): int(str(count))
                         for document_id, target_type, count in link_rows
                     }
                 else:
-                    link_rows = (await session.execute(
-                        select(document_links.c.target_id, func.count()).where(
-                            document_links.c.tenant_id == principal.tenant_id,
-                            document_links.c.organization_id == principal.organization_id,
-                            document_links.c.workspace_id == principal.workspace_id,
-                            document_links.c.target_type == entity_type,
-                            document_links.c.target_id.in_(ids),
-                        ).group_by(document_links.c.target_id)
-                    )).all()
+                    link_rows = (
+                        await session.execute(
+                            select(document_links.c.target_id, func.count())
+                            .where(
+                                document_links.c.tenant_id == principal.tenant_id,
+                                document_links.c.organization_id == principal.organization_id,
+                                document_links.c.workspace_id == principal.workspace_id,
+                                document_links.c.target_type == entity_type,
+                                document_links.c.target_id.in_(ids),
+                            )
+                            .group_by(document_links.c.target_id)
+                        )
+                    ).all()
                     document_link_counts = {
                         (str(target_id), "DOCUMENT"): int(str(count))
                         for target_id, count in link_rows
@@ -706,35 +722,52 @@ class SharedWorkService:
             if entity_type == "TASK":
                 findings = await self._table(session, "work_findings")
                 finding_links = await self._table(session, "work_finding_workspaces")
-                linked_tasks = (await session.execute(
-                    select(findings.c.corrective_action_task_id).where(
-                        findings.c.corrective_action_task_id.in_(ids),
-                        *self._visible(findings, finding_links, "finding_id", principal),
+                linked_tasks = (
+                    await session.execute(
+                        select(findings.c.corrective_action_task_id).where(
+                            findings.c.corrective_action_task_id.in_(ids),
+                            *self._visible(findings, finding_links, "finding_id", principal),
+                        )
                     )
-                )).all()
+                ).all()
                 finding_counts = Counter(item[0] for item in linked_tasks)
                 dependencies = await self._table(session, "shared_work_task_dependencies")
                 blockers = await self._table(session, "tasks")
                 blocker_links = await self._table(session, "task_workspaces")
-                dependency_rows = (await session.execute(
-                    select(dependencies.c.task_id, dependencies.c.blocked_by_task_id,
-                           blockers.c.title, blockers.c.status, dependencies.c.linked_at)
-                    .join(blockers, blockers.c.task_id == dependencies.c.blocked_by_task_id)
-                    .where(
-                        dependencies.c.tenant_id == principal.tenant_id,
-                        dependencies.c.organization_id == principal.organization_id,
-                        dependencies.c.workspace_id == principal.workspace_id,
-                        dependencies.c.task_id.in_(ids),
-                        *self._visible(blockers, blocker_links, "task_id", principal),
-                    ).order_by(dependencies.c.linked_at, dependencies.c.dependency_id)
-                )).mappings().all()
+                dependency_rows = (
+                    (
+                        await session.execute(
+                            select(
+                                dependencies.c.task_id,
+                                dependencies.c.blocked_by_task_id,
+                                blockers.c.title,
+                                blockers.c.status,
+                                dependencies.c.linked_at,
+                            )
+                            .join(blockers, blockers.c.task_id == dependencies.c.blocked_by_task_id)
+                            .where(
+                                dependencies.c.tenant_id == principal.tenant_id,
+                                dependencies.c.organization_id == principal.organization_id,
+                                dependencies.c.workspace_id == principal.workspace_id,
+                                dependencies.c.task_id.in_(ids),
+                                *self._visible(blockers, blocker_links, "task_id", principal),
+                            )
+                            .order_by(dependencies.c.linked_at, dependencies.c.dependency_id)
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
                 by_task: dict[str, list[dict[str, Any]]] = {}
                 for item in dependency_rows:
-                    by_task.setdefault(str(item["task_id"]), []).append({
-                        "blocked_by_task_id": str(item["blocked_by_task_id"]),
-                        "title": item["title"], "status": item["status"],
-                        "linked_at": jsonable_encoder(item["linked_at"]),
-                    })
+                    by_task.setdefault(str(item["task_id"]), []).append(
+                        {
+                            "blocked_by_task_id": str(item["blocked_by_task_id"]),
+                            "title": item["title"],
+                            "status": item["status"],
+                            "linked_at": jsonable_encoder(item["linked_at"]),
+                        }
+                    )
                 for row in rows:
                     row["findings_count"] = finding_counts[str(row["task_id"])]
                     row["blocked_by"] = by_task.get(str(row["task_id"]), [])
@@ -899,8 +932,12 @@ class SharedWorkService:
         }
         if entity_type == "DOCUMENT":
             row = await self._document_row(session, principal, entity_id)
-            return {"entity_type": entity_type, "entity_id": entity_id,
-                    "title": str(row["title"]), "status": str(row["status"])}
+            return {
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "title": str(row["title"]),
+                "status": str(row["status"]),
+            }
         if entity_type == "APPROVAL":
             approvals = await self._table(session, "work_approvals")
             approval_links = await self._table(session, "work_approval_workspaces")
@@ -941,16 +978,22 @@ class SharedWorkService:
         table_name, link_name, identifier, title = configuration
         table = await self._table(session, table_name)
         link = await self._table(session, link_name)
-        record = (await session.execute(
-            select(table.c[title], table.c.status).where(
-                table.c[identifier] == entity_id,
-                *self._visible(table, link, identifier, principal),
+        record = (
+            await session.execute(
+                select(table.c[title], table.c.status).where(
+                    table.c[identifier] == entity_id,
+                    *self._visible(table, link, identifier, principal),
+                )
             )
-        )).first()
+        ).first()
         if record is None:
             raise self._not_found()
-        return {"entity_type": entity_type, "entity_id": entity_id,
-                "title": str(record[0]), "status": str(record[1])}
+        return {
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "title": str(record[0]),
+            "status": str(record[1]),
+        }
 
     async def list_relations(
         self, principal: Principal, entity_type: str, entity_id: str
@@ -968,8 +1011,9 @@ class SharedWorkService:
             if entity_type == "DOCUMENT":
                 predicates.append(links.c.document_id == entity_id)
             elif entity_type in {"TASK", "APPROVAL"}:
-                predicates.extend((links.c.target_type == entity_type,
-                                   links.c.target_id == entity_id))
+                predicates.extend(
+                    (links.c.target_type == entity_type, links.c.target_id == entity_id)
+                )
             else:
                 predicates.append(links.c.link_id == "")
             linked = (await session.execute(select(links).where(*predicates))).mappings().all()
@@ -980,9 +1024,9 @@ class SharedWorkService:
                     if entity_type == "DOCUMENT"
                     else ("DOCUMENT", str(item["document_id"]))
                 )
-                result.append(await self._relation_projection(
-                    session, principal, target_type, target_id
-                ))
+                result.append(
+                    await self._relation_projection(session, principal, target_type, target_id)
+                )
             direct: list[tuple[str, str]] = []
             if entity_type == "DOCUMENT":
                 document = await self._document_row(session, principal, entity_id)
@@ -990,50 +1034,76 @@ class SharedWorkService:
                     direct.append(("PROJECT", str(document["project_id"])))
             elif entity_type == "TASK":
                 tasks = await self._table(session, "tasks")
-                project_id = (await session.execute(select(tasks.c.project_id).where(
-                    tasks.c.task_id == entity_id,
-                    tasks.c.tenant_id == principal.tenant_id,
-                    tasks.c.organization_id == principal.organization_id,
-                ))).scalar_one_or_none()
+                project_id = (
+                    await session.execute(
+                        select(tasks.c.project_id).where(
+                            tasks.c.task_id == entity_id,
+                            tasks.c.tenant_id == principal.tenant_id,
+                            tasks.c.organization_id == principal.organization_id,
+                        )
+                    )
+                ).scalar_one_or_none()
                 if project_id:
                     direct.append(("PROJECT", str(project_id)))
                 findings = await self._table(session, "work_findings")
                 finding_links = await self._table(session, "work_finding_workspaces")
                 finding_ids: Sequence[object] = (
-                    await session.execute(select(findings.c.finding_id).where(
-                        findings.c.corrective_action_task_id == entity_id,
-                        *self._visible(findings, finding_links, "finding_id", principal),
-                    ))
-                ).scalars().all()
+                    (
+                        await session.execute(
+                            select(findings.c.finding_id).where(
+                                findings.c.corrective_action_task_id == entity_id,
+                                *self._visible(findings, finding_links, "finding_id", principal),
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
                 direct.extend(("FINDING", str(item)) for item in finding_ids)
             elif entity_type == "APPROVAL":
                 approvals = await self._table(session, "work_approvals")
-                subject = (await session.execute(select(
-                    approvals.c.subject_type, approvals.c.subject_id,
-                ).where(approvals.c.approval_id == entity_id,
-                        approvals.c.tenant_id == principal.tenant_id,
-                        approvals.c.organization_id == principal.organization_id))).first()
+                subject = (
+                    await session.execute(
+                        select(
+                            approvals.c.subject_type,
+                            approvals.c.subject_id,
+                        ).where(
+                            approvals.c.approval_id == entity_id,
+                            approvals.c.tenant_id == principal.tenant_id,
+                            approvals.c.organization_id == principal.organization_id,
+                        )
+                    )
+                ).first()
                 if subject and str(subject[0]) in self._approval_subjects:
                     direct.append((str(subject[0]), str(subject[1])))
             elif entity_type in {"FINDING", "REPORT"}:
                 table_name, identifier = (
-                    ("work_findings", "finding_id") if entity_type == "FINDING"
+                    ("work_findings", "finding_id")
+                    if entity_type == "FINDING"
                     else ("work_reports", "report_id")
                 )
                 table = await self._table(session, table_name)
-                record = (await session.execute(select(table).where(
-                    table.c[identifier] == entity_id,
-                    table.c.tenant_id == principal.tenant_id,
-                    table.c.organization_id == principal.organization_id,
-                ))).mappings().first()
+                record = (
+                    (
+                        await session.execute(
+                            select(table).where(
+                                table.c[identifier] == entity_id,
+                                table.c.tenant_id == principal.tenant_id,
+                                table.c.organization_id == principal.organization_id,
+                            )
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
                 if record and record.get("project_id"):
                     direct.append(("PROJECT", str(record["project_id"])))
                 if entity_type == "FINDING" and record and record.get("corrective_action_task_id"):
                     direct.append(("TASK", str(record["corrective_action_task_id"])))
             for target_type, target_id in direct:
-                result.append(await self._relation_projection(
-                    session, principal, target_type, target_id
-                ))
+                result.append(
+                    await self._relation_projection(session, principal, target_type, target_id)
+                )
             return result
 
     async def link_document(
@@ -1051,16 +1121,24 @@ class SharedWorkService:
                 links.c.target_type == target_type,
                 links.c.target_id == target_id,
             )
-            existing = (await session.execute(select(links.c.link_id).where(*predicates)))\
-                .scalar_one_or_none()
+            existing = (
+                await session.execute(select(links.c.link_id).where(*predicates))
+            ).scalar_one_or_none()
             if existing is not None:
                 return target, False
-            await session.execute(insert(links).values(
-                link_id=uuid4().hex, tenant_id=principal.tenant_id,
-                organization_id=principal.organization_id, workspace_id=principal.workspace_id,
-                document_id=document_id, target_type=target_type, target_id=target_id,
-                linked_by=principal.actor_id, linked_at=datetime.now(UTC),
-            ))
+            await session.execute(
+                insert(links).values(
+                    link_id=uuid4().hex,
+                    tenant_id=principal.tenant_id,
+                    organization_id=principal.organization_id,
+                    workspace_id=principal.workspace_id,
+                    document_id=document_id,
+                    target_type=target_type,
+                    target_id=target_id,
+                    linked_by=principal.actor_id,
+                    linked_at=datetime.now(UTC),
+                )
+            )
             return target, True
 
     async def list_checklist(
@@ -1069,19 +1147,37 @@ class SharedWorkService:
         async with self._session_factory() as session:
             await self._assert_shared_entity(session, principal, entity_type, entity_id)
             table = await self._table(session, "shared_work_checklist_items")
-            rows = (await session.execute(select(table).where(
-                table.c.tenant_id == principal.tenant_id,
-                table.c.organization_id == principal.organization_id,
-                table.c.workspace_id == principal.workspace_id,
-                table.c.entity_type == entity_type, table.c.entity_id == entity_id,
-            ).order_by(table.c.created_at, table.c.item_id))).mappings().all()
+            rows = (
+                (
+                    await session.execute(
+                        select(table)
+                        .where(
+                            table.c.tenant_id == principal.tenant_id,
+                            table.c.organization_id == principal.organization_id,
+                            table.c.workspace_id == principal.workspace_id,
+                            table.c.entity_type == entity_type,
+                            table.c.entity_id == entity_id,
+                        )
+                        .order_by(table.c.created_at, table.c.item_id)
+                    )
+                )
+                .mappings()
+                .all()
+            )
             return [self._checklist_projection(row) for row in rows]
 
     @staticmethod
     def _checklist_projection(row: Any) -> dict[str, Any]:
         fields = (
-            "item_id", "entity_type", "entity_id", "body", "completed",
-            "created_by", "completed_by", "created_at", "completed_at",
+            "item_id",
+            "entity_type",
+            "entity_id",
+            "body",
+            "completed",
+            "created_by",
+            "completed_by",
+            "created_at",
+            "completed_at",
         )
         return dict(jsonable_encoder({field: row[field] for field in fields}))
 
@@ -1091,12 +1187,28 @@ class SharedWorkService:
         async with self._session_factory() as session, session.begin():
             await self._assert_shared_entity(session, principal, entity_type, entity_id)
             table = await self._table(session, "shared_work_checklist_items")
-            row = (await session.execute(insert(table).values(
-                item_id=uuid4().hex, tenant_id=principal.tenant_id,
-                organization_id=principal.organization_id, workspace_id=principal.workspace_id,
-                entity_type=entity_type, entity_id=entity_id, body=body.strip(),
-                completed=False, created_by=principal.actor_id, created_at=datetime.now(UTC),
-            ).returning(table))).mappings().one()
+            row = (
+                (
+                    await session.execute(
+                        insert(table)
+                        .values(
+                            item_id=uuid4().hex,
+                            tenant_id=principal.tenant_id,
+                            organization_id=principal.organization_id,
+                            workspace_id=principal.workspace_id,
+                            entity_type=entity_type,
+                            entity_id=entity_id,
+                            body=body.strip(),
+                            completed=False,
+                            created_by=principal.actor_id,
+                            created_at=datetime.now(UTC),
+                        )
+                        .returning(table)
+                    )
+                )
+                .mappings()
+                .one()
+            )
             return self._checklist_projection(row)
 
     async def complete_checklist_item(
@@ -1105,19 +1217,44 @@ class SharedWorkService:
         async with self._session_factory() as session, session.begin():
             await self._assert_shared_entity(session, principal, entity_type, entity_id)
             table = await self._table(session, "shared_work_checklist_items")
-            row = (await session.execute(select(table).where(
-                table.c.item_id == item_id, table.c.tenant_id == principal.tenant_id,
-                table.c.organization_id == principal.organization_id,
-                table.c.workspace_id == principal.workspace_id,
-                table.c.entity_type == entity_type, table.c.entity_id == entity_id,
-            ).with_for_update())).mappings().first()
+            row = (
+                (
+                    await session.execute(
+                        select(table)
+                        .where(
+                            table.c.item_id == item_id,
+                            table.c.tenant_id == principal.tenant_id,
+                            table.c.organization_id == principal.organization_id,
+                            table.c.workspace_id == principal.workspace_id,
+                            table.c.entity_type == entity_type,
+                            table.c.entity_id == entity_id,
+                        )
+                        .with_for_update()
+                    )
+                )
+                .mappings()
+                .first()
+            )
             if row is None:
                 raise self._not_found()
             if row["completed"]:
                 return self._checklist_projection(row), False
-            changed = (await session.execute(update(table).where(table.c.item_id == item_id).values(
-                completed=True, completed_by=principal.actor_id, completed_at=datetime.now(UTC),
-            ).returning(table))).mappings().one()
+            changed = (
+                (
+                    await session.execute(
+                        update(table)
+                        .where(table.c.item_id == item_id)
+                        .values(
+                            completed=True,
+                            completed_by=principal.actor_id,
+                            completed_at=datetime.now(UTC),
+                        )
+                        .returning(table)
+                    )
+                )
+                .mappings()
+                .one()
+            )
             return self._checklist_projection(changed), True
 
     async def list_evidence(
@@ -1128,30 +1265,48 @@ class SharedWorkService:
             links = await self._table(session, "shared_work_evidence_links")
             evidence = await self._table(session, "evidence_refs", schema="evidence")
             sources = await self._table(session, "sources")
-            rows = (await session.execute(
-                select(
-                    links.c.link_id, links.c.entity_type, links.c.entity_id,
-                    links.c.evidence_id, evidence.c.source_id,
-                    sources.c.title.label("source_title"), evidence.c.source_version,
-                    evidence.c.content_hash, evidence.c.validation_status,
-                    links.c.linked_by, links.c.linked_at,
-                ).join(evidence, evidence.c.evidence_id == links.c.evidence_id)
-                .outerjoin(sources, and_(
-                    sources.c.source_id == evidence.c.source_id,
-                    sources.c.tenant_id == principal.tenant_id,
-                    sources.c.organization_id == principal.organization_id,
-                    sources.c.workspace_id == principal.workspace_id,
-                ))
-                .where(links.c.entity_type == entity_type,
-                       links.c.entity_id == entity_id,
-                       links.c.tenant_id == principal.tenant_id,
-                       links.c.organization_id == principal.organization_id,
-                       links.c.workspace_id == principal.workspace_id,
-                       evidence.c.tenant_id == principal.tenant_id,
-                       evidence.c.organization_id == principal.organization_id,
-                       evidence.c.workspace_id == principal.workspace_id)
-                .order_by(links.c.linked_at.desc())
-            )).mappings().all()
+            rows = (
+                (
+                    await session.execute(
+                        select(
+                            links.c.link_id,
+                            links.c.entity_type,
+                            links.c.entity_id,
+                            links.c.evidence_id,
+                            evidence.c.source_id,
+                            sources.c.title.label("source_title"),
+                            evidence.c.source_version,
+                            evidence.c.content_hash,
+                            evidence.c.validation_status,
+                            links.c.linked_by,
+                            links.c.linked_at,
+                        )
+                        .join(evidence, evidence.c.evidence_id == links.c.evidence_id)
+                        .outerjoin(
+                            sources,
+                            and_(
+                                sources.c.source_id == evidence.c.source_id,
+                                sources.c.tenant_id == principal.tenant_id,
+                                sources.c.organization_id == principal.organization_id,
+                                sources.c.workspace_id == principal.workspace_id,
+                            ),
+                        )
+                        .where(
+                            links.c.entity_type == entity_type,
+                            links.c.entity_id == entity_id,
+                            links.c.tenant_id == principal.tenant_id,
+                            links.c.organization_id == principal.organization_id,
+                            links.c.workspace_id == principal.workspace_id,
+                            evidence.c.tenant_id == principal.tenant_id,
+                            evidence.c.organization_id == principal.organization_id,
+                            evidence.c.workspace_id == principal.workspace_id,
+                        )
+                        .order_by(links.c.linked_at.desc())
+                    )
+                )
+                .mappings()
+                .all()
+            )
             return [jsonable_encoder(dict(row)) for row in rows]
 
     async def list_evidence_candidates(self, principal: Principal) -> list[dict[str, Any]]:
@@ -1159,23 +1314,40 @@ class SharedWorkService:
             await self._verify_workspace(session, principal)
             evidence = await self._table(session, "evidence_refs", schema="evidence")
             sources = await self._table(session, "sources")
-            rows = (await session.execute(
-                select(evidence.c.evidence_id, evidence.c.source_id,
-                       sources.c.title.label("source_title"),
-                       evidence.c.source_version, evidence.c.content_hash,
-                       evidence.c.validation_status, evidence.c.captured_at)
-                .outerjoin(sources, and_(
-                    sources.c.source_id == evidence.c.source_id,
-                    sources.c.tenant_id == principal.tenant_id,
-                    sources.c.organization_id == principal.organization_id,
-                    sources.c.workspace_id == principal.workspace_id,
-                ))
-                .where(evidence.c.tenant_id == principal.tenant_id,
-                       evidence.c.organization_id == principal.organization_id,
-                       evidence.c.workspace_id == principal.workspace_id,
-                       evidence.c.validation_status == "VERIFIED")
-                .order_by(evidence.c.captured_at.desc()).limit(200)
-            )).mappings().all()
+            rows = (
+                (
+                    await session.execute(
+                        select(
+                            evidence.c.evidence_id,
+                            evidence.c.source_id,
+                            sources.c.title.label("source_title"),
+                            evidence.c.source_version,
+                            evidence.c.content_hash,
+                            evidence.c.validation_status,
+                            evidence.c.captured_at,
+                        )
+                        .outerjoin(
+                            sources,
+                            and_(
+                                sources.c.source_id == evidence.c.source_id,
+                                sources.c.tenant_id == principal.tenant_id,
+                                sources.c.organization_id == principal.organization_id,
+                                sources.c.workspace_id == principal.workspace_id,
+                            ),
+                        )
+                        .where(
+                            evidence.c.tenant_id == principal.tenant_id,
+                            evidence.c.organization_id == principal.organization_id,
+                            evidence.c.workspace_id == principal.workspace_id,
+                            evidence.c.validation_status == "VERIFIED",
+                        )
+                        .order_by(evidence.c.captured_at.desc())
+                        .limit(200)
+                    )
+                )
+                .mappings()
+                .all()
+            )
             return [jsonable_encoder(dict(row)) for row in rows]
 
     async def link_evidence(
@@ -1185,59 +1357,86 @@ class SharedWorkService:
             await self._assert_shared_entity(session, principal, entity_type, entity_id)
             evidence = await self._table(session, "evidence_refs", schema="evidence")
             sources = await self._table(session, "sources")
-            source = (await session.execute(
-                select(evidence).where(
-                    evidence.c.evidence_id == evidence_id,
-                    evidence.c.tenant_id == principal.tenant_id,
-                    evidence.c.organization_id == principal.organization_id,
-                    evidence.c.workspace_id == principal.workspace_id,
-                    evidence.c.validation_status == "VERIFIED",
+            source = (
+                (
+                    await session.execute(
+                        select(evidence).where(
+                            evidence.c.evidence_id == evidence_id,
+                            evidence.c.tenant_id == principal.tenant_id,
+                            evidence.c.organization_id == principal.organization_id,
+                            evidence.c.workspace_id == principal.workspace_id,
+                            evidence.c.validation_status == "VERIFIED",
+                        )
+                    )
                 )
-            )).mappings().first()
+                .mappings()
+                .first()
+            )
             if source is None:
                 raise self._not_found()
-            source_title = (await session.execute(
-                select(sources.c.title).where(
-                    sources.c.source_id == source["source_id"],
-                    sources.c.tenant_id == principal.tenant_id,
-                    sources.c.organization_id == principal.organization_id,
-                    sources.c.workspace_id == principal.workspace_id,
+            source_title = (
+                await session.execute(
+                    select(sources.c.title).where(
+                        sources.c.source_id == source["source_id"],
+                        sources.c.tenant_id == principal.tenant_id,
+                        sources.c.organization_id == principal.organization_id,
+                        sources.c.workspace_id == principal.workspace_id,
+                    )
                 )
-            )).scalar_one_or_none()
+            ).scalar_one_or_none()
             links = await self._table(session, "shared_work_evidence_links")
-            existing = (await session.execute(
-                select(links).where(
-                    links.c.tenant_id == principal.tenant_id,
-                    links.c.organization_id == principal.organization_id,
-                    links.c.workspace_id == principal.workspace_id,
-                    links.c.entity_type == entity_type,
-                    links.c.entity_id == entity_id,
-                    links.c.evidence_id == evidence_id,
+            existing = (
+                (
+                    await session.execute(
+                        select(links).where(
+                            links.c.tenant_id == principal.tenant_id,
+                            links.c.organization_id == principal.organization_id,
+                            links.c.workspace_id == principal.workspace_id,
+                            links.c.entity_type == entity_type,
+                            links.c.entity_id == entity_id,
+                            links.c.evidence_id == evidence_id,
+                        )
+                    )
                 )
-            )).mappings().first()
+                .mappings()
+                .first()
+            )
             if existing is None:
-                linked = (await session.execute(
-                    insert(links).values(
-                        link_id=uuid4().hex,
-                        tenant_id=principal.tenant_id,
-                        organization_id=principal.organization_id,
-                        workspace_id=principal.workspace_id,
-                        entity_type=entity_type, entity_id=entity_id,
-                        evidence_id=evidence_id, linked_by=principal.actor_id,
-                        linked_at=datetime.now(UTC),
-                    ).returning(links)
-                )).mappings().one()
+                linked = (
+                    (
+                        await session.execute(
+                            insert(links)
+                            .values(
+                                link_id=uuid4().hex,
+                                tenant_id=principal.tenant_id,
+                                organization_id=principal.organization_id,
+                                workspace_id=principal.workspace_id,
+                                entity_type=entity_type,
+                                entity_id=entity_id,
+                                evidence_id=evidence_id,
+                                linked_by=principal.actor_id,
+                                linked_at=datetime.now(UTC),
+                            )
+                            .returning(links)
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
             else:
                 linked = existing
             result = {
-                "link_id": linked["link_id"], "entity_type": entity_type,
-                "entity_id": entity_id, "evidence_id": evidence_id,
+                "link_id": linked["link_id"],
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "evidence_id": evidence_id,
                 "source_id": source["source_id"],
                 "source_title": source_title,
                 "source_version": source["source_version"],
                 "content_hash": source["content_hash"],
                 "validation_status": source["validation_status"],
-                "linked_by": linked["linked_by"], "linked_at": linked["linked_at"],
+                "linked_by": linked["linked_by"],
+                "linked_at": linked["linked_at"],
             }
             return jsonable_encoder(result), existing is None
 
@@ -1248,21 +1447,38 @@ class SharedWorkService:
             await self._assert_shared_entity(session, principal, entity_type, entity_id)
             audit = await self._table(session, "audit_records", schema="audit")
             actors = await self._table(session, "actors")
-            rows = (await session.execute(
-                select(audit.c.audit_id, audit.c.event_type, audit.c.actor_id,
-                       actors.c.display_name.label("actor_name"), audit.c.occurred_at)
-                .outerjoin(actors, actors.c.actor_id == audit.c.actor_id)
-                .where(audit.c.entity_type == entity_type.lower(),
-                       audit.c.entity_id == entity_id,
-                       audit.c.tenant_id == principal.tenant_id,
-                       audit.c.organization_id == principal.organization_id,
-                       audit.c.workspace_id == principal.workspace_id,
-                       audit.c.outcome == "SUCCEEDED")
-                .order_by(audit.c.occurred_at.desc(), audit.c.audit_id.desc())
-                .limit(200)
-            )).mappings().all()
-            return [jsonable_encoder({**dict(row),
-                     "actor_name": row["actor_name"] or "Aktor tidak tersedia"}) for row in rows]
+            rows = (
+                (
+                    await session.execute(
+                        select(
+                            audit.c.audit_id,
+                            audit.c.event_type,
+                            audit.c.actor_id,
+                            actors.c.display_name.label("actor_name"),
+                            audit.c.occurred_at,
+                        )
+                        .outerjoin(actors, actors.c.actor_id == audit.c.actor_id)
+                        .where(
+                            audit.c.entity_type == entity_type.lower(),
+                            audit.c.entity_id == entity_id,
+                            audit.c.tenant_id == principal.tenant_id,
+                            audit.c.organization_id == principal.organization_id,
+                            audit.c.workspace_id == principal.workspace_id,
+                            audit.c.outcome == "SUCCEEDED",
+                        )
+                        .order_by(audit.c.occurred_at.desc(), audit.c.audit_id.desc())
+                        .limit(200)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            return [
+                jsonable_encoder(
+                    {**dict(row), "actor_name": row["actor_name"] or "Aktor tidak tersedia"}
+                )
+                for row in rows
+            ]
 
     async def list_comments(
         self, principal: Principal, entity_type: str, entity_id: str
@@ -1271,20 +1487,38 @@ class SharedWorkService:
             await self._assert_shared_entity(session, principal, entity_type, entity_id)
             comments = await self._table(session, "shared_work_comments")
             actors = await self._table(session, "actors")
-            rows = (await session.execute(
-                select(comments.c.comment_id, comments.c.entity_type, comments.c.entity_id,
-                       comments.c.actor_id, actors.c.display_name.label("actor_name"),
-                       comments.c.body, comments.c.created_at)
-                .outerjoin(actors, actors.c.actor_id == comments.c.actor_id)
-                .where(comments.c.tenant_id == principal.tenant_id,
-                       comments.c.organization_id == principal.organization_id,
-                       comments.c.workspace_id == principal.workspace_id,
-                       comments.c.entity_type == entity_type,
-                       comments.c.entity_id == entity_id)
-                .order_by(comments.c.created_at.desc())
-            )).mappings().all()
-            return [jsonable_encoder({**dict(row),
-                     "actor_name": row["actor_name"] or "Aktor tidak tersedia"}) for row in rows]
+            rows = (
+                (
+                    await session.execute(
+                        select(
+                            comments.c.comment_id,
+                            comments.c.entity_type,
+                            comments.c.entity_id,
+                            comments.c.actor_id,
+                            actors.c.display_name.label("actor_name"),
+                            comments.c.body,
+                            comments.c.created_at,
+                        )
+                        .outerjoin(actors, actors.c.actor_id == comments.c.actor_id)
+                        .where(
+                            comments.c.tenant_id == principal.tenant_id,
+                            comments.c.organization_id == principal.organization_id,
+                            comments.c.workspace_id == principal.workspace_id,
+                            comments.c.entity_type == entity_type,
+                            comments.c.entity_id == entity_id,
+                        )
+                        .order_by(comments.c.created_at.desc())
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            return [
+                jsonable_encoder(
+                    {**dict(row), "actor_name": row["actor_name"] or "Aktor tidak tersedia"}
+                )
+                for row in rows
+            ]
 
     async def create_comment(
         self, principal: Principal, entity_type: str, entity_id: str, body: str
@@ -1293,30 +1527,49 @@ class SharedWorkService:
             await self._assert_shared_entity(session, principal, entity_type, entity_id)
             comments = await self._table(session, "shared_work_comments")
             actors = await self._table(session, "actors")
-            name = (await session.execute(
-                select(actors.c.display_name).where(
-                    actors.c.actor_id == principal.actor_id,
-                    actors.c.tenant_id == principal.tenant_id,
-                    actors.c.organization_id == principal.organization_id,
+            name = (
+                await session.execute(
+                    select(actors.c.display_name).where(
+                        actors.c.actor_id == principal.actor_id,
+                        actors.c.tenant_id == principal.tenant_id,
+                        actors.c.organization_id == principal.organization_id,
+                    )
                 )
-            )).scalar_one_or_none()
-            row = (await session.execute(
-                insert(comments).values(
-                    comment_id=uuid4().hex,
-                    tenant_id=principal.tenant_id,
-                    organization_id=principal.organization_id,
-                    workspace_id=principal.workspace_id,
-                    entity_type=entity_type, entity_id=entity_id,
-                    actor_id=principal.actor_id, body=body.strip(),
-                    created_at=datetime.now(UTC),
-                ).returning(comments)
-            )).mappings().one()
-            return dict(jsonable_encoder({
-                "comment_id": row["comment_id"], "entity_type": entity_type,
-                "entity_id": entity_id, "actor_id": principal.actor_id,
-                "actor_name": name or "Aktor tidak tersedia",
-                "body": row["body"], "created_at": row["created_at"],
-            }))
+            ).scalar_one_or_none()
+            row = (
+                (
+                    await session.execute(
+                        insert(comments)
+                        .values(
+                            comment_id=uuid4().hex,
+                            tenant_id=principal.tenant_id,
+                            organization_id=principal.organization_id,
+                            workspace_id=principal.workspace_id,
+                            entity_type=entity_type,
+                            entity_id=entity_id,
+                            actor_id=principal.actor_id,
+                            body=body.strip(),
+                            created_at=datetime.now(UTC),
+                        )
+                        .returning(comments)
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            return dict(
+                jsonable_encoder(
+                    {
+                        "comment_id": row["comment_id"],
+                        "entity_type": entity_type,
+                        "entity_id": entity_id,
+                        "actor_id": principal.actor_id,
+                        "actor_name": name or "Aktor tidak tersedia",
+                        "body": row["body"],
+                        "created_at": row["created_at"],
+                    }
+                )
+            )
 
     async def _verify_workspace(self, session: AsyncSession, principal: Principal) -> None:
         workspaces = await self._table(session, "workspaces")
@@ -1340,11 +1593,13 @@ class SharedWorkService:
         a read-only repeatable snapshot; no entity or lifecycle is copied or mutated.
         """
         if not principal.active or "EXECUTIVE" not in principal.roles:
-            raise PlatformError("EXECUTIVE_ROLE_DENIED", "Executive access is required.",
-                                status_code=403)
+            raise PlatformError(
+                "EXECUTIVE_ROLE_DENIED", "Executive access is required.", status_code=403
+            )
         if "work.read" not in principal.permissions:
-            raise PlatformError("WORK_PERMISSION_DENIED", "Shared Work read is required.",
-                                status_code=403)
+            raise PlatformError(
+                "WORK_PERMISSION_DENIED", "Shared Work read is required.", status_code=403
+            )
         counts: dict[str, int] = {}
         result: dict[str, Any] = {"counts": counts}
         times: list[datetime] = []
@@ -1407,26 +1662,47 @@ class SharedWorkService:
                     priority = [active.desc(), (table.c.severity == "CRITICAL").desc()]
                 updated = (
                     func.coalesce(table.c.decided_at, table.c.requested_at)
-                    if name == "approvals" else table.c.updated_at
+                    if name == "approvals"
+                    else table.c.updated_at
                 )
-                aggregate = (await session.execute(
-                    select(
-                        func.count().label(name),
-                        *(func.count().filter(condition).label(key)
-                          for key, condition in metrics.items()),
-                        func.max(updated).label("last_updated_at"),
-                    ).select_from(table).where(*predicates)
-                )).mappings().one()
+                aggregate = (
+                    (
+                        await session.execute(
+                            select(
+                                func.count().label(name),
+                                *(
+                                    func.count().filter(condition).label(key)
+                                    for key, condition in metrics.items()
+                                ),
+                                func.max(updated).label("last_updated_at"),
+                            )
+                            .select_from(table)
+                            .where(*predicates)
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
                 counts.update({key: int(aggregate[key]) for key in (name, *metrics)})
                 if aggregate["last_updated_at"] is not None:
                     times.append(aggregate["last_updated_at"])
-                rows = (await session.execute(
-                    select(table).where(*predicates)
-                    .order_by(*priority, updated.desc(), table.c[identifier]).limit(50)
-                )).mappings().all()
+                rows = (
+                    (
+                        await session.execute(
+                            select(table)
+                            .where(*predicates)
+                            .order_by(*priority, updated.desc(), table.c[identifier])
+                            .limit(50)
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
                 result[name] = [
-                    self._document_projection(dict(row)) if name == "documents"
-                    else self._projection(dict(row), principal) for row in rows
+                    self._document_projection(dict(row))
+                    if name == "documents"
+                    else self._projection(dict(row), principal)
+                    for row in rows
                 ]
         result["last_updated_at"] = max(times).isoformat() if times else None
         return cast("ExecutiveSharedWorkSummary", result)
@@ -1467,71 +1743,142 @@ class SharedWorkService:
             result: list[dict[str, str]] = []
             tasks = await self._table(session, "tasks")
             task_links = await self._table(session, "task_workspaces")
-            task_rows = (await session.execute(
-                select(tasks.c.task_id, tasks.c.title, tasks.c.status).where(
-                    tasks.c.project_id == project_id,
-                    *self._visible(tasks, task_links, "task_id", principal),
+            task_rows = (
+                (
+                    await session.execute(
+                        select(tasks.c.task_id, tasks.c.title, tasks.c.status).where(
+                            tasks.c.project_id == project_id,
+                            *self._visible(tasks, task_links, "task_id", principal),
+                        )
+                    )
                 )
-            )).mappings().all()
+                .mappings()
+                .all()
+            )
             task_ids = [str(row["task_id"]) for row in task_rows]
             task_titles = {str(row["task_id"]): str(row["title"]) for row in task_rows}
             projects = await self._table(session, "projects")
-            project_title: object = (await session.execute(
-                select(projects.c.name).where(projects.c.project_id == project_id)
-            )).scalar_one()
-            for row in task_rows:
-                result.append({"entity_type": "TASK", "entity_id": str(row["task_id"]),
-                               "title": str(row["title"]), "status": str(row["status"])})
-            documents = await self._table(session, "documents")
-            for row in (await session.execute(
-                select(documents.c.document_id, documents.c.title, documents.c.status).where(
-                    documents.c.project_id == project_id,
-                    *self._document_scope(documents, principal),
+            project_title: object = (
+                await session.execute(
+                    select(projects.c.name).where(projects.c.project_id == project_id)
                 )
-            )).mappings().all():
-                result.append({"entity_type": "DOCUMENT",
-                               "entity_id": str(row["document_id"]),
-                               "title": str(row["title"]), "status": str(row["status"])})
+            ).scalar_one()
+            for row in task_rows:
+                result.append(
+                    {
+                        "entity_type": "TASK",
+                        "entity_id": str(row["task_id"]),
+                        "title": str(row["title"]),
+                        "status": str(row["status"]),
+                    }
+                )
+            documents = await self._table(session, "documents")
+            for row in (
+                (
+                    await session.execute(
+                        select(
+                            documents.c.document_id, documents.c.title, documents.c.status
+                        ).where(
+                            documents.c.project_id == project_id,
+                            *self._document_scope(documents, principal),
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            ):
+                result.append(
+                    {
+                        "entity_type": "DOCUMENT",
+                        "entity_id": str(row["document_id"]),
+                        "title": str(row["title"]),
+                        "status": str(row["status"]),
+                    }
+                )
             findings = await self._table(session, "work_findings")
             finding_links = await self._table(session, "work_finding_workspaces")
-            for row in (await session.execute(
-                select(findings.c.finding_id, findings.c.title, findings.c.status).where(
-                    findings.c.project_id == project_id,
-                    *self._visible(findings, finding_links, "finding_id", principal),
+            for row in (
+                (
+                    await session.execute(
+                        select(findings.c.finding_id, findings.c.title, findings.c.status).where(
+                            findings.c.project_id == project_id,
+                            *self._visible(findings, finding_links, "finding_id", principal),
+                        )
+                    )
                 )
-            )).mappings().all():
-                result.append({"entity_type": "FINDING",
-                               "entity_id": str(row["finding_id"]),
-                               "title": str(row["title"]), "status": str(row["status"])})
+                .mappings()
+                .all()
+            ):
+                result.append(
+                    {
+                        "entity_type": "FINDING",
+                        "entity_id": str(row["finding_id"]),
+                        "title": str(row["title"]),
+                        "status": str(row["status"]),
+                    }
+                )
             reports = await self._table(session, "work_reports")
             report_links = await self._table(session, "work_report_workspaces")
-            for row in (await session.execute(
-                select(reports.c.report_id, reports.c.title, reports.c.status).where(
-                    reports.c.project_id == project_id,
-                    *self._visible(reports, report_links, "report_id", principal),
+            for row in (
+                (
+                    await session.execute(
+                        select(reports.c.report_id, reports.c.title, reports.c.status).where(
+                            reports.c.project_id == project_id,
+                            *self._visible(reports, report_links, "report_id", principal),
+                        )
+                    )
                 )
-            )).mappings().all():
-                result.append({"entity_type": "REPORT",
-                               "entity_id": str(row["report_id"]),
-                               "title": str(row["title"]), "status": str(row["status"])})
+                .mappings()
+                .all()
+            ):
+                result.append(
+                    {
+                        "entity_type": "REPORT",
+                        "entity_id": str(row["report_id"]),
+                        "title": str(row["title"]),
+                        "status": str(row["status"]),
+                    }
+                )
             approvals = await self._table(session, "work_approvals")
             approval_links = await self._table(session, "work_approval_workspaces")
-            for row in (await session.execute(
-                select(approvals.c.approval_id, approvals.c.subject_type,
-                       approvals.c.subject_id, approvals.c.status)
-                .where(
-                    or_(and_(approvals.c.subject_type == "PROJECT",
-                            approvals.c.subject_id == project_id),
-                        and_(approvals.c.subject_type == "TASK",
-                             approvals.c.subject_id.in_(task_ids))),
-                    *self._visible(approvals, approval_links, "approval_id", principal),
+            for row in (
+                (
+                    await session.execute(
+                        select(
+                            approvals.c.approval_id,
+                            approvals.c.subject_type,
+                            approvals.c.subject_id,
+                            approvals.c.status,
+                        ).where(
+                            or_(
+                                and_(
+                                    approvals.c.subject_type == "PROJECT",
+                                    approvals.c.subject_id == project_id,
+                                ),
+                                and_(
+                                    approvals.c.subject_type == "TASK",
+                                    approvals.c.subject_id.in_(task_ids),
+                                ),
+                            ),
+                            *self._visible(approvals, approval_links, "approval_id", principal),
+                        )
+                    )
                 )
-            )).mappings().all():
-                result.append({"entity_type": "APPROVAL",
-                               "entity_id": str(row["approval_id"]),
-                               "title": (str(project_title) if row["subject_type"] == "PROJECT"
-                                         else task_titles[str(row["subject_id"])]),
-                               "status": str(row["status"])})
+                .mappings()
+                .all()
+            ):
+                result.append(
+                    {
+                        "entity_type": "APPROVAL",
+                        "entity_id": str(row["approval_id"]),
+                        "title": (
+                            str(project_title)
+                            if row["subject_type"] == "PROJECT"
+                            else task_titles[str(row["subject_id"])]
+                        ),
+                        "status": str(row["status"]),
+                    }
+                )
             return result
 
     async def get_project(self, principal: Principal, project_id: str) -> dict[str, Any]:
@@ -1557,6 +1904,8 @@ class SharedWorkService:
     async def create_project(self, principal: Principal, payload: dict[str, Any]) -> dict[str, Any]:
         async with self._session_factory() as session, session.begin():
             await self._verify_workspace(session, principal)
+            owner_actor_id = payload.get("owner_actor_id") or principal.actor_id
+            await self._validate_project_owner(session, principal, owner_actor_id)
             projects = await self._table(session, "projects")
             links = await self._table(session, "project_workspaces")
             project_id = uuid4().hex
@@ -1567,7 +1916,9 @@ class SharedWorkService:
                 "tenant_id": principal.tenant_id,
                 "organization_id": principal.organization_id,
                 "status": "PLANNED",
-                "owner_actor_id": principal.actor_id,
+                "owner_actor_id": owner_actor_id,
+                "owning_workspace_id": principal.workspace_id,
+                "priority": payload.get("priority", "NORMAL"),
                 "created_at": now,
                 "updated_at": now,
             }
@@ -1597,6 +1948,8 @@ class SharedWorkService:
                 raise PlatformError(
                     "PROJECT_ARCHIVED", "Archived projects cannot be changed.", status_code=409
                 )
+            if payload.get("owner_actor_id") is not None:
+                await self._validate_project_owner(session, principal, payload["owner_actor_id"])
             values = {**payload, "updated_at": datetime.now(UTC)}
             for key in ("start_date", "target_end_date"):
                 if key in values and values[key] is not None:
@@ -1614,6 +1967,40 @@ class SharedWorkService:
                 .one()
             )
             return self._projection(dict(row), principal)
+
+    async def _validate_project_owner(
+        self, session: AsyncSession, principal: Principal, actor_id: str
+    ) -> None:
+        actors = await self._table(session, "actors")
+        members = await self._table(session, "workspace_memberships")
+        now = datetime.now(UTC)
+        permission_refs = await session.scalar(
+            select(members.c.permission_refs)
+            .join(
+                actors,
+                actors.c.actor_id == members.c.actor_id,
+            )
+            .where(
+                actors.c.actor_id == actor_id,
+                actors.c.tenant_id == principal.tenant_id,
+                actors.c.organization_id == principal.organization_id,
+                actors.c.active.is_(True),
+                members.c.tenant_id == principal.tenant_id,
+                members.c.organization_id == principal.organization_id,
+                members.c.workspace_id == principal.workspace_id,
+                members.c.active.is_(True),
+                members.c.revoked_at.is_(None),
+                members.c.effective_at <= now,
+                or_(members.c.expires_at.is_(None), members.c.expires_at > now),
+            )
+        )
+        owner_permissions = {"project.read", "work.read"}
+        if actor_id == principal.actor_id:
+            owner_permissions.update({"project.create", "work.write"})
+        if not isinstance(permission_refs, list) or not owner_permissions.intersection(
+            permission_refs
+        ):
+            raise self._not_found()
 
     async def archive_project(
         self, principal: Principal, project_id: str
@@ -1697,39 +2084,45 @@ class SharedWorkService:
 
     async def create_task(self, principal: Principal, payload: dict[str, Any]) -> dict[str, Any]:
         async with self._session_factory() as session, session.begin():
-            await self._verify_workspace(session, principal)
-            project_id = payload.get("project_id")
-            if project_id is not None:
-                await self._visible_project_id(session, principal, project_id)
-            tasks = await self._table(session, "tasks")
-            links = await self._table(session, "task_workspaces")
-            task_id = uuid4().hex
-            now = datetime.now(UTC)
-            values = {
-                **payload,
-                "task_id": task_id,
-                "tenant_id": principal.tenant_id,
-                "organization_id": principal.organization_id,
-                "status": "OPEN",
-                "priority": payload.get("priority", "NORMAL"),
-                "owner_actor_id": None,
-                "created_by": principal.actor_id,
-                "created_at": now,
-                "updated_at": now,
-            }
-            if values.get("due_at") is not None:
-                values["due_at"] = datetime.fromisoformat(values["due_at"].replace("Z", "+00:00"))
-            if values.get("start_date") is not None:
-                values["start_date"] = date.fromisoformat(values["start_date"])
-            row = (
-                (await session.execute(insert(tasks).values(**values).returning(tasks)))
-                .mappings()
-                .one()
-            )
-            await session.execute(
-                insert(links).values(task_id=task_id, workspace_id=principal.workspace_id)
-            )
-            return self._projection(dict(row), principal)
+            return await self.create_task_in_session(session, principal, payload)
+
+    async def create_task_in_session(
+        self, session: AsyncSession, principal: Principal, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Reuse the canonical task command inside a governed orchestration transaction."""
+        await self._verify_workspace(session, principal)
+        project_id = payload.get("project_id")
+        if project_id is not None:
+            await self._visible_project_id(session, principal, project_id)
+        tasks = await self._table(session, "tasks")
+        links = await self._table(session, "task_workspaces")
+        task_id = uuid4().hex
+        now = datetime.now(UTC)
+        values = {
+            **payload,
+            "task_id": task_id,
+            "tenant_id": principal.tenant_id,
+            "organization_id": principal.organization_id,
+            "status": "OPEN",
+            "priority": payload.get("priority", "NORMAL"),
+            "owner_actor_id": None,
+            "created_by": principal.actor_id,
+            "created_at": now,
+            "updated_at": now,
+        }
+        if values.get("due_at") is not None:
+            values["due_at"] = datetime.fromisoformat(values["due_at"].replace("Z", "+00:00"))
+        if values.get("start_date") is not None:
+            values["start_date"] = date.fromisoformat(values["start_date"])
+        row = (
+            (await session.execute(insert(tasks).values(**values).returning(tasks)))
+            .mappings()
+            .one()
+        )
+        await session.execute(
+            insert(links).values(task_id=task_id, workspace_id=principal.workspace_id)
+        )
+        return self._projection(dict(row), principal)
 
     async def update_task(
         self, principal: Principal, task_id: str, payload: dict[str, Any]
@@ -1843,20 +2236,24 @@ class SharedWorkService:
                 )
             dependencies = await self._table(session, "shared_work_task_dependencies")
             blockers = tasks.alias("blockers")
-            unresolved = (await session.execute(
-                select(dependencies.c.blocked_by_task_id)
-                .join(blockers, blockers.c.task_id == dependencies.c.blocked_by_task_id)
-                .where(
-                    dependencies.c.tenant_id == principal.tenant_id,
-                    dependencies.c.organization_id == principal.organization_id,
-                    dependencies.c.workspace_id == principal.workspace_id,
-                    dependencies.c.task_id == task_id,
-                    blockers.c.status != "COMPLETED",
-                ).limit(1)
-            )).scalar_one_or_none()
+            unresolved = (
+                await session.execute(
+                    select(dependencies.c.blocked_by_task_id)
+                    .join(blockers, blockers.c.task_id == dependencies.c.blocked_by_task_id)
+                    .where(
+                        dependencies.c.tenant_id == principal.tenant_id,
+                        dependencies.c.organization_id == principal.organization_id,
+                        dependencies.c.workspace_id == principal.workspace_id,
+                        dependencies.c.task_id == task_id,
+                        blockers.c.status != "COMPLETED",
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
             if unresolved is not None:
                 raise PlatformError(
-                    "TASK_DEPENDENCY_OPEN", "Blocking tasks must be completed first.",
+                    "TASK_DEPENDENCY_OPEN",
+                    "Blocking tasks must be completed first.",
                     status_code=409,
                 )
             row = (
@@ -1883,17 +2280,29 @@ class SharedWorkService:
         async with self._session_factory() as session, session.begin():
             tasks = await self._table(session, "tasks")
             task_links = await self._table(session, "task_workspaces")
-            locked = (await session.execute(select(tasks).where(
-                tasks.c.task_id.in_((task_id, blocked_by_task_id)),
-                *self._visible(tasks, task_links, "task_id", principal),
-            ).order_by(tasks.c.task_id).with_for_update())).mappings().all()
+            locked = (
+                (
+                    await session.execute(
+                        select(tasks)
+                        .where(
+                            tasks.c.task_id.in_((task_id, blocked_by_task_id)),
+                            *self._visible(tasks, task_links, "task_id", principal),
+                        )
+                        .order_by(tasks.c.task_id)
+                        .with_for_update()
+                    )
+                )
+                .mappings()
+                .all()
+            )
             visible = {str(row["task_id"]): dict(row) for row in locked}
             if len(visible) != 2:
                 raise self._not_found()
             current = visible[task_id]
             if current["status"] in {"COMPLETED", "CANCELLED"}:
                 raise PlatformError(
-                    "TASK_CLOSED", "Completed or cancelled tasks cannot be changed.",
+                    "TASK_CLOSED",
+                    "Completed or cancelled tasks cannot be changed.",
                     status_code=409,
                 )
             table = await self._table(session, "shared_work_task_dependencies")
@@ -1904,8 +2313,9 @@ class SharedWorkService:
                 table.c.task_id == task_id,
                 table.c.blocked_by_task_id == blocked_by_task_id,
             )
-            existing = (await session.execute(select(table.c.dependency_id).where(*predicates)))\
-                .scalar_one_or_none()
+            existing = (
+                await session.execute(select(table.c.dependency_id).where(*predicates))
+            ).scalar_one_or_none()
             if remove:
                 if existing is None:
                     return self._projection(current, principal), False
@@ -1913,11 +2323,18 @@ class SharedWorkService:
                 return self._projection(current, principal), True
             if existing is not None:
                 return self._projection(current, principal), False
-            edges = (await session.execute(select(
-                table.c.task_id, table.c.blocked_by_task_id,
-            ).where(table.c.tenant_id == principal.tenant_id,
-                    table.c.organization_id == principal.organization_id,
-                    table.c.workspace_id == principal.workspace_id))).all()
+            edges = (
+                await session.execute(
+                    select(
+                        table.c.task_id,
+                        table.c.blocked_by_task_id,
+                    ).where(
+                        table.c.tenant_id == principal.tenant_id,
+                        table.c.organization_id == principal.organization_id,
+                        table.c.workspace_id == principal.workspace_id,
+                    )
+                )
+            ).all()
             graph: dict[str, set[str]] = {}
             for dependent, blocker in edges:
                 graph.setdefault(str(dependent), set()).add(str(blocker))
@@ -2308,18 +2725,25 @@ class SharedWorkService:
                 (
                     await session.execute(
                         select(
-                            versions, sources.c.title.label("source_title"),
+                            versions,
+                            sources.c.title.label("source_title"),
                             actors.c.display_name.label("creator_name"),
                         )
-                        .outerjoin(sources, and_(
-                            sources.c.source_id == versions.c.source_id,
-                            *self._document_scope(sources, principal),
-                        ))
-                        .outerjoin(actors, and_(
-                            actors.c.actor_id == versions.c.created_by,
-                            actors.c.tenant_id == principal.tenant_id,
-                            actors.c.organization_id == principal.organization_id,
-                        ))
+                        .outerjoin(
+                            sources,
+                            and_(
+                                sources.c.source_id == versions.c.source_id,
+                                *self._document_scope(sources, principal),
+                            ),
+                        )
+                        .outerjoin(
+                            actors,
+                            and_(
+                                actors.c.actor_id == versions.c.created_by,
+                                actors.c.tenant_id == principal.tenant_id,
+                                actors.c.organization_id == principal.organization_id,
+                            ),
+                        )
                         .where(
                             versions.c.document_id == document_id,
                             *self._document_scope(versions, principal),
@@ -2341,125 +2765,149 @@ class SharedWorkService:
                 return []
             sources = await self._table(session, "sources")
             versions = await self._table(session, "source_versions")
-            rows = (await session.execute(
-                select(
-                    sources.c.source_id,
-                    sources.c.title.label("source_title"),
-                    versions.c.source_version,
-                    versions.c.content_hash,
+            rows = (
+                (
+                    await session.execute(
+                        select(
+                            sources.c.source_id,
+                            sources.c.title.label("source_title"),
+                            versions.c.source_version,
+                            versions.c.content_hash,
+                        )
+                        .join(
+                            versions,
+                            and_(
+                                versions.c.source_id == sources.c.source_id,
+                                versions.c.tenant_id == sources.c.tenant_id,
+                                versions.c.organization_id == sources.c.organization_id,
+                                versions.c.workspace_id == sources.c.workspace_id,
+                            ),
+                        )
+                        .where(
+                            *self._document_scope(sources, principal),
+                            *self._document_scope(versions, principal),
+                            or_(
+                                sources.c.document_id.is_(None),
+                                sources.c.document_id == document_id,
+                            ),
+                            versions.c.status == "VERIFIED",
+                        )
+                        .order_by(sources.c.title, versions.c.source_version)
+                        .limit(200)
+                    )
                 )
-                .join(versions, and_(
-                    versions.c.source_id == sources.c.source_id,
-                    versions.c.tenant_id == sources.c.tenant_id,
-                    versions.c.organization_id == sources.c.organization_id,
-                    versions.c.workspace_id == sources.c.workspace_id,
-                ))
-                .where(
-                    *self._document_scope(sources, principal),
-                    *self._document_scope(versions, principal),
-                    or_(sources.c.document_id.is_(None), sources.c.document_id == document_id),
-                    versions.c.status == "VERIFIED",
-                )
-                .order_by(sources.c.title, versions.c.source_version)
-                .limit(200)
-            )).mappings().all()
+                .mappings()
+                .all()
+            )
             return [dict(row) for row in rows]
 
     async def create_document_version(
         self, principal: Principal, document_id: str, payload: dict[str, Any]
     ) -> dict[str, Any]:
         async with self._session_factory() as session, session.begin():
-            document = await self._document_row(session, principal, document_id, lock=True)
-            if document["status"] != "DRAFT":
-                raise PlatformError(
-                    "DOCUMENT_VERSION_FROZEN",
-                    (
-                        "Document versions can only be created when document is in DRAFT status, "
-                        f"currently {document['status']}."
-                    ),
-                    status_code=409,
-                )
-            sources = await self._table(session, "sources")
-            source_versions = await self._table(session, "source_versions")
-            source = (
+            return await self.create_document_version_in_session(
+                session, principal, document_id, payload
+            )
+
+    async def create_document_version_in_session(
+        self, session: AsyncSession, principal: Principal, document_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        document = await self._document_row(session, principal, document_id, lock=True)
+        if document["status"] != "DRAFT":
+            raise PlatformError(
+                "DOCUMENT_VERSION_FROZEN",
                 (
-                    await session.execute(
-                        select(sources).where(
-                            sources.c.source_id == payload["source_id"],
-                            *self._document_scope(sources, principal),
-                        )
+                    "Document versions can only be created when document is in DRAFT status, "
+                    f"currently {document['status']}."
+                ),
+                status_code=409,
+            )
+        sources = await self._table(session, "sources")
+        source_versions = await self._table(session, "source_versions")
+        source = (
+            (
+                await session.execute(
+                    select(sources).where(
+                        sources.c.source_id == payload["source_id"],
+                        *self._document_scope(sources, principal),
                     )
                 )
-                .mappings()
-                .first()
             )
-            if source is None or source["document_id"] not in (None, document_id):
-                raise self._not_found()
-            source_version = (
-                (
-                    await session.execute(
-                        select(source_versions).where(
-                            source_versions.c.source_id == payload["source_id"],
-                            source_versions.c.source_version == payload["source_version"],
-                            source_versions.c.status == "VERIFIED",
-                            *self._document_scope(source_versions, principal),
-                        )
+            .mappings()
+            .first()
+        )
+        if source is None or source["document_id"] not in (None, document_id):
+            raise self._not_found()
+        source_version = (
+            (
+                await session.execute(
+                    select(source_versions).where(
+                        source_versions.c.source_id == payload["source_id"],
+                        source_versions.c.source_version == payload["source_version"],
+                        source_versions.c.status == "VERIFIED",
+                        *self._document_scope(source_versions, principal),
                     )
                 )
-                .mappings()
-                .first()
             )
-            if source_version is None:
-                raise self._not_found()
-            versions = await self._table(session, "document_versions")
-            existing = await session.execute(
-                select(versions.c.record_id).where(
-                    versions.c.document_id == document_id,
-                    versions.c.version == payload["version"],
-                    *self._document_scope(versions, principal),
-                )
+            .mappings()
+            .first()
+        )
+        if source_version is None:
+            raise self._not_found()
+        versions = await self._table(session, "document_versions")
+        existing = await session.execute(
+            select(versions.c.record_id).where(
+                versions.c.document_id == document_id,
+                versions.c.version == payload["version"],
+                *self._document_scope(versions, principal),
             )
-            if existing.scalar_one_or_none() is not None:
-                raise PlatformError(
-                    "DOCUMENT_VERSION_EXISTS",
-                    "Document version already exists and cannot be replaced.",
-                    status_code=409,
-                )
-            row = (
-                (
-                    await session.execute(
-                        insert(versions)
-                        .values(
-                            tenant_id=principal.tenant_id,
-                            organization_id=principal.organization_id,
-                            workspace_id=principal.workspace_id,
-                            document_id=document_id,
-                            version=payload["version"],
-                            source_id=payload["source_id"],
-                            source_version=payload["source_version"],
-                            storage_uri=source_version["storage_uri"],
-                            content_hash=source_version["content_hash"],
-                            created_by=principal.actor_id,
-                            created_at=datetime.now(UTC),
-                        )
-                        .returning(versions)
+        )
+        if existing.scalar_one_or_none() is not None:
+            raise PlatformError(
+                "DOCUMENT_VERSION_EXISTS",
+                "Document version already exists and cannot be replaced.",
+                status_code=409,
+            )
+        row = (
+            (
+                await session.execute(
+                    insert(versions)
+                    .values(
+                        tenant_id=principal.tenant_id,
+                        organization_id=principal.organization_id,
+                        workspace_id=principal.workspace_id,
+                        document_id=document_id,
+                        version=payload["version"],
+                        source_id=payload["source_id"],
+                        source_version=payload["source_version"],
+                        storage_uri=source_version["storage_uri"],
+                        content_hash=source_version["content_hash"],
+                        created_by=principal.actor_id,
+                        created_at=datetime.now(UTC),
                     )
+                    .returning(versions)
                 )
-                .mappings()
-                .one()
             )
-            actors = await self._table(session, "actors")
-            creator_name = (await session.execute(
+            .mappings()
+            .one()
+        )
+        actors = await self._table(session, "actors")
+        creator_name = (
+            await session.execute(
                 select(actors.c.display_name).where(
                     actors.c.actor_id == principal.actor_id,
                     actors.c.tenant_id == principal.tenant_id,
                     actors.c.organization_id == principal.organization_id,
                 )
-            )).scalar_one_or_none()
-            return self._document_projection({
-                **dict(row), "source_title": source["title"],
+            )
+        ).scalar_one_or_none()
+        return self._document_projection(
+            {
+                **dict(row),
+                "source_title": source["title"],
                 "creator_name": creator_name,
-            })
+            }
+        )
 
     async def review_document(
         self, principal: Principal, document_id: str

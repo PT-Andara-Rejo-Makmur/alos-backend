@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol
 
 from alos.agents.registry import AgentRegistry
@@ -48,6 +48,7 @@ class FactoryOrchestrator:
         principal: Principal,
         correlation_id: str,
         proposal_only: bool = False,
+        before_register: Callable[[], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
         public_request = self._validate_client_request(payload, correlation_id)
         if not principal.active:
@@ -116,6 +117,20 @@ class FactoryOrchestrator:
         self._require_requirement_linkage(resolution, correlation_id)
         self._fail_closed_on_ambiguity(resolution, correlation_id)
         if decision == "REUSE":
+            catalog = [
+                {**item, "keywords": item.get("keywords", [])}
+                for item in internal_request["capability_catalog"]
+            ]
+            if any(
+                {**ref, "keywords": ref.get("keywords", [])} not in catalog
+                for ref in validated_result["existing_capability_refs"]
+            ):
+                raise PlatformError(
+                    "GENESIS_FACTORY_REFERENCE_INVALID",
+                    "REUSE must reference the exact Backend-authorized capability catalog.",
+                    status_code=502,
+                    correlation_id=correlation_id,
+                )
             response = {
                 "correlation_id": correlation_id,
                 "decision": "REUSE",
@@ -164,6 +179,8 @@ class FactoryOrchestrator:
 
         if proposal_only:
             return validated_result
+        if before_register is not None:
+            await before_register()
         try:
             registered = [
                 await self._capabilities.register(

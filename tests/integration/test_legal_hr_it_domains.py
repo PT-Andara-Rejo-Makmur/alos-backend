@@ -451,7 +451,11 @@ async def test_references_material_decisions_and_employee_account_separation(
             .where(table.c.employee_id == associated["employee_id"])
             .values(actor_id=account_before["actor"]["actor_id"])
         )
-    await context.transition("hr", "employees", associated["employee_id"], "INACTIVE")
+    await context.transition("hr", "employees", associated["employee_id"], "INACTIVE", 409)
+    unchanged = await context.client.get(
+        f"/api/v1/hr/employees/{associated['employee_id']}", headers=context.headers["lead"]
+    )
+    assert unchanged.json()["employment_status"] == "ACTIVE"
     account_after = await context.app.state.auth_service.whoami(token)
     assert account_after["actor"] == account_before["actor"]
     assert account_after["active_workspace"] == account_before["active_workspace"]
@@ -480,8 +484,6 @@ async def test_references_material_decisions_and_employee_account_separation(
         ("legal", "permits", "VALID"),
         ("legal", "due_diligences", "APPROVED"),
         ("legal", "cases", "WON"),
-        ("hr", "leave_requests", "APPROVED"),
-        ("hr", "candidates", "HIRED"),
         ("hr", "employment_contracts", "SIGNED"),
         ("it", "releases", "RELEASED"),
     ):

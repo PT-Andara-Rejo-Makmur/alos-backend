@@ -1,11 +1,13 @@
 """Property owns Unit visibility; Sales receives only a narrow read port."""
 
+from dataclasses import replace
 from typing import Any
 
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from alos.domains.record_repository import RecordRepository, authorize
+from alos.domains.property.records import SPECS
+from alos.domains.record_repository import RecordRepository, authorize, conflict
 from alos.domains.shared_work import SharedWorkService
 from alos.identity import Principal
 from alos.security.errors import PlatformError
@@ -40,6 +42,34 @@ class PropertyUnitReferences:
                 "UNIT_NOT_VISIBLE", "Property unit is not visible.", status_code=404
             )
         return dict(row)
+
+    async def synchronize_booking(
+        self,
+        session: AsyncSession,
+        principal: Principal,
+        unit_id: str,
+        booking_id: str,
+        *,
+        sold: bool = False,
+    ) -> None:
+        unit = await self.validate(session, principal, unit_id, lock=True)
+        if sold:
+            if (
+                unit["status"] not in {"RESERVED", "SOLD"}
+                or unit["reservation_booking_id"] != booking_id
+            ):
+                raise conflict("Closing membutuhkan reservasi unit dari Booking yang sama.")
+        elif unit["status"] != "AVAILABLE":
+            raise conflict("Unit tidak tersedia untuk konfirmasi Booking.")
+        await self.repository.write(
+            session,
+            "property",
+            SPECS["property_units"],
+            replace(principal, workspace_id=unit["workspace_id"]),
+            {"status": "SOLD" if sold else "RESERVED", "reservation_booking_id": booking_id},
+            unit_id,
+            operation="booking_sale" if sold else "booking_reservation",
+        )
 
     async def listing(self, principal: Principal, limit: int, offset: int) -> dict[str, Any]:
         authorize(principal, "sales", "read")

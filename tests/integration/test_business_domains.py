@@ -110,6 +110,7 @@ async def context() -> AsyncIterator[Context]:
             DATABASE_URL=url,
             ALOS_CONTRACTS_PATH=CONTRACTS_ROOT,
             ENABLE_TEST_REGISTRATION=True,
+            ENABLE_TEST_TOOLS=True,
         )
     )
     headers = {}
@@ -152,6 +153,13 @@ async def context() -> AsyncIterator[Context]:
                     "approval.reject",
                     "approval.hold",
                     "document.version",
+                    "task.complete",
+                    "task.create",
+                    *(
+                        ["release.create", "release.manage", "release.decide.it"]
+                        if label == "it"
+                        else []
+                    ),
                 ],
             )
         yield Context(app, client, headers)

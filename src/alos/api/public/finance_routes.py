@@ -1,6 +1,11 @@
 """Named schema-validated HTTP adapters; canonical schemas own every field."""
 
-from alos.api.public.record_routes import CanonicalRecordRequest, register_record_routes
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+from alos.api.public.record_routes import CanonicalRecordRequest, register_record_routes, response
+from alos.dependencies import ContractCatalogDependency, CurrentPrincipalDependency
+from alos.domains.finance.origins import link_payment_transaction, payable_from_certificate
 from alos.domains.finance.records import SPECS
 
 MODELS: dict[tuple[str, str], type[CanonicalRecordRequest]] = {}
@@ -293,3 +298,56 @@ class FinanceMonthCloseItemTransitionRequest(CanonicalRecordRequest):
 MODELS[("month_close_items", "transition")] = FinanceMonthCloseItemTransitionRequest
 
 router = register_record_routes("finance", SPECS, MODELS)
+
+
+class FinancePaymentTransactionRequest(CanonicalRecordRequest):
+    schema_uri = "https://schemas.alos.dev/v1/finance/finance-contracts.schema.json#/$defs/FinancePaymentTransactionRequest"
+
+
+@router.post("/payable-payments/{payment_id}/bank-transaction")
+async def associate_payment_transaction(
+    payment_id: str,
+    payload: FinancePaymentTransactionRequest,
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    contracts: ContractCatalogDependency,
+) -> JSONResponse:
+    values = payload.validated(contracts)
+    result = await link_payment_transaction(
+        request.app.state.finance_service,
+        principal,
+        payment_id,
+        values["transaction_id"],
+        values["reason"],
+    )
+    return response(
+        contracts,
+        "https://schemas.alos.dev/v1/business/business-contracts.schema.json#/$defs/BusinessRelationship",
+        result,
+    )
+
+
+class FinancePayableFromCertificateRequest(CanonicalRecordRequest):
+    schema_uri = "https://schemas.alos.dev/v1/finance/finance-contracts.schema.json#/$defs/FinancePayableFromCertificateRequest"
+
+
+@router.post("/payment-certificates/{process_id}/payable")
+async def create_certificate_payable(
+    process_id: str,
+    payload: FinancePayableFromCertificateRequest,
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    contracts: ContractCatalogDependency,
+) -> JSONResponse:
+    result = await payable_from_certificate(
+        request.app.state.finance_service,
+        request.app.state.process_service,
+        principal,
+        process_id,
+        payload.validated(contracts),
+    )
+    return response(
+        contracts,
+        "https://schemas.alos.dev/v1/finance/finance-contracts.schema.json#/$defs/FinancePayableProjection",
+        result,
+    )

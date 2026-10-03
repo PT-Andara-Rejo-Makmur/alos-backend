@@ -138,6 +138,8 @@ async def test_postgres_upgrade_matches_runtime_metadata(
         "kpi_definitions",
         "initiatives",
         "target_revisions",
+        "source_bindings",
+        "business_calculations",
     }
     assert strategy_indexes >= {
         "ix_strategy_plans_scope_state",

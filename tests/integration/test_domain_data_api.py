@@ -218,7 +218,9 @@ async def test_domain_crud_round_trip_and_shared_workspace_scope() -> None:
                 )
                 VALUES (
                     $1, 'workspace_it', 'tenant_default', 'org_default',
-                    '["IT_ADMIN"]'::jsonb, '[]'::jsonb, '[]'::jsonb,
+                    '["IT_ADMIN"]'::jsonb,
+                    '["finance.read","finance.write","finance.delete","work.read","work.write","work.delete"]'::jsonb,
+                    '[]'::jsonb,
                     'WORKSPACE', true, now(), now(), NULL, now()
                 )
                 """,

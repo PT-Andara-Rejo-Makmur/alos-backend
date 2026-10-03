@@ -14,6 +14,8 @@ import asyncpg
 import httpx
 import pytest
 
+from alos.authentication.repository import SqlAuthRepository
+from alos.authentication.service import AuthService
 from alos.config import Settings
 from alos.main import create_app
 
@@ -53,6 +55,14 @@ async def _login(
     workspace_id: str = "workspace_property",
     workspace_key: str = "property",
 ) -> dict[str, str]:
+    # The work records validate owners against current persisted memberships.
+    app = client._transport.app
+    if not isinstance(app.state.auth_service._repository, SqlAuthRepository):
+        app.state.auth_service = AuthService(
+            SqlAuthRepository(app.state.database.session_factory),
+            session_ttl_minutes=app.state.settings.AUTH_SESSION_TTL_MINUTES,
+            notification_service=app.state.notification_service,
+        )
     registered = await client.post(
         "/api/v1/auth/register",
         json={

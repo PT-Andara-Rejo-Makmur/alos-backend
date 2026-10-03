@@ -725,7 +725,11 @@ async def test_persistent_strategy_failure_states_block_closed(
 
 
 async def _preview_candidate(
-    context: StrategyContext, suffix: str
+    context: StrategyContext,
+    suffix: str,
+    *,
+    workspace_id: str = "workspace_strategy_executive_e2e",
+    scope_type: str = "COMPANY",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     plan_id, root_id, derived_id = (
         f"plan.{suffix}",
@@ -733,7 +737,9 @@ async def _preview_candidate(
         f"target.derived.{suffix}",
     )
     await _create_plan_target(context, plan_id, root_id)
-    candidate = _target_payload(derived_id, plan_id)
+    candidate = _target_payload(
+        derived_id, plan_id, workspace_id=workspace_id, scope_type=scope_type
+    )
     response = await context.client.post(
         "/api/v1/strategy/cascade/preview",
         headers=context.executive_headers,

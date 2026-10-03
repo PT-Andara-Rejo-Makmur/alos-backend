@@ -5,7 +5,7 @@ from typing import Any
 from alos.audit import AuditSink
 from alos.contracts import CanonicalContractCatalog, ContractValidationError
 from alos.identity import Principal
-from alos.registry import RegistryState, VersionedContractRegistry
+from alos.registry import RegistryState, RegistryStore, VersionedContractRegistry
 from alos.registry_contracts import RegistryAuthorityView, RegistryAuthorizationError
 
 CAPABILITY_DEFINITION_SCHEMA_ID = (
@@ -15,7 +15,13 @@ CAPABILITY_DETAIL_SCHEMA_ID = "https://schemas.alos.dev/v1/capability/capability
 
 
 class CapabilityRegistry(VersionedContractRegistry):
-    def __init__(self, contracts: CanonicalContractCatalog, audit: AuditSink) -> None:
+    def __init__(
+        self,
+        contracts: CanonicalContractCatalog,
+        audit: AuditSink,
+        *,
+        store: RegistryStore | None = None,
+    ) -> None:
         super().__init__(
             subject_type="capability",
             schema_id=CAPABILITY_DEFINITION_SCHEMA_ID,
@@ -23,6 +29,7 @@ class CapabilityRegistry(VersionedContractRegistry):
             version_field="version",
             contracts=contracts,
             audit=audit,
+            store=store,
         )
 
     def catalog_snapshot(self, *, principal: Principal) -> tuple[dict[str, Any], ...]:

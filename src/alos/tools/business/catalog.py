@@ -22,9 +22,13 @@ BUSINESS_TOOLS: dict[str, tuple[str, str, str, str]] = {
     "shared.task.read": ("shared_work", "get_task", "task_id", "task.read"),
     "shared.approval.list": ("shared_work", "list_approvals", "", "approval.read"),
     "shared.document.read": ("shared_work", "get_document", "document_id", "document.read"),
+    "document.content.read": ("documents", "get_document_content", "document_id", "document.read"),
     "shared.finding.list": ("shared_work", "list_findings", "", "finding.read"),
     "shared.report.read": ("shared_work", "get_report", "report_id", "report.read"),
     "sales.overview.read": ("sales", "overview", "", "sales.read"),
+    "sales.summary.read": ("sales", "business_summary", "", "sales.read"),
+    "process.queue.read": ("process", "queue", "", "work.read"),
+    "process.detail.read": ("process", "detail", "process_id", "work.read"),
     "sales.lead.list": ("sales", "listing", "leads", "sales.read"),
     "sales.opportunity.list": ("sales", "listing", "opportunities", "sales.read"),
     "sales.booking.read": ("sales", "detail", "bookings", "sales.read"),
@@ -71,13 +75,17 @@ def business_tool_allowed(tool_id: str, principal: Principal) -> bool:
         return False
     domain, operation, _, permission = spec
     executive = "EXECUTIVE" in principal.roles and principal.data_scope == DataScope.COMPANY
-    if executive and operation == "overview" and "strategy.read" in principal.permissions:
+    if (
+        executive
+        and operation in {"overview", "business_summary"}
+        and "strategy.read" in principal.permissions
+    ):
         return True
     if permission not in principal.permissions:
         return False
     if domain == "executive":
         return executive
-    if domain in {"strategy", "shared_work"}:
+    if domain in {"strategy", "shared_work", "process"}:
         return True
     return bool(
         principal.roles
@@ -112,7 +120,9 @@ class BusinessReadAdapter:
             raise PermissionError("Business tool authority is unavailable.")
         domain, operation, resource, _ = BUSINESS_TOOLS[self.tool_id]
         method = getattr(self.owner, operation)
-        if domain == "shared_work":
+        if domain == "documents":
+            result = await method(principal, arguments["resource_id"])
+        elif domain == "shared_work":
             if operation.startswith("get_"):
                 result = await method(principal, arguments["resource_id"])
             else:
@@ -124,7 +134,13 @@ class BusinessReadAdapter:
                 if operation == "list_findings":
                     filters.update(severity=None, source_type=None)
                 result = (await method(principal, **filters))[:20]
-        elif domain == "strategy" or domain == "executive":
+        elif domain == "process":
+            result = (
+                await method(principal, arguments["resource_id"])
+                if operation == "detail"
+                else await method(principal)
+            )
+        elif domain == "strategy" or domain == "executive" or operation == "business_summary":
             result = await method(principal)
         elif operation == "overview":
             result = await method(principal, executive="EXECUTIVE" in principal.roles)

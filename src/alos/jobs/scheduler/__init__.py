@@ -3,10 +3,11 @@
 from collections.abc import Iterable
 
 from alos.jobs import EnqueueJob, InMemoryJobRepository, Job
+from alos.jobs.sql_repository import SqlJobRepository
 
 
 class JobScheduler:
-    def __init__(self, repository: InMemoryJobRepository) -> None:
+    def __init__(self, repository: InMemoryJobRepository | SqlJobRepository) -> None:
         self._repository = repository
 
     async def enqueue(self, commands: Iterable[EnqueueJob]) -> tuple[Job, ...]:

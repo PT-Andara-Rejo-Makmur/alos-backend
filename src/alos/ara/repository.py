@@ -4,10 +4,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from alos.ara.models import AraMessageRecord, AraRunRecord, AraThreadRecord
+from alos.ara.models import AraMessageRecord, AraProgressRecord, AraRunRecord, AraThreadRecord
 from alos.identity import Principal
 from alos.persistence.models import ReviewPackageRecord
 from alos.research.persistence import persist_result
@@ -177,6 +177,79 @@ class AraRepository:
             if row is None or row.thread_id != thread_id:
                 raise PlatformError("ARA_RUN_NOT_FOUND", "Run tidak tersedia.", status_code=404)
             return project(row)
+
+    async def progress(
+        self, principal: Principal, thread_id: str, run_id: str, after: int = 0
+    ) -> dict[str, Any]:
+        await self.run(principal, thread_id, run_id)
+        async with self.factory() as session:
+            rows = (
+                await session.scalars(
+                    select(AraProgressRecord)
+                    .where(
+                        AraProgressRecord.run_id == run_id,
+                        AraProgressRecord.event_id > after,
+                    )
+                    .order_by(AraProgressRecord.event_id)
+                    .limit(256)
+                )
+            ).all()
+            return {
+                "events": [
+                    {
+                        "event_id": row.event_id,
+                        "kind": row.kind,
+                        "occurred_at": row.occurred_at.isoformat(),
+                    }
+                    for row in rows
+                ]
+            }
+
+    async def append_progress(
+        self, run_id: str, correlation_id: str, kind: str, key: str, *, terminal: bool = False
+    ) -> None:
+        if kind not in {
+            "UNDERSTANDING",
+            "RETRIEVING",
+            "ANALYZING",
+            "PREPARING",
+            "WAITING_FOR_REVIEW",
+            "COMPLETED",
+            "FAILED",
+        }:
+            raise PlatformError("ARA_PROGRESS_INVALID", "Progres tidak valid.", status_code=422)
+        async with self.factory.begin() as session:
+            run = await session.scalar(
+                select(AraRunRecord)
+                .where(
+                    AraRunRecord.run_id == run_id,
+                )
+                .with_for_update()
+            )
+            if run is None or run.correlation_id != correlation_id:
+                raise PlatformError("ARA_RUN_NOT_FOUND", "Run tidak tersedia.", status_code=404)
+            if not terminal and run.status != "RUNNING":
+                return
+            exists = await session.scalar(
+                select(AraProgressRecord.event_id).where(
+                    AraProgressRecord.run_id == run_id,
+                    AraProgressRecord.event_key == key,
+                )
+            )
+            count = await session.scalar(
+                select(func.count())
+                .select_from(AraProgressRecord)
+                .where(
+                    AraProgressRecord.run_id == run_id,
+                )
+            )
+            if exists or (count or 0) >= (256 if terminal else 250):
+                return
+            session.add(
+                AraProgressRecord(
+                    run_id=run_id, event_key=key, kind=kind, occurred_at=datetime.now(UTC)
+                )
+            )
 
     async def persist_advisory(
         self, principal: Principal, response: dict[str, Any], contract_version: str

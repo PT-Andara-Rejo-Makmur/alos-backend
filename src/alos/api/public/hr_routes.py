@@ -1,6 +1,10 @@
 """Dedicated canonical schema adapters; resource policy lives in the owner service."""
 
-from alos.api.public.record_routes import CanonicalRecordRequest, register_record_routes
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+from alos.api.public.record_routes import CanonicalRecordRequest, register_record_routes, response
+from alos.dependencies import ContractCatalogDependency, CurrentPrincipalDependency
 from alos.domains.hr.records import SPECS
 
 MODELS: dict[tuple[str, str], type[CanonicalRecordRequest]] = {}
@@ -385,3 +389,27 @@ MODELS[("service_assessments", "create")] = HrServiceAssessmentCreateRequest
 
 
 router = register_record_routes("hr", SPECS, MODELS)
+
+
+class HrCandidateHireRequest(CanonicalRecordRequest):
+    schema_uri = (
+        "https://schemas.alos.dev/v1/hr/hr-contracts.schema.json#/$defs/HrCandidateHireRequest"
+    )
+
+
+@router.post("/candidates/{candidate_id}/hire")
+async def hire_candidate(
+    candidate_id: str,
+    payload: HrCandidateHireRequest,
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    contracts: ContractCatalogDependency,
+) -> JSONResponse:
+    employee = await request.app.state.hr_service.hire(
+        principal, candidate_id, payload.validated(contracts)
+    )
+    return response(
+        contracts,
+        "https://schemas.alos.dev/v1/hr/hr-contracts.schema.json#/$defs/HrEmployeeProjection",
+        employee,
+    )

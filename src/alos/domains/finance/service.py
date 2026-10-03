@@ -119,6 +119,12 @@ class FinanceService:
     ) -> None:
         data = {**(old or {}), **values}
         name = spec.table
+        if name == "payables" and operation == "transition" and values.get("status") == "OPEN":
+            values.update(
+                payment_authorized_by=principal.actor_id, payment_authorized_at=datetime.now(UTC)
+            )
+        if name == "payables" and operation == "update":
+            values.update(payment_authorized_by=None, payment_authorized_at=None)
         if old and any(
             field in values and values[field] != old[field]
             for field in ("period", "period_start", "period_end")
@@ -370,6 +376,23 @@ class FinanceService:
         parent = await self.repository.row(
             session, "finance", parent_spec, principal, identity, lock=True
         )
+        if resource == "payables":
+            origins = await self.repository.table(session, "core", "business_record_links")
+            origin = await session.scalar(
+                select(origins.c.link_id)
+                .where(
+                    origins.c.tenant_id == principal.tenant_id,
+                    origins.c.organization_id == principal.organization_id,
+                    origins.c.target_workspace_id == principal.workspace_id,
+                    origins.c.target_type == "FINANCE_PAYABLE",
+                    origins.c.target_id == identity,
+                )
+                .limit(1)
+            )
+            if origin and parent["payment_authorized_at"] is None:
+                raise conflict(
+                    "Keputusan pembayaran independen diperlukan sebelum pencatatan pembayaran."
+                )
         if (
             parent["status"] != "OPEN"
             or data["amount"] <= Decimal(0)

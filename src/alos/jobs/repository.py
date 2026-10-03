@@ -76,7 +76,15 @@ class InMemoryJobRepository:
                 return claimed
         return None
 
-    async def succeed(self, job_id: str, result: dict[str, object]) -> Job:
+    async def succeed(
+        self,
+        job_id: str,
+        result: dict[str, object],
+        *,
+        worker_id: str | None = None,
+        attempt: int | None = None,
+    ) -> Job:
+        del worker_id, attempt
         return await self._finish(job_id, JobStatus.SUCCEEDED, result=dict(result))
 
     async def fail(
@@ -85,7 +93,10 @@ class InMemoryJobRepository:
         safe_error_code: str,
         *,
         retry_delay: timedelta = timedelta(seconds=30),
+        worker_id: str | None = None,
+        attempt: int | None = None,
     ) -> Job:
+        del worker_id, attempt
         async with self._lock:
             job = self._require_running(job_id)
             terminal = job.attempts >= job.max_attempts

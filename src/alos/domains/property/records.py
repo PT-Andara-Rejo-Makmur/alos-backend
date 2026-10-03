@@ -86,9 +86,30 @@ SPECS = {
         "change_order_id",
         "PropertyChangeOrder",
         "DRAFT",
-        {"DRAFT": ("SUBMITTED", "CANCELLED"), "SUBMITTED": ("CANCELLED",)},
-        frozenset(["project_id", "change_number", "description", "amount_delta"]),
-        frozenset(["change_number", "description", "amount_delta"]),
+        {"DRAFT": ("SUBMITTED", "CANCELLED"), "SUBMITTED": ("DRAFT", "CANCELLED")},
+        frozenset(
+            [
+                "project_id",
+                "change_number",
+                "description",
+                "amount_delta",
+                "schedule_impact_days",
+                "related_contract_id",
+                "contract_change_required",
+                "document_id",
+            ]
+        ),
+        frozenset(
+            [
+                "change_number",
+                "description",
+                "amount_delta",
+                "schedule_impact_days",
+                "related_contract_id",
+                "contract_change_required",
+                "document_id",
+            ]
+        ),
         False,
     ),
     "payment_certificates": RecordSpec(
@@ -96,9 +117,18 @@ SPECS = {
         "payment_certificate_id",
         "PropertyPaymentCertificate",
         "DRAFT",
-        {"DRAFT": ("SUBMITTED", "CANCELLED"), "SUBMITTED": ("CANCELLED",)},
-        frozenset(["project_id", "certificate_number", "period", "amount"]),
-        frozenset(["certificate_number", "period"]),
+        {"DRAFT": ("SUBMITTED", "CANCELLED"), "SUBMITTED": ("DRAFT", "CANCELLED")},
+        frozenset(
+            [
+                "project_id",
+                "certificate_number",
+                "period",
+                "amount",
+                "construction_update_id",
+                "document_id",
+            ]
+        ),
+        frozenset(["certificate_number", "period", "construction_update_id", "document_id"]),
         False,
     ),
     "project_handovers": RecordSpec(

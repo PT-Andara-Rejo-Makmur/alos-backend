@@ -71,10 +71,15 @@ class StrategyService:
         repository: StrategyRepository,
         audit: AuditSink,
         workspace_lookup: Callable[[str], Awaitable[WorkspaceState | None]] | None = None,
+        domain_source_validator: Callable[[Observation, Target], Awaitable[bool]] | None = None,
+        domain_actual_calculator: Callable[[Principal, Target, str], Awaitable[Observation]]
+        | None = None,
     ) -> None:
         self.repository = repository
         self.audit = audit
         self.workspace_lookup = workspace_lookup
+        self.domain_source_validator = domain_source_validator
+        self.domain_actual_calculator = domain_actual_calculator
         self.engine = CascadeEngine()
         self._pending_audit: ContextVar[list[AuditEvent] | None] = ContextVar(
             "strategy_audit_events", default=None
@@ -446,6 +451,28 @@ class StrategyService:
             kind=observation.kind.value,
         )
         return observation
+
+    @atomic
+    async def derive_actual(
+        self, principal: Principal, target_id: str, version: int, request_id: str
+    ) -> Observation:
+        target = await self.get_target(principal, target_id, version)
+        authorize(
+            principal,
+            "division_manage",
+            tenant_id=target.tenant_id,
+            organization_id=target.organization_id,
+            owner_workspace_id=target.owner_workspace_id,
+        )
+        if self.domain_actual_calculator is None:
+            raise PlatformError(
+                "STRATEGY_SOURCE_UNAVAILABLE", "Sumber otomatis tidak tersedia.", status_code=409
+            )
+        observation = await self.domain_actual_calculator(principal, target, request_id)
+        history = await self.repository.list_observations(target_id, version)
+        if any(item.observation_id == observation.observation_id for item in history):
+            return observation
+        return await self.create_observation(principal, observation)
 
     async def list_targets(self, principal: Principal) -> tuple[Target, ...]:
         authorize(
@@ -1576,6 +1603,14 @@ class StrategyService:
                     status_code=409,
                 )
             return
+        if observation.kind is ObservationKind.ACTUAL and self.domain_source_validator is not None:
+            if await self.domain_source_validator(observation, target):
+                return
+            raise PlatformError(
+                "STRATEGY_SOURCE_CONFLICT",
+                "Perhitungan sumber tidak cocok dengan observasi.",
+                status_code=409,
+            )
         run = (
             await self.repository.get_cascade_run(observation.source_ref)
             if observation.source_ref

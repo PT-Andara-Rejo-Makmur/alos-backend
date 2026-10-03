@@ -113,6 +113,31 @@ class ItService:
     ) -> None:
         data = {**(old or {}), **values}
         name = spec.table
+        if name == "releases" and values.get("status") == "READY":
+            runs = await self.repository.table(session, "it", "ci_runs")
+            pipelines = await self.repository.table(session, "it", "cicd_pipelines")
+            passed = await session.scalar(
+                select(runs.c.ci_run_id)
+                .join(pipelines, pipelines.c.pipeline_id == runs.c.pipeline_id)
+                .where(
+                    *self.repository.scope(runs, principal),
+                    *self.repository.scope(pipelines, principal),
+                    runs.c.ci_run_id == data.get("ci_run_id"),
+                    runs.c.status == "SUCCEEDED",
+                    pipelines.c.repository_id == data["repository_id"],
+                )
+            )
+            if passed is None:
+                raise conflict("Hasil pengujian repository yang berhasil diperlukan.")
+        if name == "releases" and values.get("status") in {"DEPLOYED", "FAILED", "ROLLED_BACK"}:
+            if not data.get("deployment_reference"):
+                raise conflict("Bukti pelaksanaan rilis diperlukan.")
+        if (
+            name == "releases"
+            and values.get("status") == "VERIFIED"
+            and not data.get("verification_notes")
+        ):
+            raise conflict("Hasil verifikasi rilis diperlukan.")
         if old and old.get(spec.status_field) in {
             "ARCHIVED",
             "CLOSED",

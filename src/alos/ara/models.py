@@ -3,7 +3,17 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from alos.persistence.base import Base
@@ -59,3 +69,22 @@ class AraRunRecord(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     response: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+
+
+class AraProgressRecord(Base):
+    __tablename__ = "ara_progress_events"
+    __table_args__ = (
+        UniqueConstraint("run_id", "event_key", name="uq_ara_progress_event"),
+        CheckConstraint(
+            "kind IN ('UNDERSTANDING','RETRIEVING','ANALYZING','PREPARING',"
+            "'WAITING_FOR_REVIEW','COMPLETED','FAILED')",
+            name="ck_ara_progress_kind",
+        ),
+        Index("ix_ara_progress_run", "run_id", "event_id"),
+        {"schema": "core"},
+    )
+    event_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("core.ara_runs.run_id"))
+    event_key: Mapped[str] = mapped_column(String(128))
+    kind: Mapped[str] = mapped_column(String(32))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

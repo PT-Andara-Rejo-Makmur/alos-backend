@@ -237,6 +237,7 @@ class RecordRepository:
         identity: str | None,
         *,
         operation: str,
+        audit_reason: str = "Canonical business record mutation",
     ) -> dict[str, Any]:
         table = await self.table(session, schema, spec.table)
         now = datetime.now(UTC)
@@ -278,8 +279,12 @@ class RecordRepository:
                 correlation_id=current_correlation_id(),
                 outcome="SUCCEEDED",
                 occurred_at=now,
-                reason="Canonical business record mutation",
-                metadata={"operation": operation},
+                reason=audit_reason,
+                metadata={
+                    "operation": operation,
+                    "role_refs": sorted(principal.roles),
+                    "permission_refs": sorted(principal.permissions),
+                },
             ),
         )
         projection = self.project(spec, row, principal)

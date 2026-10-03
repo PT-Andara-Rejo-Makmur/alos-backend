@@ -73,11 +73,14 @@ def needed_tools(message: str) -> tuple[str, ...]:
             "it.overview.read",
         )
     for words, tools in (
+        (("alur pengajuan", "perlu tindakan", "pemeriksaan berikutnya"), ("process.queue.read",)),
+        (("kinerja penjualan", "ringkasan penjualan", "jumlah closing"), ("sales.summary.read",)),
         (("target penjualan", "target sales"), ("strategy.target.read",)),
         (("lead",), ("sales.lead.list",)),
         (("opportunity", "peluang"), ("sales.opportunity.list",)),
         (("booking", "pesanan"), ("sales.booking.read",)),
         (("task", "tugas"), ("shared.task.list",)),
+        (("isi dokumen", "document content"), ("document.content.read",)),
         (("dokumen", "document"), ("shared.document.read",)),
         (("laporan", "report"), ("shared.report.read",)),
         (("kampanye", "campaign"), ("marketing.campaign.list",)),
@@ -269,9 +272,14 @@ class AraOrchestrator:
             principal, thread_id, message, run_id, correlation_id, self.runtime_mode
         )
         await self.record(principal, run_id, "ara.run_requested", correlation_id, "REQUESTED")
+        await self.repository.append_progress(
+            run_id, correlation_id, "UNDERSTANDING", "backend.request"
+        )
         memories = await self.conversation_memory(principal, thread_id)
         requested = needed_tools(message)
         reference = data.get("business_reference")
+        if reference and reference["domain"] == "PROCESS":
+            requested = ("process.detail.read",)
         if reference and reference["domain"] == "SHARED_WORK":
             requested = tuple(
                 {
@@ -387,6 +395,17 @@ class AraOrchestrator:
                 pass
         answer = self.validate("ara-response-projection", answer)
         result = await self.repository.finish(principal, thread_id, run_id, answer, status)
+        if answer.get("action_proposal"):
+            await self.repository.append_progress(
+                run_id, correlation_id, "WAITING_FOR_REVIEW", "backend.review", terminal=True
+            )
+        await self.repository.append_progress(
+            run_id,
+            correlation_id,
+            "COMPLETED" if status == "COMPLETED" else "FAILED",
+            "backend.result",
+            terminal=True,
+        )
         result["runtime_mode"] = self.runtime_mode
         await self.record(
             principal,

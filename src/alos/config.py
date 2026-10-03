@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     ALOS_CONTRACTS_PATH: Path | None = None
     ENABLE_TEST_TOOLS: bool = False
     ENABLE_TEST_REGISTRATION: bool = False
+    DOCUMENT_OBJECT_ROOT: Path = Path("storage/documents")
+    DOCUMENT_UPLOAD_MAX_BYTES: int = Field(default=10_000_000, ge=1, le=25_000_000)
     AUTH_SESSION_TTL_MINUTES: int = Field(default=480, ge=5, le=43200)
     EMAIL_PROVIDER: Literal["smtp", "test", "sink", "memory", "inmemory"] = "smtp"
     EMAIL_FROM: str = ""

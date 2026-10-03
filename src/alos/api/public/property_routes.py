@@ -1,6 +1,11 @@
 """Named schema-validated HTTP adapters; canonical schemas own every field."""
 
-from alos.api.public.record_routes import CanonicalRecordRequest, register_record_routes
+from typing import Any
+
+from fastapi import Request
+
+from alos.api.public.record_routes import CanonicalRecordRequest, register_record_routes, response
+from alos.dependencies import ContractCatalogDependency, CurrentPrincipalDependency
 from alos.domains.property.records import SPECS
 
 MODELS: dict[tuple[str, str], type[CanonicalRecordRequest]] = {}
@@ -230,3 +235,25 @@ class PropertyLandRecordTransitionRequest(CanonicalRecordRequest):
 MODELS[("land_pipeline", "transition")] = PropertyLandRecordTransitionRequest
 
 router = register_record_routes("property", SPECS, MODELS)
+
+
+class PropertyChangeOrderImplementationRequest(CanonicalRecordRequest):
+    schema_uri = "https://schemas.alos.dev/v1/property/property-contracts.schema.json#/$defs/PropertyChangeOrderImplementationRequest"
+
+
+@router.post("/change-orders/{identity}/implement")
+async def implement_change_order(
+    identity: str,
+    payload: PropertyChangeOrderImplementationRequest,
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    contracts: ContractCatalogDependency,
+) -> Any:
+    result = await request.app.state.property_service.implement_change_order(
+        principal, identity, payload.validated(contracts)["reason"]
+    )
+    return response(
+        contracts,
+        "https://schemas.alos.dev/v1/property/property-contracts.schema.json#/$defs/PropertyChangeOrderProjection",
+        result,
+    )

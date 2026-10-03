@@ -5,7 +5,8 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
-from alos.jobs import InMemoryJobRepository, Job
+from alos.jobs import InMemoryJobRepository, Job, JobType
+from alos.jobs.sql_repository import SqlJobRepository
 
 JobHandler = Callable[[Job], Awaitable[dict[str, Any]]]
 
@@ -13,7 +14,7 @@ JobHandler = Callable[[Job], Awaitable[dict[str, Any]]]
 class JobWorker:
     def __init__(
         self,
-        repository: InMemoryJobRepository,
+        repository: InMemoryJobRepository | SqlJobRepository,
         handlers: Mapping[str, JobHandler],
         *,
         worker_id: str,
@@ -23,7 +24,9 @@ class JobWorker:
         self._worker_id = worker_id
 
     async def run_once(self) -> Job | None:
-        job = await self._repository.claim(self._worker_id)
+        job = await self._repository.claim(
+            self._worker_id, job_types=frozenset(JobType(kind) for kind in self._handlers)
+        )
         if job is None:
             return None
         handler = self._handlers.get(job.job_type.value)
@@ -32,8 +35,12 @@ class JobWorker:
         try:
             result = await handler(job)
         except Exception:  # Handler internals must never leak into persisted error state.
-            return await self._repository.fail(job.job_id, "SAFE_HANDLER_FAILURE")
-        return await self._repository.succeed(job.job_id, result)
+            return await self._repository.fail(
+                job.job_id, "SAFE_HANDLER_FAILURE", worker_id=self._worker_id, attempt=job.attempts
+            )
+        return await self._repository.succeed(
+            job.job_id, result, worker_id=self._worker_id, attempt=job.attempts
+        )
 
 
 __all__ = ["JobHandler", "JobWorker"]

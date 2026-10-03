@@ -14,6 +14,42 @@ def pipeline_projection(row: dict[str, Any]) -> dict[str, Any]:
 
 
 SPECS = {
+    "financing_contexts": RecordSpec(
+        "financing_contexts",
+        "financing_id",
+        "SalesFinancing",
+        "COLLECTING",
+        {
+            "COLLECTING": ("BANK_REVIEW", "READY", "CANCELLED"),
+            "BANK_REVIEW": ("COLLECTING", "SP3K_ISSUED", "CANCELLED"),
+            "READY": ("AKAD_COMPLETED", "CANCELLED"),
+            "SP3K_ISSUED": ("AKAD_COMPLETED", "CANCELLED"),
+        },
+        frozenset(
+            [
+                "booking_id",
+                "payment_method",
+                "bank_reference",
+                "required_document_notes",
+                "document_ids",
+                "sp3k_reference",
+                "sp3k_on",
+                "akad_on",
+                "next_action",
+            ]
+        ),
+        frozenset(
+            [
+                "bank_reference",
+                "required_document_notes",
+                "document_ids",
+                "sp3k_reference",
+                "sp3k_on",
+                "akad_on",
+                "next_action",
+            ]
+        ),
+    ),
     "customers": RecordSpec(
         "customers",
         "customer_id",
@@ -65,7 +101,7 @@ SPECS = {
         "SalesBooking",
         "PENDING",
         {"PENDING": ("CANCELLED",)},
-        frozenset(["customer_id", "property_unit_id", "booking_date", "amount"]),
+        frozenset(["customer_id", "property_unit_id", "booking_date", "amount", "opportunity_id"]),
         frozenset(["booking_date"]),
         False,
     ),

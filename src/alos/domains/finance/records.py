@@ -179,6 +179,10 @@ for resource in ("budgets", "reconciliations", "tax_obligations", "month_closes"
     SPECS[resource] = replace(SPECS[resource], transition_authorized=internal_decision_visible)
 
 # These actions require an independent, action-scoped Shared Work approval.
+SPECS["payables"] = replace(
+    SPECS["payables"],
+    material_actions=(MaterialAction("FINANCE_PAYABLE", "AUTHORIZE_PAYABLE", ("OPEN",), "OPEN"),),
+)
 SPECS["budgets"] = replace(
     SPECS["budgets"],
     material_actions=(

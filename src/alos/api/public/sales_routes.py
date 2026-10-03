@@ -239,6 +239,21 @@ class SalesCollateralTransitionRequest(CanonicalRecordRequest):
 
 MODELS[("collaterals", "transition")] = SalesCollateralTransitionRequest
 
+class SalesFinancingCreateRequest(CanonicalRecordRequest):
+    schema_uri = "https://schemas.alos.dev/v1/sales/sales-contracts.schema.json#/$defs/SalesFinancingCreateRequest"
+
+
+class SalesFinancingUpdateRequest(CanonicalRecordRequest):
+    schema_uri = "https://schemas.alos.dev/v1/sales/sales-contracts.schema.json#/$defs/SalesFinancingUpdateRequest"
+
+
+class SalesFinancingTransitionRequest(CanonicalRecordRequest):
+    schema_uri = "https://schemas.alos.dev/v1/sales/sales-contracts.schema.json#/$defs/SalesFinancingTransitionRequest"
+
+
+MODELS[("financing_contexts", "create")] = SalesFinancingCreateRequest
+MODELS[("financing_contexts", "update")] = SalesFinancingUpdateRequest
+MODELS[("financing_contexts", "transition")] = SalesFinancingTransitionRequest
 router = register_record_routes("sales", SPECS, MODELS)
 
 
