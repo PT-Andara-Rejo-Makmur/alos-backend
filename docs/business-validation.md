@@ -47,7 +47,7 @@ atau snapshot DB/object store yang konsisten.
 ## Boundary API dan kewenangan
 
 API baru berada di `/api/v1/processes`, `/api/v1/business`,
-`/api/v1/capability-requests`, upload/status/content `/api/v1/documents`,
+`/api/v1/business/capability-requests`, upload/status/content `/api/v1/documents`,
 progress dan receipt Task `/api/v1/ara`. Command domain mencakup hiring HR,
 pelaksanaan Change Order, pembuatan Payable dari Payment Certificate, serta
 hubungan pembayaran dengan transaksi bank. Rincian request/response berada di
@@ -69,6 +69,15 @@ service Identity existing; offboarding memerlukan pencabutan akses/sesi aktual.
 Kontrak kerja mendukung pemeriksaan Legal sesuai kebutuhan dan dokumen yang
 disetujui sebelum ACTIVE. Generic IT Release memerlukan CI Run, bukti
 penerapan/verifikasi dan hasil kegagalan/rollback yang tercatat.
+
+Recruitment mencatat divisi pemohon, posisi, jumlah kebutuhan dan alasan.
+Pengajuan dengan divisi pemohon wajib memiliki aturan dan pemeriksaan yang
+selesai sebelum hiring: kepala divisi pemohon → kepala HR → Finance jika
+diwajibkan → Direktur sesuai aturan. Backend menentukan workspace pemeriksa
+dari kebutuhan yang tersimpan dan menolak digest atau aturan yang berubah.
+Paket terbatas dapat dibaca pemeriksa tanpa membuka akses langsung ke catatan
+HR. Web menampilkan fakta kebutuhan dan mengirim command tanpa memilih actor.
+Perluasan RECRUITMENT menggunakan tabel proses existing tanpa migration baru.
 
 ## Kinerja, dokumen dan intelligence
 
@@ -101,9 +110,9 @@ persisten, AI review advisory, pengujian, keputusan IT dan release existing.
 | Repository | Hasil |
 | --- | --- |
 | alos-contracts | 159 schema valid; OpenAPI, examples, generation Python/TypeScript dan compatibility terhadap HEAD awal lulus; 234 tes lulus. |
-| alos-backend | Ruff seluruh repository lulus; Mypy 241 file lulus; satu migration head; full pytest **1.357 lulus**, tanpa failure/error/skip, 1.045,59 detik. |
+| alos-backend | Ruff seluruh repository lulus; Mypy 241 file lulus; satu migration head; full pytest **1.358 lulus**, tanpa failure/error/skip, 1.305,31 detik. |
 | genesis-ai | Ruff seluruh repository lulus; Mypy 177 file dan import aplikasi lulus; full pytest **597 lulus**, tanpa failure/error/skip, 70,78 detik. |
-| alos-web | ESLint tanpa warning dan typecheck lulus; full Vitest **522 lulus**; build produksi Next.js lulus. |
+| alos-web | ESLint tanpa warning dan typecheck lulus; full Vitest **524 lulus**, tanpa failure; build produksi Next.js lulus. |
 | alos-infra | Enam konfigurasi Compose, 27 invariant topology, syntax Python/PowerShell/Bash dan Caddy lulus; restore proof PostgreSQL/pgvector serta penolakan checksum tidak cocok lulus. Worker image berhasil memproses TEXT/DOCX, mempertahankan hash/versi, menolak konten sebelum approval dan berhenti dengan exit code 0 setelah SIGTERM. |
 
 Worker proof memakai private network PostgreSQL dan CLI Linux Docker melalui
@@ -111,26 +120,56 @@ WSL karena proxy CLI Windows serta jalur `host.docker.internal` pada host lokal
 tidak merespons. Verifikasi start/stop membaca state container aktual. Tidak
 ada restart/reset stack aplikasi. Container/database proof telah dibersihkan.
 
+Pada validasi Web terakhir, pool fork Vitest mengalami ENOENT saat membaca
+file transform sementara di Windows. Test yang terkait lulus sendiri dan
+regresi 22 test lulus memakai `--pool=threads --maxWorkers=1`; seluruh 524
+test kemudian lulus memakai `--pool=threads --maxWorkers=4`. Tidak ada
+perubahan dependency atau source test runner untuk mengatasi kendala lokal ini.
+
 Setelah validasi repository, acceptance berikut dijalankan ulang berurutan
-melalui API/layanan Backend aktual, database yang dimigrasi dan aplikasi
-GENESIS aktual melalui ASGI: **7 tes lulus, 121,80 detik**, mencakup delapan
-skenario karena D dan E berada dalam satu tes berkesinambungan.
+pada source commit yang diekspor, melalui API/layanan Backend aktual,
+database yang dimigrasi dan aplikasi GENESIS aktual melalui ASGI:
+**19 tes lulus, 170,86 detik**, tanpa failure/error/skip. Delapan tes integrasi
+meliputi tujuh rangkaian A–H (D dan E berada dalam satu tes berkesinambungan)
+serta satu tes recruitment tambahan. Sebelas tes unit memeriksa kewenangan
+provider ARA. Kasus recruitment tambahan membuktikan routing divisi pemohon,
+penolakan workspace/tenant/organisasi asing, perubahan kebutuhan yang
+membatalkan pemeriksaan lama, pengajuan ulang dengan riwayat tetap tersimpan,
+dan keterlibatan Finance/Direktur sesuai aturan perusahaan.
 
 | Skenario | Bukti |
 | --- | --- |
 | A | Lead → Qualified → Opportunity → Booking → reservasi Unit → KPR/akad → Closing; status Unit konsisten. |
 | B | Change Order → teknis → Finance → Legal → keputusan sesuai aturan termasuk Direktur → implementation. |
 | C | Progress terverifikasi → Certificate → Finance → satu Payable → keputusan independen → Payment → Bank Transaction → Reconciliation; origin dua arah. |
-| D | Kebutuhan recruitment → candidate/interview → keputusan hiring → Employee existing → onboarding → akun aktif → GA dan divisi siap. |
+| D | Kebutuhan recruitment → pemeriksaan divisi pemohon dan HR → candidate/interview → keputusan hiring → Employee existing → onboarding → akun aktif → GA dan divisi siap. Hiring sebelum aturan/pemeriksaan ditolak. |
 | E | Handover → asset return → Finance sesuai aturan → Identity revoke → sesi/akses ditolak → Employee INACTIVE. |
 | F | Strategy/Target → Closing aktual → source binding → ACTUAL → verification → Executive Performance. |
 | G | Pertanyaan → akses → sumber canonical → progress → jawaban/bukti → proposal Task → pemeriksaan manusia; replay idempotent, perubahan command ditolak dan pencabutan permission berlaku. Paket proses lintas divisi terbaca tanpa akses langsung ke record pemilik. |
 | H | Kebutuhan → Factory CREATE → draft → AI review dan hasil HTTP yang benar-benar diamati → keputusan IT → release → Agent ACTIVE; kebutuhan berikutnya REUSE katalog aktual. |
 
-Log mesin lokal berada di `.codex/validation` pada workspace: JUnit Backend,
-GENESIS dan acceptance, laporan JSON Web, log build dan worker. Hasil penuh
-di atas berasal dari working tree yang juga memuat perubahan lokal sebelumnya;
+Log mesin lokal berada di `.codex/validation` pada workspace:
+`contracts-final-results.xml`, `backend-final-results.xml`,
+`genesis-results.xml`, `web-final-results.json`, `web-final-build.log`,
+`worker-final-results.log` dan `recruitment-committed-acceptance-results.xml`.
+Hasil penuh di atas berasal dari working tree yang juga memuat perubahan lokal sebelumnya;
 perubahan tersebut dipertahankan dan tidak digabung ke commit tugas ini.
+
+Revision source yang dibuktikan:
+
+| Repository | Commit source |
+| --- | --- |
+| alos-contracts | `6e9e3e78afd95bcc4e4d6bb3bbf25618153d925a` |
+| alos-backend | `358ad939de50ef78dbfc0e851446aec71ea4b6fb` |
+| genesis-ai | `82c11be04e38604fef966bf775569c8db48ecd43` |
+| alos-web | `1a383ce469146350ffb0e81a90863d2f2ecb95b4` |
+| alos-infra | `718a4340ec8989ae13bdc6e9a527043242a70c78` |
+
+Source commit Contracts/Backend/GENESIS/Web diekspor lagi ke
+`committed-recruitment-sources`, dengan manifest
+`recruitment-source-revisions.json`. Salinan tersebut lulus Ruff/Mypy Backend
+serta 19 test acceptance/authority dan 22 test Web recruitment/HR tanpa
+mengikutsertakan perubahan ARA lokal.
 
 ## Batas yang masih berlaku
 
