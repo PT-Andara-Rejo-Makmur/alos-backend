@@ -76,7 +76,7 @@ class ProcessService:
                 route["workspace_id"]
                 for route in values["rules"].get("escalation_routes", {}).values()
             )
-            visible = set(
+            visible: set[str] = set(
                 (
                     await session.scalars(
                         select(workspaces.c.workspace_id).where(
@@ -581,7 +581,7 @@ class ProcessService:
         if not refs:
             return
         table = await self.repository.table(session, "evidence", "evidence_refs")
-        found = set(
+        found: set[str] = set(
             (
                 await session.scalars(
                     select(table.c.evidence_id).where(

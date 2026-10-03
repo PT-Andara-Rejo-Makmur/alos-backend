@@ -46,6 +46,14 @@ jobs:
           path: alos-contracts
           token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
 
+      - name: Checkout GENESIS for cross-repository business tests
+        uses: actions/checkout@v4
+        with:
+          repository: PT-Andara-Rejo-Makmur/genesis-ai
+          ref: development
+          path: genesis-ai
+          token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
+
       - name: Siapkan Python 3.12
         uses: actions/setup-python@v5
         with:
@@ -54,7 +62,7 @@ jobs:
           cache-dependency-path: alos-backend/pyproject.toml
 
       - name: Pasang dependency
-        run: python -m pip install -e ".[dev]"
+        run: python -m pip install -e ../genesis-ai -e ".[dev]"
 
       - name: Ruff
         run: ruff check .
