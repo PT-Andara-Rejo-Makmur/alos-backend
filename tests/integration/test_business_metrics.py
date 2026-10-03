@@ -298,7 +298,7 @@ async def test_closing_actual_reaches_verified_executive_performance(
     )
     await business.create(
         "finance",
-        "receivable_payments",
+        "receivable-payments",
         {
             "receivable_id": overdue_receivable["receivable_id"],
             "payment_date": today.isoformat(),
