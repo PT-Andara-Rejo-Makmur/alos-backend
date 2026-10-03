@@ -299,6 +299,7 @@ async def _trend(
     count_label: str,
     source: str,
     filters: tuple[Any, ...] = (),
+    company_scope: bool = False,
     amount_column: str | None = None,
     amount_code: str | None = None,
     amount_label: str | None = None,
@@ -317,7 +318,7 @@ async def _trend(
             await session.execute(
                 select(*expressions)
                 .where(
-                    *repository.scope(table, principal),
+                    *repository.scope(table, principal, company=company_scope),
                     table.c[date_column] >= lower,
                     table.c[date_column] < upper,
                     *filters,
@@ -458,6 +459,7 @@ async def business_analytics(
                     amount_label="Nilai Closing",
                     source="Closing yang telah selesai",
                     filters=(closings.c.status == "COMPLETED",),
+                    company_scope=executive,
                     amount_column="amount",
                 )
             )

@@ -237,6 +237,11 @@ async def test_closing_actual_reaches_verified_executive_performance(
         item for item in executive_analytics["series"] if item["code"] == "closing_count"
     )
     assert company_closing["points"] == [{"period": "2027-03-01", "value": 1}]
+    for forbidden in (ctx.cross_org_headers, ctx.cross_tenant_headers):
+        denied = await ctx.client.get(
+            f"/api/v1/business/executive/analytics{analytics_query}", headers=forbidden
+        )
+        assert denied.status_code in (403, 404), denied.text
     assert any(
         item["code"].startswith("strategy_target_actual_")
         and any(value["actual_value"] == 1 for value in item["items"])
