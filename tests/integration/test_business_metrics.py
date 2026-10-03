@@ -1,5 +1,6 @@
 """Sales commands produce evidenced actuals, verification and Executive performance."""
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -24,6 +25,12 @@ async def test_closing_actual_reaches_verified_executive_performance(
         "strategy.observation.verify",
         "sales.read",
         "sales.write",
+        "finance.read",
+        "finance.write",
+        "hr.read",
+        "hr.write",
+        "it.read",
+        "it.write",
         "property.read",
         "property.write",
         "work.read",
@@ -185,3 +192,185 @@ async def test_closing_actual_reaches_verified_executive_performance(
         next(item["value"] for item in sales["metrics"] if item["code"] == "recorded_sales_value")
         == "125.00"
     )
+
+    analytics_query = "?from=2027-03-01&to=2027-03-31&granularity=MONTH"
+    analytics_response = await ctx.client.get(
+        f"/api/v1/business/sales/analytics{analytics_query}", headers=headers["lead"]
+    )
+    assert analytics_response.status_code == 200, analytics_response.text
+    analytics = analytics_response.json()
+    assert analytics["period"] == {
+        "from": "2027-03-01",
+        "to": "2027-03-31",
+        "granularity": "MONTH",
+    }
+    series = {item["code"]: item for item in analytics["series"]}
+    assert series["closing_count"]["points"] == [{"period": "2027-03-01", "value": 1}]
+    assert series["closing_value"]["points"] == [{"period": "2027-03-01", "value": "125.00"}]
+    funnel = next(item for item in analytics["breakdowns"] if item["code"] == "sales_funnel")
+    assert {item["code"]: item["value"] for item in funnel["items"]} == {
+        "Lead": 0,
+        "Qualified": 0,
+        "Survey": 0,
+        "Booking": 0,
+        "closing": 1,
+    }
+    empty_period = await ctx.client.get(
+        "/api/v1/business/sales/analytics?from=2026-03-01&to=2026-03-31&granularity=MONTH",
+        headers=headers["lead"],
+    )
+    assert empty_period.status_code == 200, empty_period.text
+    empty_closing_count = next(
+        item for item in empty_period.json()["series"] if item["code"] == "closing_count"
+    )
+    assert empty_closing_count["available"] is True
+    assert empty_closing_count["points"] == []
+
+    executive_analytics_response = await ctx.client.get(
+        f"/api/v1/business/executive/analytics{analytics_query}",
+        headers=ctx.executive_headers,
+    )
+    assert executive_analytics_response.status_code == 200, executive_analytics_response.text
+    executive_analytics = executive_analytics_response.json()
+    assert executive_analytics["domain"] == "executive"
+    company_closing = next(
+        item for item in executive_analytics["series"] if item["code"] == "closing_count"
+    )
+    assert company_closing["points"] == [{"period": "2027-03-01", "value": 1}]
+    assert any(
+        item["code"].startswith("strategy_target_actual_")
+        and any(value["actual_value"] == 1 for value in item["items"])
+        for item in executive_analytics["comparisons"]
+    )
+
+    for forbidden in (ctx.unrelated_headers, ctx.cross_org_headers, ctx.cross_tenant_headers):
+        denied = await ctx.client.get(
+            f"/api/v1/business/sales/analytics{analytics_query}", headers=forbidden
+        )
+        assert denied.status_code in (403, 404), denied.text
+
+    today = datetime.now(UTC).date()
+    overdue_receivable = await business.create(
+        "finance",
+        "receivables",
+        {
+            "reference": "ANALYTICS-AR-OVERDUE",
+            "due_date": (today - timedelta(days=1)).isoformat(),
+            "amount": "100.00",
+        },
+    )
+    not_due_receivable = await business.create(
+        "finance",
+        "receivables",
+        {
+            "reference": "ANALYTICS-AR-NOT-DUE",
+            "due_date": (today + timedelta(days=4)).isoformat(),
+            "amount": "75.00",
+        },
+    )
+    payable_due = await business.create(
+        "finance",
+        "payables",
+        {
+            "reference": "ANALYTICS-AP-DUE",
+            "due_date": (today - timedelta(days=1)).isoformat(),
+            "amount": "50.00",
+        },
+    )
+    await business.create(
+        "finance",
+        "payables",
+        {
+            "reference": "ANALYTICS-AP-NOT-DUE",
+            "due_date": (today + timedelta(days=4)).isoformat(),
+            "amount": "25.00",
+        },
+    )
+    await business.create(
+        "finance",
+        "receivable_payments",
+        {
+            "receivable_id": overdue_receivable["receivable_id"],
+            "payment_date": today.isoformat(),
+            "amount": "20.00",
+            "reference": "ANALYTICS-RECEIPT",
+        },
+    )
+    finance_query = (
+        f"?from={today.replace(day=1).isoformat()}&to={today.isoformat()}&granularity=MONTH"
+    )
+    finance_analytics_response = await ctx.client.get(
+        f"/api/v1/business/finance/analytics{finance_query}", headers=headers["lead"]
+    )
+    assert finance_analytics_response.status_code == 200, finance_analytics_response.text
+    finance_analytics = finance_analytics_response.json()
+    exposure = next(
+        item for item in finance_analytics["breakdowns"] if item["code"] == "payment_exposure"
+    )
+    exposure_values = {item["code"]: item["value"] for item in exposure["items"]}
+    assert exposure_values == {
+        "receivable_not_due": "75.00",
+        "receivable_due": "80.00",
+        "payable_not_due": "25.00",
+        "payable_due": "50.00",
+    }
+    receipts = next(
+        item for item in finance_analytics["series"] if item["code"] == "receipts_amount"
+    )
+    assert receipts["points"] == [{"period": today.replace(day=1).isoformat(), "value": "20.00"}]
+    assert payable_due["payable_id"]
+    assert not_due_receivable["receivable_id"]
+
+    recruitment = await business.create(
+        "hr",
+        "recruitments",
+        {
+            "position_title": "Analytics Candidate Role",
+            "opened_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    await business.create(
+        "hr",
+        "candidates",
+        {
+            "recruitment_id": recruitment["recruitment_id"],
+            "full_name": "Analytics Candidate",
+            "email": "analytics-candidate@e2e.local",
+        },
+    )
+    hr_analytics_response = await ctx.client.get(
+        f"/api/v1/business/hr/analytics{finance_query}", headers=headers["lead"]
+    )
+    assert hr_analytics_response.status_code == 200, hr_analytics_response.text
+    hr_analytics = hr_analytics_response.json()
+    candidate_funnel = next(
+        item for item in hr_analytics["breakdowns"] if item["code"] == "candidate_funnel"
+    )
+    assert {item["code"]: item["value"] for item in candidate_funnel["items"]}["APPLIED"] == 1
+    candidate_trend = next(
+        item for item in hr_analytics["series"] if item["code"] == "candidate_count"
+    )
+    assert candidate_trend["points"] == [{"period": today.replace(day=1).isoformat(), "value": 1}]
+
+    await business.create(
+        "it",
+        "incidents",
+        {
+            "title": "Analytics Incident",
+            "description": "Incident analytics integration test",
+            "severity": "HIGH",
+        },
+    )
+    it_analytics_response = await ctx.client.get(
+        f"/api/v1/business/it/analytics{finance_query}", headers=headers["lead"]
+    )
+    assert it_analytics_response.status_code == 200, it_analytics_response.text
+    it_analytics = it_analytics_response.json()
+    incident_statuses = next(
+        item for item in it_analytics["breakdowns"] if item["code"] == "incidents_by_status"
+    )
+    assert {item["code"]: item["value"] for item in incident_statuses["items"]}["OPEN"] == 1
+    incident_trend = next(
+        item for item in it_analytics["series"] if item["code"] == "incident_count"
+    )
+    assert incident_trend["points"] == [{"period": today.replace(day=1).isoformat(), "value": 1}]

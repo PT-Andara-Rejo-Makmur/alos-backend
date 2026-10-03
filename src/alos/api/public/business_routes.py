@@ -1,8 +1,9 @@
 """Authoritative business performance shared by Web, ARA and Executive."""
 
-from typing import Any, Literal
+from datetime import date
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 
 from alos.api.public.record_routes import CanonicalRecordRequest, response
 from alos.dependencies import ContractCatalogDependency, CurrentPrincipalDependency
@@ -12,8 +13,14 @@ from alos.domains.strategy.projections import project
 from alos.domains.strategy.read_model import overview, target_detail
 from alos.notifications.business import BusinessNotifications
 from alos.projections.business import business_summary
+from alos.projections.business_analytics import (
+    AnalyticsPeriodError,
+    Granularity,
+    business_analytics,
+)
 from alos.projections.project_records import project_records
 from alos.projections.work_queue import work_queue
+from alos.security.errors import PlatformError
 
 router = APIRouter(prefix="/api/v1/business", tags=["business-performance"])
 BASE = "https://schemas.alos.dev/v1/business/business-contracts.schema.json"
@@ -129,6 +136,67 @@ async def summary(
         BASE + "#/$defs/BusinessSummary",
         await business_summary(repository, principal, domain),
     )
+
+
+@router.get("/executive/analytics")
+async def executive_analytics(
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    contracts: ContractCatalogDependency,
+    date_from: Annotated[date, Query(alias="from")],
+    date_to: Annotated[date, Query(alias="to")],
+    granularity: Granularity,
+) -> Any:
+    repository = request.app.state.process_service.repository
+    try:
+        result = await business_analytics(
+            repository,
+            principal,
+            "executive",
+            date_from,
+            date_to,
+            granularity,
+            executive=True,
+            shared_work=request.app.state.shared_work_service,
+            strategy_service=request.app.state.strategy_service,
+        )
+    except AnalyticsPeriodError as exc:
+        raise PlatformError(
+            "BUSINESS_ANALYTICS_PERIOD_INVALID",
+            "The requested analytics period is invalid or unsupported.",
+            status_code=422,
+        ) from exc
+    return response(contracts, BASE + "#/$defs/BusinessAnalyticsProjection", result)
+
+
+@router.get("/{domain}/analytics")
+async def analytics(
+    domain: Literal["sales", "property", "finance", "legal", "hr", "it"],
+    request: Request,
+    principal: CurrentPrincipalDependency,
+    contracts: ContractCatalogDependency,
+    date_from: Annotated[date, Query(alias="from")],
+    date_to: Annotated[date, Query(alias="to")],
+    granularity: Granularity,
+) -> Any:
+    repository = request.app.state.process_service.repository
+    try:
+        result = await business_analytics(
+            repository,
+            principal,
+            domain,
+            date_from,
+            date_to,
+            granularity,
+            shared_work=request.app.state.shared_work_service,
+        )
+    except AnalyticsPeriodError as exc:
+        raise PlatformError(
+            "BUSINESS_ANALYTICS_PERIOD_INVALID",
+            "The requested analytics period is invalid or unsupported.",
+            status_code=422,
+        ) from exc
+    return response(contracts, BASE + "#/$defs/BusinessAnalyticsProjection", result)
 
 
 @router.get("/executive/performance")
