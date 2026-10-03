@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
+from typing import cast as type_cast
 
 from sqlalchemy import DateTime, and_, case, cast, func, select, text
 from sqlalchemy.sql import ColumnElement
@@ -582,7 +583,11 @@ async def business_analytics(
                     "COUNT",
                     "Tanggal akhir kontrak aktif",
                     [
-                        {"code": str(code), "label": expiry_labels[str(code)], "value": int(count)}
+                        {
+                            "code": str(code),
+                            "label": expiry_labels[str(code)],
+                            "value": type_cast(int, count),
+                        }
                         for code, count in expiry_rows
                     ],
                 )
