@@ -146,6 +146,30 @@ class ProcessService:
             )
             return dict(jsonable_encoder({"policy_id": policy_id, **record}))
 
+    async def step_workspace(
+        self,
+        session: AsyncSession,
+        principal: Principal,
+        business_type: str,
+        domain: str,
+        packet: dict[str, Any],
+        policy: dict[str, Any],
+    ) -> str | None:
+        if business_type == "RECRUITMENT" and domain == "owner":
+            target = packet.get("requesting_workspace_id") or policy["routes"].get("owner")
+            workspaces = await self.repository.table(session, "core", "workspaces")
+            return await session.scalar(
+                select(workspaces.c.workspace_id)
+                .where(
+                    *self.company(workspaces, principal),
+                    workspaces.c.workspace_id == target,
+                    workspaces.c.active.is_(True),
+                )
+                .with_for_update(read=True)
+            )
+        target = policy["routes"].get(domain)
+        return target if isinstance(target, str) else None
+
     async def start(self, principal: Principal, values: dict[str, Any]) -> dict[str, Any]:
         business_type, subject_id = values["business_type"], values["subject_id"]
         if business_type == "OFFBOARDING" and "DIVISION_LEAD" not in principal.roles:
@@ -205,7 +229,9 @@ class ProcessService:
             await session.execute(insert(processes).values(**record))
             steps = await self.table(session, "_steps")
             for position, step in enumerate(plan):
-                target = policy["routes"].get(step.domain)
+                target = await self.step_workspace(
+                    session, principal, business_type, step.domain, packet, policy
+                )
                 if target is None:
                     raise conflict("Aturan belum menentukan divisi yang bertanggung jawab.")
                 due_hours = policy["rules"].get("due_hours", {}).get(step.code)
@@ -514,7 +540,9 @@ class ProcessService:
                         },
                     )
                 ):
-                    target = policy["routes"].get(step.domain)
+                    target = await self.step_workspace(
+                        session, principal, record["business_type"], step.domain, packet, policy
+                    )
                     if not target:
                         raise conflict("Divisi penanggung jawab belum dikonfigurasi.")
                     hours = policy["rules"].get("due_hours", {}).get(step.code)

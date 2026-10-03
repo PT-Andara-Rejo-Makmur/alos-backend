@@ -14,8 +14,8 @@ bukan nama pemeriksa. Semua ruang kerja tujuan harus aktif dalam perusahaan
 yang sama. Perubahan aturan menaikkan versi dan membuat pemeriksaan lama
 tidak dapat dipakai untuk keputusan baru.
 
-Jenis pengajuan: CHANGE_ORDER, PAYMENT_CERTIFICATE, BOOKING, ONBOARDING,
-OFFBOARDING, EMPLOYMENT_CONTRACT, dan CAPABILITY_REQUEST. Status proses
+Jenis pengajuan: CHANGE_ORDER, PAYMENT_CERTIFICATE, BOOKING, RECRUITMENT,
+ONBOARDING, OFFBOARDING, EMPLOYMENT_CONTRACT, dan CAPABILITY_REQUEST. Status proses
 terpisah dari status record domain. Langkah dapat berupa REVIEW, DECISION,
 EXECUTION, atau ACKNOWLEDGEMENT. Shared Work Approval tetap menjadi keputusan
 action-scoped untuk tindakan material yang sudah menggunakan fondasi tersebut.
@@ -57,8 +57,16 @@ agar pemilik mengajukan pemeriksaan ulang. Riwayat pemeriksaan tetap disimpan.
   transaksi bank harus cocok arah, nilai, dan tanggal, serta tidak boleh
   digunakan kembali untuk pembayaran lain. Reconciliation tetap memakai
   resource Finance existing.
-- Hiring membutuhkan recruitment aktif, hasil wawancara selesai, dan
-  keputusan HR. Employee dibuat melalui `hr.employees`; tidak ada sumber
+- Recruitment dengan divisi pemohon memerlukan aturan pemeriksaan sebelum
+  hiring. Kepala divisi tersebut memeriksa kebutuhan, lalu kepala HR;
+  Finance ikut jika `finance_review_required`, dan Direktur mengikuti aturan
+  `executive_required` atau batas kewenangan. Backend memilih divisi pemohon
+  dari record recruitment, bukan assignment browser atau owner route umum.
+  Perubahan kebutuhan membuat hasil pemeriksaan lama tidak dapat dipakai.
+  Recruitment lama tanpa divisi pemohon tetap kompatibel; aturan yang sudah
+  dikonfigurasi tetap wajib diselesaikan.
+- Hiring membutuhkan recruitment aktif, pemeriksaan kebutuhan yang berlaku,
+  hasil wawancara selesai, dan keputusan HR. Employee dibuat melalui `hr.employees`; tidak ada sumber
   employee kedua. Onboarding memeriksa akses Identity, kesiapan GA, tugas
   terkait, dan divisi. Offboarding memeriksa serah terima, pengembalian aset,
   settlement bila diwajibkan, dan pencabutan akses/sesi aktual sebelum

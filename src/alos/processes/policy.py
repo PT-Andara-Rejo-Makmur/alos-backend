@@ -45,6 +45,30 @@ def requirements(
                 "Permintaan bantuan ALOS",
             )
         ]
+    elif business_type == "RECRUITMENT":
+        steps = [
+            review(
+                "DIVISION_NEED_REVIEW",
+                "owner",
+                "Periksa kebutuhan tenaga kerja divisi",
+                "Kebutuhan posisi dan jumlah karyawan",
+            ),
+            review(
+                "HR_RECRUITMENT_REVIEW",
+                "hr",
+                "Periksa rencana dan persyaratan rekrutmen",
+                "Pemenuhan kebutuhan tenaga kerja",
+            ),
+        ]
+        if rules.get("finance_review_required"):
+            steps.append(
+                review(
+                    "FINANCE_REVIEW",
+                    "finance",
+                    "Periksa dasar anggaran tenaga kerja",
+                    "Aturan anggaran rekrutmen perusahaan",
+                )
+            )
     elif business_type == "EMPLOYMENT_CONTRACT":
         steps = [
             review("HR_CONTRACT_REVIEW", "hr", "Periksa syarat hubungan kerja", "Kontrak karyawan")

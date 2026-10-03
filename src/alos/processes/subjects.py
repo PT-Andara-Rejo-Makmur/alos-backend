@@ -31,6 +31,7 @@ SUBJECTS = {
     "PAYMENT_CERTIFICATE": ("property", PROPERTY["payment_certificates"], ("SUBMITTED",)),
     "BOOKING": ("sales", SALES["bookings"], ("PENDING",)),
     "ONBOARDING": ("hr", HR["onboardings"], ("OPEN", "IN_PROGRESS")),
+    "RECRUITMENT": ("hr", HR["recruitments"], ("OPEN",)),
     "OFFBOARDING": ("hr", HR["employees"], ("ACTIVE",)),
     "EMPLOYMENT_CONTRACT": ("hr", HR["employment_contracts"], ("IN_REVIEW",)),
 }
@@ -63,6 +64,10 @@ PACKET_FIELDS = frozenset(
         "email",
         "department_code",
         "position_title",
+        "requesting_workspace_id",
+        "employment_type",
+        "headcount",
+        "reason",
         "start_date",
         "end_date",
         "target_completion_date",

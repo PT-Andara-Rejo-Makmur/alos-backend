@@ -145,6 +145,14 @@ class HrService:
             )
             if recruitment["status"] != "OPEN":
                 raise conflict("Rekrutmen tidak aktif.")
+            await require_reviews(
+                self.repository,
+                session,
+                principal,
+                "RECRUITMENT",
+                recruitment["recruitment_id"],
+                required=bool(recruitment.get("requesting_workspace_id")),
+            )
             interviews = await self.repository.table(session, "hr", "interviews")
             completed = await session.scalar(
                 select(interviews.c.interview_id)

@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 from test_business_domains import Context
 from test_business_domains import context as migrated_context
-from test_business_processes import action, configure
+from test_business_processes import action, configure, submit
 from test_strategy_planning_e2e import _register_and_login
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
@@ -76,6 +76,21 @@ async def test_hiring_onboarding_and_offboarding_reuse_identity(context: Context
         },
     )
     await ctx.transition("hr", "interviews", interview["interview_id"], "COMPLETED")
+    blocked = await ctx.client.post(path, headers=ctx.headers["lead"], json=hire_body)
+    assert blocked.status_code == 409, blocked.text
+    await configure(ctx, "RECRUITMENT")
+    blocked = await ctx.client.post(path, headers=ctx.headers["lead"], json=hire_body)
+    assert blocked.status_code == 409, blocked.text
+    need = await submit(ctx, "RECRUITMENT", recruitment["recruitment_id"])
+    assert [step["code"] for step in need["steps"]] == [
+        "DIVISION_NEED_REVIEW",
+        "HR_RECRUITMENT_REVIEW",
+    ]
+    assert need["packet"]["headcount"] == 1
+    await action(ctx, need, "lead", 0, 403)
+    need = await action(ctx, need, "workspace", 0)
+    need = await action(ctx, need, "lead", 1)
+    assert need["status"] == "COMPLETED"
     hired = await ctx.client.post(path, headers=ctx.headers["lead"], json=hire_body)
     assert hired.status_code == 200, hired.text
     employee = hired.json()

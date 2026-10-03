@@ -15,6 +15,8 @@ async def require_reviews(
     principal: Principal,
     business_type: str,
     subject_id: str,
+    *,
+    required: bool = False,
 ) -> None:
     policies = await repository.table(session, "core", "business_process_policies")
     policy = (
@@ -34,6 +36,8 @@ async def require_reviews(
     )
     # Existing independent approvals remain compatible before company rules are configured.
     if policy is None:
+        if required:
+            raise conflict("Aturan pemeriksaan kebutuhan divisi harus dikonfigurasi.")
         return
     _, digest = await snapshot(repository, session, principal, business_type, subject_id)
     processes = await repository.table(session, "core", "business_processes")
