@@ -221,13 +221,26 @@ async def test_closing_actual_reaches_verified_executive_performance(
     opp_survey = await business.create(
         "sales",
         "opportunities",
-        {"name": "Peluang Survei", "stage": "Survey", "customer_id": customer["customer_id"]},
+        {"name": "Peluang Survei", "customer_id": customer["customer_id"]},
     )
+    for stage in ("Qualified", "Survey"):
+        pipeline_res = await ctx.client.post(
+            f"/api/v1/sales/opportunities/{opp_survey['opportunity_id']}/pipeline",
+            headers=headers["lead"],
+            json={"stage": stage},
+        )
+        assert pipeline_res.status_code == 200, pipeline_res.text
     opp_lost = await business.create(
         "sales",
         "opportunities",
-        {"name": "Peluang Hilang", "stage": "Qualified", "customer_id": customer["customer_id"]},
+        {"name": "Peluang Hilang", "customer_id": customer["customer_id"]},
     )
+    pipeline_res = await ctx.client.post(
+        f"/api/v1/sales/opportunities/{opp_lost['opportunity_id']}/pipeline",
+        headers=headers["lead"],
+        json={"stage": "Qualified"},
+    )
+    assert pipeline_res.status_code == 200, pipeline_res.text
     await business.transition("sales", "opportunities", opp_lost["opportunity_id"], "LOST")
 
     sales_pipeline_resp = await ctx.client.get(
