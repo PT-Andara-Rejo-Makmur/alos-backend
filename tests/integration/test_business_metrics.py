@@ -33,6 +33,8 @@ async def test_closing_actual_reaches_verified_executive_performance(
         "it.write",
         "property.read",
         "property.write",
+        "legal.read",
+        "legal.write",
         "work.read",
         "work.write",
         "approval.read",
