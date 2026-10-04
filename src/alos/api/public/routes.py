@@ -323,7 +323,11 @@ async def execute_deterministic_integration_research(
         raise PlatformError(
             exc.code,
             exc.message,
-            status_code=exc.status_code or 502,
+            status_code=(
+                503
+                if exc.code in {"GENESIS_TIMEOUT", "GENESIS_UNAVAILABLE"}
+                else exc.status_code or 502
+            ),
             retryable=exc.retryable,
             correlation_id=exc.correlation_id,
         ) from exc
@@ -390,7 +394,11 @@ async def execute_agent_run(
         raise PlatformError(
             exc.code,
             exc.message,
-            status_code=exc.status_code or 502,
+            status_code=(
+                503
+                if exc.code in {"GENESIS_TIMEOUT", "GENESIS_UNAVAILABLE"}
+                else exc.status_code or 502
+            ),
             retryable=exc.retryable,
             correlation_id=exc.correlation_id,
         ) from exc

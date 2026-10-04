@@ -1,35 +1,51 @@
-# ARA conversation authority
+# Authority Percakapan ARA
 
-The public `/api/v1/ara` API accepts minimal user intent and requires the current authenticated Principal.
-Threads are PostgreSQL records scoped by tenant, organization, workspace and actor. Every message/run lookup
-first authorizes its parent thread; invisible records return 404. A locked active-run reservation prevents concurrent
-messages in one thread. Messages and structured responses survive process/session refresh. Long histories are bounded
-to the most recent 500 messages, returned in chronological order. The first question supplies a default thread title.
+Public `/api/v1/ara` menerima intent pengguna dan membutuhkan Principal aktif.
+Thread, message dan run dipersist PostgreSQL, dibatasi tenant, organization,
+workspace dan actor. Lookup memeriksa parent thread; objek tidak terlihat memberi
+404. Reservasi run aktif mencegah dua message paralel pada thread yang sama.
+History API dibatasi 500 pesan secara kronologis; refresh tidak menghapus percakapan.
 
-ContextBundleBuilder intersects the registered active tool catalog with Principal permissions/scopes and caps budgets.
-Role names cannot grant RESTRICTED classification; the exact Backend `restricted.access` grant is required.
-ToolExecutor rechecks identity, role, data scope, division, project, classification, lifecycle, kill switches and run allowance.
-Business adapters call existing owner services with bounded arguments; they contain no SQL or write actions.
+## Context dan mode
 
-ARA uses the existing AgentRunAuthority and GENESIS AgentRuntimeEngine in explicit TEST mode. Development requires
-ENABLE_TEST_TOOLS; staging/production do not enable the deterministic route. No production model is connected.
-The whole conversation workflow has a 30-second deadline, at most 16 steps, 12 tool calls, 12,000 tokens and zero model cost.
-Only authorized research may invoke one narrowed business reader child, with depth 1, one tool, 1,000 tokens and a 10-second deadline.
-Backend issues the child context and the existing run authority enforces its parent lineage and inheritance.
-Cancellation is checked through the existing internal probe; cancellation received before completion wins over a late completed result.
+Backend memilih definition released ACTIVE sebelum mereservasi percakapan,
+membatasi katalog tool terhadap Principal, permission, scope dan classification.
+`restricted.access` diperlukan untuk classification RESTRICTED; nama role saja
+tidak memberikannya. ToolExecutor memeriksa kembali identity, division, project,
+registry, lifecycle, kill switch dan budget pada setiap panggilan.
 
-ToolExecutor registers real evidence with source, content hash, capture time, run and correlation. GENESIS verifies dynamic
-evidence identity and hash before admitting it. Tool/record content is data and cannot alter instructions. Failed reads return
-FAILED with actual failed tool identifiers; unavailable services return 503 with a persisted FAILED response. Unknown values remain null.
+NORMAL menggunakan katalog dinamis dan model melalui GENESIS/ModelGateway.
+TEST menggunakan matcher/deterministic route hanya pada non-production dengan
+`ENABLE_TEST_TOOLS` di Backend dan `ENABLE_TEST_RUNTIME` di GENESIS. Local Compose
+mematikan keduanya secara default. Tidak ada fallback dari NORMAL ke TEST.
 
-Conversation history is separate from reusable governed memory. Only evidence-backed memory with matching actor/thread,
-scope, classification and identity enters ARA context. Memory can select a prior domain for a follow-up; current facts are always
-read again. Chat is never automatically promoted to organizational memory. Existing authorized organizational memory remains separate.
+Batas ARA maksimal 16 steps, 12 tool calls, 12.000 tokens dan deadline 30 detik;
+definition/Principal hanya dapat mempersempit batas tersebut. Model cost yang
+belum diketahui tidak dinyatakan nol. Backend mengatur runtime transport sesuai
+deadline run dan overhead terbatas. Gagal/timeout dipersist dan diproyeksikan 503.
 
-Internal research requires research.request and research.management, references current evidence, and persists canonical findings,
-recommendations and DRAFT backlog candidates through the existing research persistence model. Factory proposals call the existing
-orchestrator with proposal_only=true and never register a definition. ReviewPackage is advisory and references the captured proposal,
-factory draft or research result. No IT/Director decisions, releases, activation or business writes occur in ARA.
+Enam pesan terakhir, masing-masing maksimum 1.000 karakter, diteruskan sebagai
+data tanpa instruction authority. Follow-up dapat memilih source lama, tetapi
+fakta harus dibaca dan diverifikasi lagi. History bukan memory organisasi otomatis.
 
-Validation: PostgreSQL conversation tests, the curated tool authority matrix, scoped memory tests, foundation regressions,
-and `alos-infra/scripts/verify-ara-roundtrip.py` prove real authenticated ASGI boundaries. The Docker/BFF smoke proves deployment topology.
+## Evidence, proposal dan child
+
+Read adapter memanggil owner service dan mendaftarkan canonical evidence dengan
+version, content hash, waktu, scope, run dan correlation. GENESIS memverifikasi
+evidence/claim sebelum Backend memproyeksikan jawaban. Unknown tetap null; failed
+source tidak menjadi data kosong palsu. CONVERSATION tidak menyatakan sumber.
+
+TASK/material/capability menghasilkan proposal yang memerlukan review. ARA
+tidak mengambil keputusan IT/Director, membuat release, atau mengaktifkan Agent.
+Eksekusi TASK yang sudah diperiksa berada pada command Backend terpisah.
+
+Research memerlukan permission yang sesuai dan evidence terkini. Backend dapat
+membuat child business reader depth 1, satu tool, 1.000 tokens dan deadline 10
+detik dengan authority lebih sempit. Child memakai sumber yang dibaca parent;
+run authority menegakkan lineage dan cancellation. Cancellation sebelum selesai
+mengalahkan completed result yang terlambat.
+
+Regresi ada pada tests PostgreSQL conversation/authority/memory dan script Infra
+`verify-ara-roundtrip.py` serta `ara-smoke.py`. TEST dan provider mock membuktikan
+protokol/grounding, bukan kualitas model nyata. Lihat
+[readiness terkini](https://github.com/PT-Andara-Rejo-Makmur/alos-infra/blob/development/docs/PRODUCTION_READINESS_2026-10-04.md).

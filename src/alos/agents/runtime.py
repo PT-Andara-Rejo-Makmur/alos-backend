@@ -13,6 +13,7 @@ from alos.agents.lifecycle import (
 )
 from alos.identity import Principal
 from alos.integrations.genesis import GenesisClient
+from alos.integrations.genesis.client import GenesisClientError
 from alos.observability.correlation import current_correlation_id
 from alos.registry import RegistryEntry, RegistryState
 from alos.registry_contracts import RegistryAuthorityView
@@ -53,6 +54,8 @@ class AuthoritativeRuntimeOrchestrator:
             set(requested_tools).intersection(agent.payload.get("tool_ids", []))
         )
         derived_budget = dict(execution_budget)
+        # Legacy definitions without a deadline receive a finite server-owned limit.
+        derived_budget.setdefault("timeout_seconds", 30)
         if allowed_tool_ids and "max_tool_calls" not in derived_budget:
             derived_budget["max_tool_calls"] = min(
                 int(derived_budget.get("max_steps", 1)),
@@ -103,7 +106,17 @@ class AuthoritativeRuntimeOrchestrator:
                 "allowed_tool_ids": list(started.authorized_tool_ids),
             },
         }
-        result = await self._genesis.create_agent_run(invocation, correlation_id=correlation_id)
+        try:
+            result = await self._genesis.create_agent_run(
+                invocation,
+                correlation_id=correlation_id,
+                timeout_seconds=float(derived_budget["timeout_seconds"]) + 5,
+            )
+        except GenesisClientError as exc:
+            await self._authority.fail_transport(
+                started.run_id, code=exc.code, timed_out=exc.code == "GENESIS_TIMEOUT"
+            )
+            raise
         await self._persist_tool_steps(started.run_id, result, correlation_id=correlation_id)
         return await self._authority.complete(result)
 

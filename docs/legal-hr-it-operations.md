@@ -75,7 +75,7 @@ Client payloads reject tenant/organization/workspace IDs, timestamps and authori
 
 ## Unavailable material actions
 
-Legal signing/execution, permit validity, final due diligence decisions, legal judgments and automatic regulatory compliance remain unavailable. HR leave approval/rejection, hiring/rejection, employment signing, compensation/payroll/benefits, GA facilities and governed offboarding/access revocation remain unavailable. IT production approval/release/rollback, live monitoring, GitHub execution, external connectors, API-key storage, ARA/GENESIS connection, asset/support entities and backup/restore execution remain unavailable. Existing Governance is the only production release authority.
+Legal signature validation, externally verified permits, legal judgments and automatic regulatory compliance remain unavailable. Compensation/payroll/protected personal fields, live monitoring/GitHub execution, external connectors, provider-secret storage in IT inventory and unsupported asset/helpdesk entities remain unavailable. Internal GA facilities, configured recruitment/hiring/offboarding, Identity handoffs and recorded IT-release workflows are implemented as described in [business operations](business-operations.md); those records do not execute external services or grant legal validity. ARA has a governed runtime with real-model eval pending. Agent production release continues through existing Governance and human decisions.
 
 ## Web and Executive
 

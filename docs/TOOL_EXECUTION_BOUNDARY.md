@@ -31,8 +31,8 @@ dan audit harus sama. Perbedaan correlation ID menghasilkan `DENIED`.
   lalu menerapkan permission/scope secara deny-by-default.
 - **Execution:** hanya `ToolExecutor` Backend yang dapat memilih registration dan menjalankan adapter.
 - **Audit:** Backend menulis event `REQUESTED` dan terminal outcome (`SUCCESS`, `DENIED`, `REJECTED`,
-  `FAILED`, atau `TIMEOUT`). Baseline menggunakan sink in-memory; production wajib menggantinya
-  dengan authoritative audit repository.
+  `FAILED`, atau `TIMEOUT`) pada authoritative SQL audit repository. Sink in-memory hanya
+  digunakan sebagai test double.
 - **Idempotency:** key diikat ke tenant, tool, dan digest immutable request. Replay yang identik
   menggunakan output tersimpan; penggunaan key yang sama untuk payload berbeda menghasilkan
   `IDEMPOTENCY_CONFLICT`.

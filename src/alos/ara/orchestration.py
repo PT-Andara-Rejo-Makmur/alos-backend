@@ -264,6 +264,19 @@ class AraOrchestrator:
     ) -> dict[str, Any]:
         data = self.validate("ara-message-request", payload)
         await self.repository.get(principal, thread_id)
+        try:
+            approved_tools = (
+                ()
+                if self.test_enabled
+                else tuple(self.production_agent(principal).payload["tool_ids"])
+            )
+        except ValueError as exc:
+            raise PlatformError(
+                "ARA_RELEASE_UNAVAILABLE",
+                "ARA belum memiliki versi yang dirilis untuk ruang kerja ini.",
+                status_code=503,
+                retryable=False,
+            ) from exc
         run_id = f"run_{uuid4().hex}"
         message = data["message"].strip()
         if not message:
@@ -276,11 +289,13 @@ class AraOrchestrator:
             run_id, correlation_id, "UNDERSTANDING", "backend.request"
         )
         memories = await self.conversation_memory(principal, thread_id)
-        requested = needed_tools(message)
+        # In NORMAL mode GENESIS selects reads within the released, Principal-scoped
+        # allowlist. Keyword routing is only a deterministic acceptance fixture.
+        requested = needed_tools(message) if self.test_enabled else approved_tools
         reference = data.get("business_reference")
-        if reference and reference["domain"] == "PROCESS":
+        if self.test_enabled and reference and reference["domain"] == "PROCESS":
             requested = ("process.detail.read",)
-        if reference and reference["domain"] == "SHARED_WORK":
+        if self.test_enabled and reference and reference["domain"] == "SHARED_WORK":
             requested = tuple(
                 {
                     "shared.project.list": "shared.project.read",
@@ -319,12 +334,13 @@ class AraOrchestrator:
                 answer = response(
                     context.status, "Kewenangan atau konteks ruang kerja belum tersedia."
                 )
-            elif set(requested) - set(context.allowed_tools):
+            elif self.test_enabled and set(requested) - set(context.allowed_tools):
                 answer = response(
                     "DENIED", "Anda tidak memiliki kewenangan untuk sumber yang diminta."
                 )
             elif (
-                requested
+                self.test_enabled
+                and requested
                 and any(word in message.casefold() for word in ("analisis", "research", "riset"))
                 and (
                     "research.request" not in principal.permissions
@@ -334,7 +350,7 @@ class AraOrchestrator:
                 answer = response(
                     "DENIED", "Izin research.request dan scope research.management diperlukan."
                 )
-            elif any(
+            elif self.test_enabled and any(
                 (BUSINESS_TOOLS[tool][1] == "detail" or BUSINESS_TOOLS[tool][1].startswith("get_"))
                 and (not reference or reference["domain"] != BUSINESS_TOOLS[tool][0].upper())
                 for tool in requested
@@ -433,9 +449,15 @@ class AraOrchestrator:
         context: Any,
     ) -> tuple[dict[str, Any], str]:
         now = datetime.now(UTC)
+        research_requested = any(
+            word in message.casefold()
+            for word in (
+                ("analisis", "research", "riset") if self.test_enabled else ("research", "riset")
+            )
+        )
         delegate = (
             bool(context.allowed_tools)
-            and any(word in message.casefold() for word in ("analisis", "research", "riset"))
+            and research_requested
             and "research.request" in principal.permissions
             and "research.management" in principal.scopes
         )
@@ -573,6 +595,20 @@ class AraOrchestrator:
             "input": {
                 "message": message,
                 "thread_id": thread_id,
+                "tool_selection_mode": "FIXED" if self.test_enabled else "DYNAMIC",
+                "tool_catalog": [
+                    {
+                        "tool_id": tool,
+                        "domain": BUSINESS_TOOLS[tool][0],
+                        "operation": BUSINESS_TOOLS[tool][1],
+                        "resource": BUSINESS_TOOLS[tool][2],
+                        "required_arguments": ["resource_id"]
+                        if BUSINESS_TOOLS[tool][1] == "detail"
+                        or BUSINESS_TOOLS[tool][1].startswith("get_")
+                        else [],
+                    }
+                    for tool in context.allowed_tools
+                ],
                 "history": [
                     {
                         "role": item["role"],
@@ -583,8 +619,12 @@ class AraOrchestrator:
                 ],
                 "tool_arguments": {
                     tool: {"resource_id": data["business_reference"]["resource_id"]}
-                    if BUSINESS_TOOLS[tool][1] == "detail"
-                    or BUSINESS_TOOLS[tool][1].startswith("get_")
+                    if data.get("business_reference")
+                    and data["business_reference"]["domain"] == BUSINESS_TOOLS[tool][0].upper()
+                    and (
+                        BUSINESS_TOOLS[tool][1] == "detail"
+                        or BUSINESS_TOOLS[tool][1].startswith("get_")
+                    )
                     else {}
                     for tool in context.allowed_tools
                 },
@@ -701,7 +741,7 @@ class AraOrchestrator:
                     }
                 )
         answer["sources"] = sources
-        if context.allowed_tools and not sources:
+        if answer["response_type"] == "ANSWER" and context.allowed_tools and not sources:
             raise ValueError("Business answer requires sources")
         if "buat agent" in message.casefold() and self.factory is not None:
             draft = await self.factory.analyze(
@@ -724,10 +764,7 @@ class AraOrchestrator:
                 "required_permission": "capability.propose",
                 "executed": False,
             }
-        if (
-            any(word in message.casefold() for word in ("analisis", "research", "riset"))
-            and sources
-        ):
+        if research_requested and sources:
             if (
                 "research.request" not in principal.permissions
                 or "research.management" not in principal.scopes

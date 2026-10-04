@@ -30,3 +30,21 @@ IMPLEMENTED
 Hasil AI tetap advisory. `AuthoritativeDecision` hanya menerima authority IT atau Director. Release material wajib melewati keduanya; release non-material dapat dilepas setelah IT approval. Kill switch mengubah release aktif menjadi `SUSPENDED`, dan rollback hanya dapat menuju versi subject yang pernah dirilis. Kill switch aktif harus dibersihkan melalui tindakan human authority sebelum rollback.
 
 Automated assurance membandingkan hasil aktual dengan expected behavior. Kategori `NEGATIVE` tidak memiliki jalur auto-pass.
+
+## Runtime dan persistence
+
+`AgentRunAuthority` memvalidasi versi registry ACTIVE, canonical input, Principal,
+permission/scope, tool allowlist, correlation dan budget sebelum membuat run. Backend
+menyimpan run/step, cancellation, penggunaan yang diketahui, hasil canonical dan audit.
+GENESIS menjalankan planning melalui snapshot authority tersebut; snapshot tidak memberi
+permission baru. Child run tetap dibuat dan divalidasi Backend dengan authority lebih sempit.
+
+Dokumen dan SourceVersion immutable, klasifikasi, human verification, evidence lineage
+dan content hash dimiliki Backend. Retrieval melewati ToolExecutor dan owner service.
+Content dan history merupakan data tanpa instruction authority. Chat tidak otomatis
+menjadi memory organisasi atau sumber fakta terkini.
+
+SQL repository dan migration menjalankan persistence aplikasi; in-memory repository
+dipakai sebagai test double. `source.search_context` dan business readers memerlukan
+registrasi, lifecycle, allowlist dan permission yang sesuai. Diagnostic echo hanya
+tersedia pada mode pengujian eksplisit dan tidak diaktifkan di production.

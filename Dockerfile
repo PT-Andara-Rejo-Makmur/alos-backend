@@ -10,9 +10,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+RUN apt-get update && apt-get upgrade --yes --no-install-recommends && rm -rf /var/lib/apt/lists/*
 RUN groupadd --system alos && useradd --system --gid alos --home-dir /app alos
 
 COPY pyproject.toml README.md ./
+RUN --mount=type=cache,target=/root/.cache/pip python -m pip install --upgrade 'pip>=26.2.1,<27'
 RUN --mount=type=cache,target=/root/.cache/pip python -c "import subprocess, tomllib; project = tomllib.load(open('pyproject.toml', 'rb')); subprocess.check_call(['python', '-m', 'pip', 'install', *project['build-system']['requires'], *project['project']['dependencies']])"
 COPY src ./src
 RUN --mount=type=cache,target=/root/.cache/pip python -m pip install --no-deps --no-build-isolation .
@@ -22,6 +24,9 @@ RUN mkdir -p /data/documents && chown alos:alos /data/documents
 COPY --from=contracts schemas /contracts/schemas
 COPY --from=contracts events /contracts/events
 COPY --from=contracts VERSION /contracts/VERSION
+
+# Package installers and their vendored dependencies are build tools, not runtime services.
+RUN python -m pip uninstall --yes pip setuptools wheel
 
 USER alos
 EXPOSE 8000

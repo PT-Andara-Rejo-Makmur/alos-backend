@@ -16,17 +16,19 @@ Backend tidak melakukan AI reasoning, prompt orchestration, Agent planning, Skil
 
 Lihat [ARCHITECTURE.md](ARCHITECTURE.md) dan [Model Otoritas](docs/AUTHORITY_MODEL.md).
 
-Hasil adaptasi authority dari MVP-1 dicatat pada [Migrasi Authority MVP-1](docs/MVP1_AUTHORITY_MIGRATION.md). Registry Backend selalu memvalidasi definition terhadap artifact `alos-contracts`; kode reasoning dan orchestration tidak ikut dimigrasikan.
-
-Rekonsiliasi ToolExecutor, governance, negative-test behavior, kill switch, dan rollback tersedia pada [Migrasi Tool, Governance, dan Release MVP-1](docs/MVP1_TOOL_GOVERNANCE_RELEASE_MIGRATION.md).
+Registry memvalidasi definition terhadap artifact `alos-contracts`. Registry, identity,
+run, evidence, audit dan approval mempunyai persistence PostgreSQL; in-memory adapters
+hanya digunakan sebagai test double. Lihat [model otoritas](docs/AUTHORITY_MODEL.md)
+dan [boundary ToolExecutor](docs/TOOL_EXECUTION_BOUNDARY.md).
 
 Authoritative Agent run lifecycle berada pada `AgentRunAuthority`. Service ini memvalidasi
 registry lifecycle, tenant/workspace, permission, tool intent, correlation, dan canonical
 AgentRunResult; reasoning tetap pada GENESIS. Lihat
-[Authority Runtime MVP-1](docs/MVP1_RUNTIME_SPLIT.md).
+[runtime ARA](docs/ara-runtime.md).
 
-Pemisahan document/source/evidence authority dari intelligence dicatat pada
-[Migrasi Knowledge dan Research MVP-1](docs/MVP1_KNOWLEDGE_RESEARCH_MIGRATION.md).
+Dokumen, versi sumber, evidence, worker dan transisi bisnis dijelaskan pada
+[operasi bisnis](docs/business-operations.md). GENESIS menerima sumber yang sudah
+diotorisasi dan tidak memperoleh akses langsung ke database bisnis.
 
 ## Stack
 
@@ -113,7 +115,7 @@ Pengujian unit tidak memerlukan database atau cloud secret. Lihat [Pengujian](do
 ## Docker
 
 ```bash
-docker build -t alos-backend:local .
+docker build --build-context contracts=../alos-contracts -t alos-backend:local .
 docker run --rm --env-file .env -p 8000:8000 alos-backend:local
 ```
 
@@ -140,3 +142,7 @@ Kode aplikasi berada di `src/alos`, migration di `migrations`, pengujian di `tes
 - OpenTelemetry SDK/exporter dikonfigurasi oleh deployment, bukan dengan hard-coded credential.
 
 Panduan tambahan: [Instalasi](docs/INSTALLATION.md), [Pengembangan](docs/DEVELOPMENT.md), dan [Kontribusi](CONTRIBUTING.md).
+
+Seluruh panduan tersedia pada [indeks dokumentasi](docs/README.md). Status pengujian dan
+blocker produksi dipusatkan pada
+[readiness lintas repository](https://github.com/PT-Andara-Rejo-Makmur/alos-infra/blob/development/docs/PRODUCTION_READINESS_2026-10-04.md).

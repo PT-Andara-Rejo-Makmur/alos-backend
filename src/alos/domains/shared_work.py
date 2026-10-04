@@ -3628,6 +3628,27 @@ class SharedWorkService:
                     "The finding owner cannot verify this finding.",
                     status_code=403,
                 )
+            # Certification and closure must reflect the linked corrective work.
+            # Lock and revalidate its visibility in this transaction; browser state
+            # and a previously VERIFIED finding cannot bypass an unfinished task.
+            if action in {"verify", "close"} and current.get("corrective_action_task_id"):
+                tasks = await self._table(session, "tasks")
+                task_links = await self._table(session, "task_workspaces")
+                corrective_task = await self._locked_record(
+                    session,
+                    tasks,
+                    task_links,
+                    "task_id",
+                    current["corrective_action_task_id"],
+                    principal,
+                )
+                if corrective_task["status"] != "COMPLETED":
+                    raise PlatformError(
+                        "FINDING_CORRECTIVE_ACTION_INCOMPLETE",
+                        "Tugas tindakan korektif harus selesai sebelum temuan diverifikasi "
+                        "atau ditutup.",
+                        status_code=409,
+                    )
             if current["status"] == target:
                 return self._projection(current, principal), False
             row = (

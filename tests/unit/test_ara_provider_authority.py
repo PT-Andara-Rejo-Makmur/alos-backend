@@ -4,6 +4,7 @@ import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -13,8 +14,34 @@ from alos.audit import InMemoryAuditRepository
 from alos.contracts import CanonicalContractCatalog
 from alos.identity import Principal
 from alos.registry import RegistryEntry, RegistryState
+from alos.security.errors import PlatformError
 
 ROOT = Path(__file__).resolve().parents[3] / "alos-contracts"
+
+
+@pytest.mark.asyncio
+async def test_unreleased_ara_rejects_before_reserving_conversation() -> None:
+    repository = AsyncMock()
+    principal = Principal(
+        actor_id="actor_ara",
+        tenant_id="tenant_ara",
+        organization_id="org_ara",
+        workspace_id="workspace_ara",
+    )
+    service = AraOrchestrator(
+        repository=repository,
+        contracts=CanonicalContractCatalog(ROOT),
+        authority=None,
+        genesis=None,
+        registry=None,
+        audit=None,
+        test_enabled=False,
+    )
+    with pytest.raises(PlatformError) as raised:
+        await service.send(principal, "thread_audit", {"message": "Halo"}, "corr_release")
+    assert raised.value.status_code == 503
+    assert raised.value.code == "ARA_RELEASE_UNAVAILABLE"
+    repository.reserve.assert_not_awaited()
 
 
 @pytest.mark.asyncio

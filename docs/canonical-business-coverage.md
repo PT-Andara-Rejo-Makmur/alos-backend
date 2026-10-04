@@ -133,11 +133,21 @@ GA records are explicit internal human records. Inventory condition/readiness is
 
 Legal Review is a distinct legal assessment with explicit summary/result and recorded reviewer. It is separate from due diligence, business approval, signature and execution. ContractRevision is immutable and references an actual immutable Shared Work document version. A contract with revision evidence cannot be overwritten. Neither review completion, an approved document nor a revision activates or executes the contract.
 
+## Shared Work evidence and resolution
+
+Shared Work Findings require an independent reviewer. A linked corrective-action Task
+must be COMPLETED before verification or closure; Backend locks the visible Task in
+the same transaction and returns `FINDING_CORRECTIVE_ACTION_INCOMPLETE` (409) otherwise.
+Submitting for review does not assert completion. Findings without a linked Task keep
+the existing human-review lifecycle. Documents require an approved immutable version
+before their content can be used as an ARA source. These controls are checked in the
+[development UAT](https://github.com/PT-Andara-Rejo-Makmur/alos-infra/blob/development/docs/BUSINESS_UAT_2026-10-04.md).
+
 ## Deferred and fail-closed capabilities
 
 | Capability | Status | Reason |
 |---|---|---|
-| GENESIS/ARA production reasoning, extraction, autonomous execution, 9Router/Hermes/provider runtime | DEFERRED_TO_AI | next phase; genesis-ai source unchanged; deterministic existing integration retained |
+| GENESIS/ARA | GOVERNED_RUNTIME_IMPLEMENTED / MODEL_EVAL_PENDING | Dynamic source selection, bounded conversation/history, verified arithmetic and review-only proposals are implemented; real provider quality, extraction and autonomous material execution are not certified by mock acceptance |
 | Meta/TikTok/WhatsApp/email live analytics, bank/DJP/payment gateway, GitHub live CI, external ERP/attendance/asset systems, Drive synchronization | DEFERRED_TO_CONNECTOR | no connector authority; no fabricated internal source |
 | TTE/signature verification, legal execution, externally verified permits/regulatory compliance | DEFERRED_TO_CONNECTOR | provider and assessment authority absent; recorded documents do not prove legal validity |
 | Compensation/salary/bank/health/government IDs/protected attributes | UNAVAILABLE | no canonical sensitive persistence and privacy policy |

@@ -16,14 +16,14 @@
 - `evidence/`: boundary registry, lineage, provenance, dan validation evidence.
 - `documents/`, `sources/`: metadata document dan source reference.
 - `jobs/`: queue state machine, scheduler, bounded worker, retry/idempotency, dan stale-lease recovery; tidak memakai message broker.
-- `notifications/`: notification intent dan provider boundary masa depan.
+- `notifications/`: intent/delivery notification dan SMTP boundary; job lifecycle dan retry tetap milik Backend.
 - `domains/`: boundary property, finance, sales, HR, legal, strategy, serta CRUD domain-data berbasis workspace dengan authority ALOS yang sama.
 - `integrations/genesis/`: client HTTP menuju AI Control Plane tanpa import kode GENESIS.
 - `observability/`: correlation context dan OpenTelemetry API boundary.
 - `persistence/`: SQLAlchemy base, engine/session lifecycle, serta model database.
 - `migrations/`: revision Alembic append-only.
 - `tests/unit/`: pengujian service dan configuration terisolasi.
-- `tests/integration/`: pengujian HTTP boundary tanpa cloud dependency.
+- `tests/integration/`: pengujian HTTP/ASGI dan PostgreSQL disposable, termasuk lifecycle bisnis, jobs, identity dan evidence; tidak memakai data produksi.
 - `tests/security/`: authorization dan tenant isolation.
 - `tests/contract/`: migration dan contract-boundary checks.
 - `docs/`: panduan instalasi, operasi, pengembangan, database, integrasi, dan arsitektur.

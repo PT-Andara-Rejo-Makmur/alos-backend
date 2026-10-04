@@ -12,6 +12,7 @@ from alos.api.public.routes import bootstrap_deterministic_integration, execute_
 from alos.audit import InMemoryAuditRepository
 from alos.contracts import CanonicalContractCatalog
 from alos.identity import Principal
+from alos.integrations.genesis.client import GenesisClientError
 from alos.observability.correlation import correlation_id_context
 from alos.registry import DecisionAuthority
 from alos.security.errors import PlatformError
@@ -22,11 +23,13 @@ CONTRACTS_ROOT = Path(__file__).resolve().parents[3] / "alos-contracts"
 class RecordingGenesisClient:
     def __init__(self) -> None:
         self.invocation: dict[str, Any] | None = None
+        self.timeout_seconds: float | None = None
 
     async def create_agent_run(
-        self, payload: dict[str, Any], *, correlation_id: str
+        self, payload: dict[str, Any], *, correlation_id: str, timeout_seconds: float | None = None
     ) -> dict[str, Any]:
         self.invocation = payload
+        self.timeout_seconds = timeout_seconds
         request = payload["run_request"]
         return {
             "run_id": request["run_id"],
@@ -60,7 +63,11 @@ class RecordingGenesisClient:
         }
 
 
-async def active_agent(contracts: CanonicalContractCatalog, audit: InMemoryAuditRepository):
+async def active_agent(
+    contracts: CanonicalContractCatalog,
+    audit: InMemoryAuditRepository,
+    budget_deadline: int | None = None,
+):
     registry = AgentRegistry(contracts, audit)
     payload = {
         "tenant_id": "tenant_runtime_orchestration",
@@ -85,6 +92,8 @@ async def active_agent(contracts: CanonicalContractCatalog, audit: InMemoryAudit
         },
         "delegation_policy": {"enabled": False, "max_depth": 0},
     }
+    if budget_deadline is not None:
+        payload["execution_budget"]["timeout_seconds"] = budget_deadline
     entry = await registry.register(
         payload,
         tenant_id=payload["tenant_id"],
@@ -158,23 +167,73 @@ async def test_orchestrator_derives_authority_and_persists_tool_step() -> None:
 
     assert completed.status is AuthoritativeRunStatus.COMPLETED
     assert completed.total_tokens == 3
+    assert genesis.timeout_seconds == 35
     assert genesis.invocation is not None
-    assert genesis.invocation["runtime_authorization"]["allowed_tool_ids"] == [
-        "diagnostic.echo"
-    ]
+    assert genesis.invocation["runtime_authorization"]["allowed_tool_ids"] == ["diagnostic.echo"]
     assert genesis.invocation["run_request"]["execution_context"]["execution_budget"] == {
         "max_tokens": 100,
         "max_steps": 3,
         "max_tool_calls": 1,
+        "timeout_seconds": 30,
     }
     assert (
-        genesis.invocation["run_request"]["execution_context"]["data_classification"]
-        == "INTERNAL"
+        genesis.invocation["run_request"]["execution_context"]["data_classification"] == "INTERNAL"
     )
     steps = await authority.list_steps(completed.run_id)
     assert len(steps) == 1
     assert steps[0].tool_id == "diagnostic.echo"
     assert steps[0].output_metadata["status"] == "SUCCESS"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("budget_deadline", [None, 7])
+@pytest.mark.parametrize(
+    "code", ["GENESIS_TIMEOUT", "GENESIS_UNAVAILABLE", "GENESIS_INVALID_RESPONSE"]
+)
+async def test_transport_failure_terminates_authoritative_run(
+    code: str, budget_deadline: int | None
+) -> None:
+    contracts = CanonicalContractCatalog(CONTRACTS_ROOT)
+    audit = InMemoryAuditRepository()
+    authority = AgentRunAuthority(contracts=contracts, audit=audit)
+    genesis = RecordingGenesisClient()
+    genesis.create_agent_run = AsyncMock(
+        side_effect=GenesisClientError(
+            code=code, message="transport failed", correlation_id="corr_failure", retryable=True
+        )
+    )
+    orchestrator = AuthoritativeRuntimeOrchestrator(authority=authority, genesis=genesis)
+    principal = Principal(
+        actor_id="actor_runtime_orchestration",
+        tenant_id="tenant_runtime_orchestration",
+        organization_id="org_runtime_orchestration",
+        workspace_id="workspace_runtime_orchestration",
+        permissions=frozenset({"tools.diagnostic.execute"}),
+        scopes=frozenset({"scope.diagnostic"}),
+    )
+    with pytest.raises(GenesisClientError):
+        await orchestrator.execute(
+            {
+                "capability_id": "capability.runtime.orchestration",
+                "execution_mode": "TEST",
+                "requested_tool_ids": ["diagnostic.echo"],
+                "input": {"message": "hello"},
+                "execution_budget": {"timeout_seconds": 999999},
+            },
+            principal=principal,
+            agent=await active_agent(contracts, audit, budget_deadline),
+            test_mode_allowed=True,
+        )
+    assert (
+        genesis.create_agent_run.call_args.kwargs["timeout_seconds"] == (budget_deadline or 30) + 5
+    )
+    (record,) = await authority.list_runs()
+    assert record.status is (
+        AuthoritativeRunStatus.TIMED_OUT
+        if code == "GENESIS_TIMEOUT"
+        else AuthoritativeRunStatus.FAILED
+    )
+    assert record.result["error"]["code"] == code
 
 
 @pytest.mark.asyncio
@@ -188,9 +247,7 @@ async def test_public_run_route_rejects_client_selected_authority_fields() -> No
         permissions=frozenset({"tools.diagnostic.execute"}),
         scopes=frozenset({"scope.diagnostic"}),
     )
-    request = SimpleNamespace(
-        app=SimpleNamespace(state=SimpleNamespace(agent_registry=object()))
-    )
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(agent_registry=object())))
     payload = {
         "agent_id": "agent.runtime.orchestration",
         "agent_version": "1.0.0",
@@ -210,6 +267,53 @@ async def test_public_run_route_rejects_client_selected_authority_fields() -> No
 
     assert raised.value.code == "AGENT_RUN_REQUEST_INVALID"
     assert raised.value.status_code == 422
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["GENESIS_TIMEOUT", "GENESIS_UNAVAILABLE"])
+async def test_public_run_route_reports_service_unavailability(code: str) -> None:
+    contracts = CanonicalContractCatalog(CONTRACTS_ROOT)
+    agent = await active_agent(contracts, InMemoryAuditRepository())
+    principal = Principal(
+        actor_id=agent.created_by,
+        tenant_id=agent.tenant_id,
+        organization_id=agent.organization_id,
+        workspace_id=agent.workspace_id,
+    )
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                agent_registry=SimpleNamespace(get=lambda **kwargs: agent),
+                settings=SimpleNamespace(ENABLE_TEST_TOOLS=True, APP_ENV="development"),
+            )
+        )
+    )
+    runtime = SimpleNamespace(
+        execute=AsyncMock(
+            side_effect=GenesisClientError(
+                code=code,
+                message="transport unavailable",
+                correlation_id="corr_failed",
+                retryable=True,
+            )
+        )
+    )
+    with pytest.raises(PlatformError) as raised:
+        await execute_agent_run(
+            {
+                "agent_id": agent.subject_id,
+                "agent_version": agent.version,
+                "capability_id": "capability.runtime.orchestration",
+                "input": {},
+                "execution_mode": "TEST",
+            },
+            request,
+            principal,
+            runtime,
+            contracts,
+        )
+    assert raised.value.code == code
+    assert raised.value.status_code == 503
 
 
 @pytest.mark.asyncio
@@ -347,6 +451,7 @@ async def test_orchestrator_derives_tool_budget_when_not_declared_in_agent() -> 
         "max_tokens": 100,
         "max_steps": 3,
         "max_tool_calls": 1,
+        "timeout_seconds": 30,
     }
 
 

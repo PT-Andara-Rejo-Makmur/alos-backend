@@ -23,10 +23,29 @@ async def read_child(
     active_agent: RegistryEntry | None = None,
 ) -> dict[str, Any]:
     context = copy.deepcopy(parent["execution_context"])
-    tool = next(
-        (item for item in context["allowed_tool_ids"] if item != "executive.overview.read"),
-        context["allowed_tool_ids"][0],
+    # A dynamic parent allowlist can contain unrelated detail reads. Delegate a
+    # successful source actually selected by the parent, with the same arguments.
+    candidates = sorted(
+        {
+            item["tool_id"]
+            for item in parent_result.get("tool_results", [])
+            if item["status"] == "SUCCESS"
+            and item["tool_id"] in context["allowed_tool_ids"]
+            and (active_agent is None or item["tool_id"] in active_agent.payload["tool_ids"])
+            and (
+                (BUSINESS_TOOLS[item["tool_id"]][1] != "detail"
+                and not BUSINESS_TOOLS[item["tool_id"]][1].startswith("get_"))
+                or parent["input"]
+                .get("tool_arguments", {})
+                .get(item["tool_id"], {})
+                .get("resource_id")
+            )
+        }
     )
+    if not candidates:
+        raise ValueError("A business reader requires a successful authorized parent source")
+    tool = next((item for item in candidates if item != "executive.overview.read"), candidates[0])
+    arguments = parent["input"].get("tool_arguments", {}).get(tool, {})
     permission = BUSINESS_TOOLS[tool][3]
     if (
         BUSINESS_TOOLS[tool][1] == "overview"
@@ -129,7 +148,7 @@ async def read_child(
         "input": {
             "message": "Read canonical source",
             "thread_id": parent["input"]["thread_id"],
-            "tool_arguments": {tool: parent["input"].get("tool_arguments", {}).get(tool, {})},
+            "tool_arguments": {tool: arguments},
         },
     }
     started = await authority.begin(child, agent=entry)
