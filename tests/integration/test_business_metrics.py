@@ -37,6 +37,8 @@ async def test_closing_actual_reaches_verified_executive_performance(
         "legal.write",
         "work.read",
         "work.write",
+        "project.read",
+        "project.create",
         "approval.read",
         "approval.request",
         "approval.approve",
@@ -471,66 +473,85 @@ async def test_closing_actual_reaches_verified_executive_performance(
     assert risk_open["risk_id"]
 
     # Executive company-wide project progress integration test
-    from alos.identity import DataScope, Principal
-
-    shared_work = ctx.app.state.shared_work_service
-    exec_principal = Principal(
-        actor_id=ctx.executive.actor_id,
-        tenant_id="tenant_strategy_e2e",
-        organization_id="org_strategy_e2e",
-        workspace_id="workspace_strategy_executive_e2e",
-        roles=frozenset(["EXECUTIVE"]),
-        permissions=frozenset(["work.read", "project.read", "strategy.read"]),
-        data_scope=DataScope.COMPANY,
-    )
-    prop_principal = Principal(
-        actor_id="actor_property_div",
-        tenant_id="tenant_strategy_e2e",
-        organization_id="org_strategy_e2e",
-        workspace_id=workspace,
-        roles=frozenset(["DIVISION_LEAD"]),
-        permissions=frozenset(["work.read", "work.write", "project.read", "project.write"]),
-        data_scope=DataScope.WORKSPACE,
-    )
-    cross_tenant_principal = Principal(
-        actor_id="actor_cross_tenant_test",
-        tenant_id="tenant_strategy_other",
-        organization_id="org_strategy_other_tenant",
-        workspace_id="workspace_other_tenant",
-        roles=frozenset(["EXECUTIVE"]),
-        permissions=frozenset(["work.read", "project.read", "strategy.read"]),
-        data_scope=DataScope.COMPANY,
-    )
-
     # 1. Project A in Executive workspace
-    proj_a = await shared_work.create_project(
-        exec_principal, {"code": "PROJ-A-EXEC", "name": "Proyek Direksi A"}
+    res_a = await ctx.client.post(
+        "/api/v1/projects",
+        headers=ctx.executive_headers,
+        json={"code": "PROJ-A-EXEC", "name": "Proyek Direksi A"},
     )
-    task_a1 = await shared_work.create_task(
-        exec_principal, {"title": "Task A1", "project_id": proj_a["project_id"]}
-    )
-    await shared_work.update_task(exec_principal, task_a1["task_id"], {"status": "COMPLETED"})
+    assert res_a.status_code == 201, res_a.text
+    proj_a = res_a.json()
 
-    # 2. Project B in Property workspace
-    proj_b = await shared_work.create_project(
-        prop_principal, {"code": "PROJ-B-PROP", "name": "Proyek Properti B"}
+    res_task_a1 = await ctx.client.post(
+        "/api/v1/tasks",
+        headers=ctx.executive_headers,
+        json={"title": "Task A1", "project_id": proj_a["project_id"]},
     )
-    task_b1 = await shared_work.create_task(
-        prop_principal, {"title": "Task B1", "project_id": proj_b["project_id"]}
+    assert res_task_a1.status_code == 201, res_task_a1.text
+    task_a1 = res_task_a1.json()
+
+    res_patch_a1 = await ctx.client.patch(
+        f"/api/v1/tasks/{task_a1['task_id']}",
+        headers=ctx.executive_headers,
+        json={"status": "COMPLETED"},
     )
-    await shared_work.update_task(prop_principal, task_b1["task_id"], {"status": "COMPLETED"})
-    task_b2 = await shared_work.create_task(
-        prop_principal, {"title": "Task B2", "project_id": proj_b["project_id"]}
+    assert res_patch_a1.status_code == 200, res_patch_a1.text
+
+    # 2. Project B in Division workspace (same tenant + org)
+    res_b = await ctx.client.post(
+        "/api/v1/projects",
+        headers=headers["lead"],
+        json={"code": "PROJ-B-DIV", "name": "Proyek Divisi B"},
     )
-    task_b3 = await shared_work.create_task(
-        prop_principal, {"title": "Task B3", "project_id": proj_b["project_id"]}
+    assert res_b.status_code == 201, res_b.text
+    proj_b = res_b.json()
+
+    res_task_b1 = await ctx.client.post(
+        "/api/v1/tasks",
+        headers=headers["lead"],
+        json={"title": "Task B1", "project_id": proj_b["project_id"]},
     )
-    await shared_work.update_task(prop_principal, task_b3["task_id"], {"status": "CANCELLED"})
+    assert res_task_b1.status_code == 201, res_task_b1.text
+    task_b1 = res_task_b1.json()
+
+    res_patch_b1 = await ctx.client.patch(
+        f"/api/v1/tasks/{task_b1['task_id']}",
+        headers=headers["lead"],
+        json={"status": "COMPLETED"},
+    )
+    assert res_patch_b1.status_code == 200, res_patch_b1.text
+
+    res_task_b2 = await ctx.client.post(
+        "/api/v1/tasks",
+        headers=headers["lead"],
+        json={"title": "Task B2", "project_id": proj_b["project_id"]},
+    )
+    assert res_task_b2.status_code == 201, res_task_b2.text
+    task_b2 = res_task_b2.json()
+
+    res_task_b3 = await ctx.client.post(
+        "/api/v1/tasks",
+        headers=headers["lead"],
+        json={"title": "Task B3", "project_id": proj_b["project_id"]},
+    )
+    assert res_task_b3.status_code == 201, res_task_b3.text
+    task_b3 = res_task_b3.json()
+
+    res_patch_b3 = await ctx.client.patch(
+        f"/api/v1/tasks/{task_b3['task_id']}",
+        headers=headers["lead"],
+        json={"status": "CANCELLED"},
+    )
+    assert res_patch_b3.status_code == 200, res_patch_b3.text
 
     # 3. Project C in different tenant/organization
-    proj_c = await shared_work.create_project(
-        cross_tenant_principal, {"code": "PROJ-C-OTHER", "name": "Proyek Tenant Lain"}
+    res_c = await ctx.client.post(
+        "/api/v1/projects",
+        headers=ctx.cross_tenant_headers,
+        json={"code": "PROJ-C-OTHER", "name": "Proyek Tenant Lain"},
     )
+    assert res_c.status_code == 201, res_c.text
+    proj_c = res_c.json()
 
     # 4. Executive analytics sees A and B (company-wide, same tenant + org)
     exec_analytics_resp = await ctx.client.get(
@@ -551,14 +572,15 @@ async def test_closing_actual_reaches_verified_executive_performance(
     # Project B: 1 completed / 2 active non-cancelled (cancelled excluded) = 50%
     assert proj_b["project_id"] in progress_items
     assert progress_items[proj_b["project_id"]]["value"] == 50.0
-    assert progress_items[proj_b["project_id"]]["label"] == "Proyek Properti B"
+    assert progress_items[proj_b["project_id"]]["label"] == "Proyek Divisi B"
 
     # 5. Project C from other tenant/org is NEVER in Executive projection
     assert proj_c["project_id"] not in progress_items
 
-    # 6. Division user only sees project visible to their workspace (Project B, not Project A)
-    division_projects = await shared_work.list_projects(prop_principal, status=None, search=None)
-    division_ids = {p["project_id"] for p in division_projects}
+    # 6. Division user only sees project visible to their workspace (Project B, not Project A or C)
+    div_projects_resp = await ctx.client.get("/api/v1/projects", headers=headers["lead"])
+    assert div_projects_resp.status_code == 200, div_projects_resp.text
+    division_ids = {p["project_id"] for p in div_projects_resp.json()}
     assert proj_b["project_id"] in division_ids
     assert proj_a["project_id"] not in division_ids
     assert proj_c["project_id"] not in division_ids

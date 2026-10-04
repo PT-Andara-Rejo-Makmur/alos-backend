@@ -143,6 +143,9 @@ async def strategy_context() -> AsyncIterator[StrategyContext]:
             "strategy.approve",
             "strategy.activate",
             "work.read",
+            "work.write",
+            "project.read",
+            "project.create",
         ]
         executive_headers, actor_id = await _register_and_login(
             client,
