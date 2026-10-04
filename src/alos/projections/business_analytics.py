@@ -11,7 +11,6 @@ from sqlalchemy import DateTime, and_, case, cast, func, select, text
 from sqlalchemy.sql import ColumnElement
 
 from alos.domains.record_repository import RecordRepository, authorize
-from alos.domains.sales.records import PIPELINE_EDGES
 from alos.identity import Principal
 
 Granularity = Literal["DAY", "MONTH", "QUARTER", "YEAR"]
@@ -43,6 +42,7 @@ STATUS_LABELS = {
     "INVESTIGATING": "Sedang Diselidiki",
     "LOW": "Rendah",
     "MEDIUM": "Sedang",
+    "MITIGATING": "Sedang Ditangani",
     "NEW": "Baru",
     "NOT_STARTED": "Belum Dimulai",
     "OPEN": "Terbuka",
@@ -55,6 +55,7 @@ STATUS_LABELS = {
     "REJECTED": "Tidak Dilanjutkan",
     "REMEDIATING": "Sedang Ditangani",
     "RESOLVED": "Diselesaikan",
+    "REVIEWED": "Sudah Diperiksa",
     "ROLLED_BACK": "Dikembalikan",
     "SCREENING": "Penyaringan",
     "TERMINATED": "Diakhiri",
@@ -227,7 +228,7 @@ async def _count_breakdown(
     )
 
 
-async def _sales_funnel_breakdown(
+async def _active_pipeline_breakdown(
     repository: RecordRepository,
     session: Any,
     principal: Principal,
@@ -236,27 +237,16 @@ async def _sales_funnel_breakdown(
     stage_rows = (
         await session.execute(
             select(opportunities.c.stage, func.count())
-            .where(*repository.scope(opportunities, principal), opportunities.c.status == "OPEN")
+            .where(
+                *repository.scope(opportunities, principal),
+                opportunities.c.status == "OPEN",
+            )
             .group_by(opportunities.c.stage)
         )
     ).all()
     counts = {str(stage): int(count) for stage, count in stage_rows if stage is not None}
 
-    closing_records = await repository.table(session, "sales", "closings")
-    closing_count = int(
-        (
-            await session.execute(
-                select(func.count()).where(
-                    *repository.scope(closing_records, principal),
-                    closing_records.c.status == "COMPLETED",
-                )
-            )
-        ).scalar_one()
-    )
-
-    stages = tuple(PIPELINE_EDGES) + tuple(
-        stage for stage in PIPELINE_EDGES.values() if stage not in PIPELINE_EDGES
-    )
+    stages = ("Lead", "Qualified", "Survey", "Booking")
     stage_labels = {
         "Lead": "Lead",
         "Qualified": "Terkualifikasi",
@@ -266,20 +256,16 @@ async def _sales_funnel_breakdown(
     items = [
         {
             "code": stage,
-            "label": stage_labels.get(stage, "Tahap lain"),
-            "value": counts.pop(stage, 0),
+            "label": stage_labels[stage],
+            "value": counts.get(stage, 0),
         }
         for stage in stages
     ]
-    unknown_count = sum(counts.values())
-    if unknown_count:
-        items.append({"code": "other_stage", "label": "Tahap lain", "value": unknown_count})
-    items.append({"code": "closing", "label": "Closing", "value": closing_count})
     return _breakdown(
-        "sales_funnel",
-        "Sales Funnel",
+        "active_pipeline_by_stage",
+        "Pipeline Aktif menurut Tahap",
         "COUNT",
-        "Tahap peluang terbuka dan Closing yang telah selesai",
+        "Peluang aktif menurut tahap penjualan",
         items,
     )
 
@@ -456,7 +442,7 @@ async def business_analytics(
                     count_code="closing_count",
                     count_label="Jumlah Closing selesai",
                     amount_code="closing_value",
-                    amount_label="Nilai Closing",
+                    amount_label="Nilai Penjualan" if domain == "executive" else "Nilai Closing",
                     source="Closing yang telah selesai",
                     filters=(closings.c.status == "COMPLETED",),
                     company_scope=executive,
@@ -464,7 +450,7 @@ async def business_analytics(
                 )
             )
             if domain == "sales":
-                breakdowns.append(await _sales_funnel_breakdown(repository, session, principal))
+                breakdowns.append(await _active_pipeline_breakdown(repository, session, principal))
 
         if domain == "property":
             for table_name, column_name, code, label, source in (
@@ -538,19 +524,35 @@ async def business_analytics(
                 )
 
         if domain == "legal":
-            breakdowns.append(
-                await _count_breakdown(
-                    repository,
-                    session,
-                    principal,
-                    "legal",
+            for table_name, column_name, code, label, source in (
+                (
                     "contracts",
                     "status",
-                    code="contracts_by_status",
-                    label="Kontrak menurut status",
-                    source="Status kontrak tercatat",
+                    "contracts_by_status",
+                    "Kontrak menurut status",
+                    "Status kontrak tercatat",
+                ),
+                (
+                    "risks",
+                    "status",
+                    "risks_by_status",
+                    "Risiko menurut status",
+                    "Status risiko hukum tercatat",
+                ),
+            ):
+                breakdowns.append(
+                    await _count_breakdown(
+                        repository,
+                        session,
+                        principal,
+                        "legal",
+                        table_name,
+                        column_name,
+                        code=code,
+                        label=label,
+                        source=source,
+                    )
                 )
-            )
             contracts = await repository.table(session, "legal", "contracts")
             days_to_expiry = contracts.c.end_date - now.date()
             expiry_bucket = case(
@@ -684,26 +686,45 @@ async def business_analytics(
         if domain in {"property", "executive"}:
             can_read_projects = bool({"project.read", "work.read"} & principal.permissions)
             if shared_work is not None and can_read_projects:
-                rows = await shared_work.list_projects(principal, status=None, search=None)
-                presented = await shared_work.present(principal, "PROJECT", rows)
-                progress_items = [
-                    {
-                        "code": str(row.get("project_id")),
-                        "label": str(row.get("name") or "Proyek tanpa nama"),
-                        "value": float(row["progress_percentage"]),
-                        "target_value": None,
-                        "actual_value": None,
-                        "forecast_value": None,
-                    }
-                    for row in presented[:20]
-                    if row.get("progress_percentage") is not None
-                ]
+                if domain == "executive":
+                    company_projects = await shared_work.list_company_projects_progress(principal)
+                    progress_items = [
+                        {
+                            "code": str(row.get("project_id")),
+                            "label": str(row.get("name") or "Proyek tanpa nama"),
+                            "value": float(row["progress_percentage"]),
+                            "target_value": None,
+                            "actual_value": None,
+                            "forecast_value": None,
+                        }
+                        for row in company_projects
+                        if row.get("progress_percentage") is not None
+                    ]
+                    source_label = "Progres tugas pada maksimal 20 proyek perusahaan"
+                else:
+                    rows = await shared_work.list_projects(principal, status=None, search=None)
+                    presented = await shared_work.present(principal, "PROJECT", rows)
+                    progress_items = [
+                        {
+                            "code": str(row.get("project_id")),
+                            "label": str(row.get("name") or "Proyek tanpa nama"),
+                            "value": float(row["progress_percentage"]),
+                            "target_value": None,
+                            "actual_value": None,
+                            "forecast_value": None,
+                        }
+                        for row in presented[:20]
+                        if row.get("progress_percentage") is not None
+                    ]
+                    source_label = (
+                        "Progres tugas pada maksimal 20 proyek terbaru yang dapat diakses"
+                    )
                 comparisons.append(
                     _comparison(
                         "project_progress",
-                        "Progres proyek",
+                        "Progres Proyek",
                         "PERCENT",
-                        "Progres tugas pada maksimal 20 proyek terbaru yang dapat diakses",
+                        source_label,
                         progress_items,
                     )
                 )
@@ -711,7 +732,7 @@ async def business_analytics(
                 comparisons.append(
                     _comparison(
                         "project_progress",
-                        "Progres proyek",
+                        "Progres Proyek",
                         "PERCENT",
                         "Proyek yang dapat diakses pada ruang kerja aktif",
                         [],

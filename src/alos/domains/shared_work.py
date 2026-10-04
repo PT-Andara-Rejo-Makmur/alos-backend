@@ -29,12 +29,21 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from alos.audit import AuditEvent, SqlAuditRepository
 from alos.contracts import CanonicalContractCatalog
 from alos.governance.material_approvals import BusinessApprovalSubjectPort
-from alos.identity import Principal
+from alos.identity import DataScope, Principal
 from alos.observability.correlation import current_correlation_id
 from alos.security.errors import PlatformError
 
 if TYPE_CHECKING:
     from executive_contracts import ExecutiveSharedWorkSummary
+
+
+def calculate_project_progress(tasks: Sequence[dict[str, Any] | Any]) -> int:
+    """Canonical project progress: completed active tasks / all active non-cancelled tasks."""
+    active_tasks = [item for item in tasks if item["status"] != "CANCELLED"]
+    if not active_tasks:
+        return 0
+    completed = sum(item["status"] == "COMPLETED" for item in active_tasks)
+    return round(100 * completed / len(active_tasks))
 
 
 class SharedWorkService:
@@ -575,15 +584,7 @@ class SharedWorkService:
                         )
                         for item in approval_rows
                     )
-                    row["progress_percentage"] = (
-                        round(
-                            100
-                            * sum(item["status"] == "COMPLETED" for item in active_tasks)
-                            / len(active_tasks)
-                        )
-                        if active_tasks
-                        else 0
-                    )
+                    row["progress_percentage"] = calculate_project_progress(project_tasks)
                     open_findings = [
                         item for item in project_findings if item["status"] != "CLOSED"
                     ]
@@ -1735,6 +1736,74 @@ class SharedWorkService:
                 .all()
             )
             return [self._projection(dict(row), principal) for row in rows]
+
+    async def list_company_projects_progress(self, principal: Principal) -> list[dict[str, Any]]:
+        """Company-scoped project progress for authorized executive callers."""
+        if not principal.active or "EXECUTIVE" not in principal.roles:
+            raise PlatformError(
+                "EXECUTIVE_ROLE_DENIED", "Executive access is required.", status_code=403
+            )
+        if principal.data_scope != DataScope.COMPANY:
+            raise PlatformError(
+                "EXECUTIVE_SCOPE_DENIED", "Company data scope is required.", status_code=403
+            )
+        if not ({"project.read", "work.read", "strategy.read"} & principal.permissions):
+            raise PlatformError(
+                "WORK_PERMISSION_DENIED",
+                "Executive company read permission is required.",
+                status_code=403,
+            )
+        async with self._session_factory() as session:
+            await self._verify_workspace(session, principal)
+            projects = await self._table(session, "projects")
+            tasks = await self._table(session, "tasks")
+            project_rows = (
+                (
+                    await session.execute(
+                        select(projects.c.project_id, projects.c.name)
+                        .where(
+                            projects.c.tenant_id == principal.tenant_id,
+                            projects.c.organization_id == principal.organization_id,
+                        )
+                        .order_by(projects.c.created_at.desc(), projects.c.project_id)
+                        .limit(20)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            if not project_rows:
+                return []
+            project_ids = [str(row["project_id"]) for row in project_rows]
+            task_rows = (
+                (
+                    await session.execute(
+                        select(tasks.c.project_id, tasks.c.status).where(
+                            tasks.c.tenant_id == principal.tenant_id,
+                            tasks.c.organization_id == principal.organization_id,
+                            tasks.c.project_id.in_(project_ids),
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            tasks_by_project: dict[str, list[dict[str, Any]]] = {pid: [] for pid in project_ids}
+            for task in task_rows:
+                pid = str(task["project_id"])
+                if pid in tasks_by_project:
+                    tasks_by_project[pid].append(dict(task))
+
+            return [
+                {
+                    "project_id": str(p["project_id"]),
+                    "name": str(p["name"] or "Proyek tanpa nama"),
+                    "progress_percentage": calculate_project_progress(
+                        tasks_by_project[str(p["project_id"])]
+                    ),
+                }
+                for p in project_rows
+            ]
 
     async def list_project_relations(
         self, principal: Principal, project_id: str

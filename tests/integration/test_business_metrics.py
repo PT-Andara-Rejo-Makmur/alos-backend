@@ -207,14 +207,46 @@ async def test_closing_actual_reaches_verified_executive_performance(
     series = {item["code"]: item for item in analytics["series"]}
     assert series["closing_count"]["points"] == [{"period": "2027-03-01", "value": 1}]
     assert series["closing_value"]["points"] == [{"period": "2027-03-01", "value": "125.00"}]
-    funnel = next(item for item in analytics["breakdowns"] if item["code"] == "sales_funnel")
+    funnel = next(
+        item for item in analytics["breakdowns"] if item["code"] == "active_pipeline_by_stage"
+    )
+    assert funnel["label"] == "Pipeline Aktif menurut Tahap"
     assert {item["code"]: item["value"] for item in funnel["items"]} == {
         "Lead": 0,
         "Qualified": 0,
         "Survey": 0,
         "Booking": 0,
-        "closing": 1,
     }
+    # Prove active pipeline only includes OPEN opportunities, excludes LOST and completed Closings:
+    opp_survey = await business.create(
+        "sales",
+        "opportunities",
+        {"name": "Peluang Survei", "stage": "Survey", "customer_id": customer["customer_id"]},
+    )
+    opp_lost = await business.create(
+        "sales",
+        "opportunities",
+        {"name": "Peluang Hilang", "stage": "Qualified", "customer_id": customer["customer_id"]},
+    )
+    await business.transition("sales", "opportunities", opp_lost["opportunity_id"], "LOST")
+
+    sales_pipeline_resp = await ctx.client.get(
+        f"/api/v1/business/sales/analytics{analytics_query}", headers=headers["lead"]
+    )
+    assert sales_pipeline_resp.status_code == 200
+    pipeline_data = next(
+        item
+        for item in sales_pipeline_resp.json()["breakdowns"]
+        if item["code"] == "active_pipeline_by_stage"
+    )
+    assert {item["code"]: item["value"] for item in pipeline_data["items"]} == {
+        "Lead": 0,
+        "Qualified": 0,
+        "Survey": 1,
+        "Booking": 0,
+    }
+    assert "closing" not in {item["code"] for item in pipeline_data["items"]}
+    assert opp_survey["opportunity_id"]
     empty_period = await ctx.client.get(
         "/api/v1/business/sales/analytics?from=2026-03-01&to=2026-03-31&granularity=MONTH",
         headers=headers["lead"],
@@ -384,3 +416,135 @@ async def test_closing_actual_reaches_verified_executive_performance(
         item for item in it_analytics["series"] if item["code"] == "incident_count"
     )
     assert incident_trend["points"] == [{"period": today.replace(day=1).isoformat(), "value": 1}]
+
+    # Legal analytics: Risk status breakdown
+    risk_open = await business.create(
+        "legal",
+        "risks",
+        {
+            "title": "Perizinan AMDAL",
+            "likelihood": "LOW",
+            "impact": "MEDIUM",
+            "rating": "MEDIUM",
+        },
+    )
+    risk_mitigating = await business.create(
+        "legal",
+        "risks",
+        {
+            "title": "Sengketa Batas Lahan",
+            "likelihood": "HIGH",
+            "impact": "HIGH",
+            "rating": "HIGH",
+        },
+    )
+    await business.transition("legal", "risks", risk_mitigating["risk_id"], "MITIGATING")
+    legal_analytics_response = await ctx.client.get(
+        f"/api/v1/business/legal/analytics{finance_query}", headers=headers["lead"]
+    )
+    assert legal_analytics_response.status_code == 200, legal_analytics_response.text
+    legal_analytics = legal_analytics_response.json()
+    risk_breakdown = next(
+        item for item in legal_analytics["breakdowns"] if item["code"] == "risks_by_status"
+    )
+    assert risk_breakdown["label"] == "Risiko menurut status"
+    risk_items = {item["code"]: item for item in risk_breakdown["items"]}
+    assert risk_items["OPEN"]["value"] == 1
+    assert risk_items["OPEN"]["label"] == "Terbuka"
+    assert risk_items["MITIGATING"]["value"] == 1
+    assert risk_items["MITIGATING"]["label"] == "Sedang Ditangani"
+    assert risk_open["risk_id"]
+
+    # Executive company-wide project progress integration test
+    from alos.identity import DataScope, Principal
+
+    shared_work = ctx.app.state.shared_work_service
+    exec_principal = Principal(
+        actor_id=ctx.executive.actor_id,
+        tenant_id="tenant_strategy_e2e",
+        organization_id="org_strategy_e2e",
+        workspace_id="workspace_strategy_executive_e2e",
+        roles=frozenset(["EXECUTIVE"]),
+        permissions=frozenset(["work.read", "project.read", "strategy.read"]),
+        data_scope=DataScope.COMPANY,
+    )
+    prop_principal = Principal(
+        actor_id="actor_property_div",
+        tenant_id="tenant_strategy_e2e",
+        organization_id="org_strategy_e2e",
+        workspace_id=workspace,
+        roles=frozenset(["DIVISION_LEAD"]),
+        permissions=frozenset(["work.read", "work.write", "project.read", "project.write"]),
+        data_scope=DataScope.WORKSPACE,
+    )
+    cross_tenant_principal = Principal(
+        actor_id="actor_cross_tenant_test",
+        tenant_id="tenant_strategy_other",
+        organization_id="org_strategy_other_tenant",
+        workspace_id="workspace_other_tenant",
+        roles=frozenset(["EXECUTIVE"]),
+        permissions=frozenset(["work.read", "project.read", "strategy.read"]),
+        data_scope=DataScope.COMPANY,
+    )
+
+    # 1. Project A in Executive workspace
+    proj_a = await shared_work.create_project(
+        exec_principal, {"code": "PROJ-A-EXEC", "name": "Proyek Direksi A"}
+    )
+    task_a1 = await shared_work.create_task(
+        exec_principal, {"title": "Task A1", "project_id": proj_a["project_id"]}
+    )
+    await shared_work.update_task(exec_principal, task_a1["task_id"], {"status": "COMPLETED"})
+
+    # 2. Project B in Property workspace
+    proj_b = await shared_work.create_project(
+        prop_principal, {"code": "PROJ-B-PROP", "name": "Proyek Properti B"}
+    )
+    task_b1 = await shared_work.create_task(
+        prop_principal, {"title": "Task B1", "project_id": proj_b["project_id"]}
+    )
+    await shared_work.update_task(prop_principal, task_b1["task_id"], {"status": "COMPLETED"})
+    task_b2 = await shared_work.create_task(
+        prop_principal, {"title": "Task B2", "project_id": proj_b["project_id"]}
+    )
+    task_b3 = await shared_work.create_task(
+        prop_principal, {"title": "Task B3", "project_id": proj_b["project_id"]}
+    )
+    await shared_work.update_task(prop_principal, task_b3["task_id"], {"status": "CANCELLED"})
+
+    # 3. Project C in different tenant/organization
+    proj_c = await shared_work.create_project(
+        cross_tenant_principal, {"code": "PROJ-C-OTHER", "name": "Proyek Tenant Lain"}
+    )
+
+    # 4. Executive analytics sees A and B (company-wide, same tenant + org)
+    exec_analytics_resp = await ctx.client.get(
+        f"/api/v1/business/executive/analytics{analytics_query}",
+        headers=ctx.executive_headers,
+    )
+    assert exec_analytics_resp.status_code == 200, exec_analytics_resp.text
+    exec_comparisons = {item["code"]: item for item in exec_analytics_resp.json()["comparisons"]}
+    assert "project_progress" in exec_comparisons
+    progress_comp = exec_comparisons["project_progress"]
+    progress_items = {item["code"]: item for item in progress_comp["items"]}
+
+    # Project A: 1 completed / 1 active = 100%
+    assert proj_a["project_id"] in progress_items
+    assert progress_items[proj_a["project_id"]]["value"] == 100.0
+    assert progress_items[proj_a["project_id"]]["label"] == "Proyek Direksi A"
+
+    # Project B: 1 completed / 2 active non-cancelled (cancelled excluded) = 50%
+    assert proj_b["project_id"] in progress_items
+    assert progress_items[proj_b["project_id"]]["value"] == 50.0
+    assert progress_items[proj_b["project_id"]]["label"] == "Proyek Properti B"
+
+    # 5. Project C from other tenant/org is NEVER in Executive projection
+    assert proj_c["project_id"] not in progress_items
+
+    # 6. Division user only sees project visible to their workspace (Project B, not Project A)
+    division_projects = await shared_work.list_projects(prop_principal, status=None, search=None)
+    division_ids = {p["project_id"] for p in division_projects}
+    assert proj_b["project_id"] in division_ids
+    assert proj_a["project_id"] not in division_ids
+    assert proj_c["project_id"] not in division_ids
+    assert task_b2["task_id"]

@@ -63,4 +63,96 @@ def test_time_buckets_use_utc_and_date_buckets_do_not_shift_timezone() -> None:
 def test_bucket_start_and_display_labels_are_human_readable() -> None:
     assert _period_start(datetime(2026, 3, 1, tzinfo=UTC)) == "2026-03-01"
     assert _category_label("IN_PROGRESS") == "Sedang Berjalan"
+    assert _category_label("MITIGATING") == "Sedang Ditangani"
+    assert _category_label("REVIEWED") == "Sudah Diperiksa"
     assert _category_label("UNRECOGNIZED_STATE") == "Status belum dikenali"
+
+
+def test_calculate_project_progress_canonical_formula() -> None:
+    from alos.domains.shared_work import calculate_project_progress
+
+    # Empty tasks -> 0
+    assert calculate_project_progress([]) == 0
+
+    # All active completed -> 100
+    assert calculate_project_progress([{"status": "COMPLETED"}]) == 100
+
+    # 1 completed, 1 open -> 50%
+    assert calculate_project_progress([{"status": "COMPLETED"}, {"status": "OPEN"}]) == 50
+
+    # Cancelled tasks are excluded from denominator:
+    # 1 completed, 1 open, 1 cancelled -> 1 / 2 = 50%
+    assert (
+        calculate_project_progress(
+            [
+                {"status": "COMPLETED"},
+                {"status": "OPEN"},
+                {"status": "CANCELLED"},
+            ]
+        )
+        == 50
+    )
+
+    # Only cancelled tasks -> 0
+    assert calculate_project_progress([{"status": "CANCELLED"}]) == 0
+
+    # Rounding: 1 / 3 = 33%
+    assert (
+        calculate_project_progress(
+            [{"status": "COMPLETED"}, {"status": "OPEN"}, {"status": "BLOCKED"}]
+        )
+        == 33
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_company_projects_progress_authority_guard() -> None:
+    from unittest.mock import MagicMock
+
+    from alos.domains.shared_work import SharedWorkService
+    from alos.identity import DataScope, Principal
+    from alos.security.errors import PlatformError
+
+    service = SharedWorkService(session_factory=MagicMock())
+
+    # 1. Non-executive denied
+    non_exec = Principal(
+        actor_id="actor_1",
+        tenant_id="tenant_1",
+        organization_id="org_1",
+        workspace_id="ws_1",
+        roles=frozenset(["DIVISION_LEAD"]),
+        permissions=frozenset(["work.read", "project.read"]),
+        data_scope=DataScope.COMPANY,
+    )
+    with pytest.raises(PlatformError) as exc:
+        await service.list_company_projects_progress(non_exec)
+    assert exc.value.code == "EXECUTIVE_ROLE_DENIED"
+
+    # 2. Executive without company data scope denied
+    workspace_scoped_exec = Principal(
+        actor_id="actor_1",
+        tenant_id="tenant_1",
+        organization_id="org_1",
+        workspace_id="ws_1",
+        roles=frozenset(["EXECUTIVE"]),
+        permissions=frozenset(["work.read", "project.read"]),
+        data_scope=DataScope.WORKSPACE,
+    )
+    with pytest.raises(PlatformError) as exc:
+        await service.list_company_projects_progress(workspace_scoped_exec)
+    assert exc.value.code == "EXECUTIVE_SCOPE_DENIED"
+
+    # 3. Executive without read permissions denied
+    no_perm_exec = Principal(
+        actor_id="actor_1",
+        tenant_id="tenant_1",
+        organization_id="org_1",
+        workspace_id="ws_1",
+        roles=frozenset(["EXECUTIVE"]),
+        permissions=frozenset(["navigation.read"]),
+        data_scope=DataScope.COMPANY,
+    )
+    with pytest.raises(PlatformError) as exc:
+        await service.list_company_projects_progress(no_perm_exec)
+    assert exc.value.code == "WORK_PERMISSION_DENIED"
