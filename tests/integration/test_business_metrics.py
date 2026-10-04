@@ -39,6 +39,8 @@ async def test_closing_actual_reaches_verified_executive_performance(
         "work.write",
         "project.read",
         "project.create",
+        "task.create",
+        "task.complete",
         "approval.read",
         "approval.request",
         "approval.approve",
@@ -490,12 +492,11 @@ async def test_closing_actual_reaches_verified_executive_performance(
     assert res_task_a1.status_code == 201, res_task_a1.text
     task_a1 = res_task_a1.json()
 
-    res_patch_a1 = await ctx.client.patch(
-        f"/api/v1/tasks/{task_a1['task_id']}",
+    res_complete_a1 = await ctx.client.post(
+        f"/api/v1/tasks/{task_a1['task_id']}/complete",
         headers=ctx.executive_headers,
-        json={"status": "COMPLETED"},
     )
-    assert res_patch_a1.status_code == 200, res_patch_a1.text
+    assert res_complete_a1.status_code == 200, res_complete_a1.text
 
     # 2. Project B in Division workspace (same tenant + org)
     res_b = await ctx.client.post(
@@ -514,12 +515,11 @@ async def test_closing_actual_reaches_verified_executive_performance(
     assert res_task_b1.status_code == 201, res_task_b1.text
     task_b1 = res_task_b1.json()
 
-    res_patch_b1 = await ctx.client.patch(
-        f"/api/v1/tasks/{task_b1['task_id']}",
+    res_complete_b1 = await ctx.client.post(
+        f"/api/v1/tasks/{task_b1['task_id']}/complete",
         headers=headers["lead"],
-        json={"status": "COMPLETED"},
     )
-    assert res_patch_b1.status_code == 200, res_patch_b1.text
+    assert res_complete_b1.status_code == 200, res_complete_b1.text
 
     res_task_b2 = await ctx.client.post(
         "/api/v1/tasks",
@@ -528,21 +528,6 @@ async def test_closing_actual_reaches_verified_executive_performance(
     )
     assert res_task_b2.status_code == 201, res_task_b2.text
     task_b2 = res_task_b2.json()
-
-    res_task_b3 = await ctx.client.post(
-        "/api/v1/tasks",
-        headers=headers["lead"],
-        json={"title": "Task B3", "project_id": proj_b["project_id"]},
-    )
-    assert res_task_b3.status_code == 201, res_task_b3.text
-    task_b3 = res_task_b3.json()
-
-    res_patch_b3 = await ctx.client.patch(
-        f"/api/v1/tasks/{task_b3['task_id']}",
-        headers=headers["lead"],
-        json={"status": "CANCELLED"},
-    )
-    assert res_patch_b3.status_code == 200, res_patch_b3.text
 
     # 3. Project C in different tenant/organization
     res_c = await ctx.client.post(
