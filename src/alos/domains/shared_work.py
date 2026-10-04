@@ -42,7 +42,7 @@ def calculate_project_progress(tasks: Sequence[dict[str, Any] | Any]) -> int:
     active_tasks = [item for item in tasks if item["status"] != "CANCELLED"]
     if not active_tasks:
         return 0
-    completed = sum(item["status"] == "COMPLETED" for item in active_tasks)
+    completed: int = sum(1 for item in active_tasks if item["status"] == "COMPLETED")
     return round(100 * completed / len(active_tasks))
 
 
