@@ -987,6 +987,27 @@ class AuthService:
                 "membership target is outside an active authority boundary",
                 status_code=403,
             )
+        provided_scopes = payload.get("scope_refs")
+        if provided_scopes is None:
+            provided_scopes = payload.get("scopes")
+        if provided_scopes is not None:
+            scope_refs = tuple(sorted(str(item) for item in provided_scopes))
+        else:
+            scope_refs = (
+                ("scope.organization.andara", "scope.workspace.operations", "scope.sources.read")
+                if "EXECUTIVE" in role_refs or workspace.workspace_type == "EXECUTIVE"
+                else (
+                    ("scope.identity.manage", "scope.workspace.operations", "scope.sources.read")
+                    if "IT_ADMIN" in role_refs or workspace.workspace_type == "IT_OPERATIONS"
+                    else ("scope.workspace.operations", "scope.sources.read")
+                )
+            )
+        default_scope = (
+            "COMPANY"
+            if "EXECUTIVE" in role_refs or workspace.workspace_type == "EXECUTIVE"
+            else "WORKSPACE"
+        )
+        data_scope = str(payload.get("data_scope") or default_scope)
         return MembershipMutation(
             actor_id=actor_id,
             workspace_id=workspace_id,
@@ -999,8 +1020,8 @@ class AuthService:
                 role_refs,
                 None,
             ),
-            scope_refs=(),
-            data_scope="WORKSPACE",
+            scope_refs=scope_refs,
+            data_scope=data_scope,
             effective_at=_as_utc(payload.get("effective_at")) or datetime.now(UTC),
             expires_at=_as_utc(payload.get("expires_at")),
             note=_optional(payload.get("note")),
